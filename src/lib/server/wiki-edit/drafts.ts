@@ -4,6 +4,8 @@ import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import { pageAttachments, pages } from "../schema-wiki.ts";
 import { pageDrafts } from "../schema-wiki-edit.ts";
+import { loadReadablePage } from "../wiki/pages.ts";
+import { loadWikiAccess } from "../wiki/permissions.ts";
 import { requireAccess, requireGrant } from "./access.ts";
 import {
 	docSchema,
@@ -139,8 +141,10 @@ export async function saveDraft(
 }
 
 export async function discardDraft(actor: CurrentUser, id: string) {
-	const [page] = await db.select().from(pages).where(eq(pages.id, id)).limit(1);
-	if (!page) return;
+	const access = await loadWikiAccess(actor);
+	const loaded = await loadReadablePage(access, id);
+	if (!loaded) fail(404, "Page not found");
+	const { page } = loaded;
 	await db
 		.delete(pageDrafts)
 		.where(

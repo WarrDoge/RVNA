@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { pool } from "../src/lib/server/db.ts";
 import {
@@ -430,6 +431,20 @@ describe("page restrictions", () => {
 			`/api/wiki/edit/page-search?q=Secret&spaceKey=${space.key}`,
 		);
 		expect(found.body).toHaveLength(2);
+	});
+
+	test("discarding a draft answers 404 for a page the caller cannot read", async () => {
+		const page = await mk("Secret discard");
+		await wiki.admin.put(`/api/wiki/pages/${page.id}/restrictions`, {
+			read: { userIds: [reader.id], groups: [] },
+			update: { userIds: [], groups: [] },
+		});
+
+		const unknown = await creator.del(`/api/wiki/pages/${randomUUID()}/draft`);
+		const hidden = await creator.del(`/api/wiki/pages/${page.id}/draft`);
+		expect(hidden.status).toBe(unknown.status);
+		expect(hidden.status).toBe(404);
+		expect(hidden.body).toEqual(unknown.body);
 	});
 
 	test("a group listed in a restriction grants its members access", async () => {

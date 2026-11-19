@@ -287,7 +287,7 @@ describe("drafts", () => {
 		expect(stranger.status).toBe(403);
 		expect(
 			(await bob.del(`/api/wiki/pages/${created.body.pageId}/draft`)).status,
-		).toBe(204);
+		).toBe(404);
 		expect(
 			await rows("select 1 from pages where id = $1", [created.body.pageId]),
 		).toHaveLength(1);
@@ -318,7 +318,7 @@ describe("drafts", () => {
 		).toHaveLength(0);
 		expect(
 			(await alice.del(`/api/wiki/pages/${created.body.pageId}/draft`)).status,
-		).toBe(204);
+		).toBe(404);
 		await alice.del(`/api/wiki/pages/${touched.body.pageId}/draft`);
 	});
 
