@@ -1700,6 +1700,7 @@ export async function boardSprintSummary(
 			and(
 				eq(issueSprints.sprintId, activeSprint.id),
 				eq(issueSprints.isOpen, true),
+				sql`${issues.projectId} = any(${sql.param(await viewerProjectIds(actor))}::uuid[])`,
 			),
 		);
 	return {
