@@ -127,6 +127,32 @@ test("GET reports unknown fields and values", async () => {
 	);
 });
 
+test("POST rejects impossible dates and offsets outside 100 years", async () => {
+	const invalid = [
+		'duedate >= "2026-02-30"',
+		'duedate >= "2026-99-99"',
+		"due >= startOfYear(-1000000000)",
+		'updated >= "+999999999d"',
+	];
+	for (const jql of invalid) {
+		const response = await post({ jql });
+		expect(response.statusCode, jql).toBe(400);
+		expect(response.json().errors, jql).toHaveLength(1);
+		expect(response.json().errors[0], jql).toMatch(/^Error in the JQL Query: /);
+	}
+
+	const valid = [
+		'duedate >= "2026-02-28"',
+		'duedate >= "2026-12-31"',
+		"due >= startOfYear(-99)",
+		'updated >= "+99d"',
+	];
+	for (const jql of valid) {
+		const response = await post({ jql });
+		expect(response.statusCode, jql).toBe(200);
+	}
+});
+
 test("POST accepts the same query for long inputs", async () => {
 	const clauses = Array.from(
 		{ length: 40 },

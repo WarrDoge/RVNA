@@ -164,7 +164,18 @@ const RELATIVE_PART = /(\d+(?:\.\d+)?)([wdhm])/g;
 const ABSOLUTE_DATE =
 	/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/;
 
-function parseRelativeDate(text: string) {
+const MAX_DATE_OFFSET_YEARS = 100;
+const MAX_DATE_OFFSET_DAYS = MAX_DATE_OFFSET_YEARS * 365.2425;
+const MAX_DATE_OFFSET_MS = MAX_DATE_OFFSET_DAYS * DAY_MS;
+
+function dateOffsetError(value: string, position?: JqlPosition) {
+	return new JqlError(
+		`Date value '${value}' is outside the supported range of 100 years.`,
+		position,
+	);
+}
+
+function parseRelativeDate(text: string, position?: JqlPosition) {
 	const match = RELATIVE_DATE.exec(text.trim());
 	if (!match) return null;
 	const sign = match[1] === "-" ? -1 : 1;
@@ -185,6 +196,9 @@ function parseRelativeDate(text: string) {
 				milliseconds += amount * 60 * 1000;
 				break;
 		}
+	}
+	if (!Number.isFinite(milliseconds) || milliseconds > MAX_DATE_OFFSET_MS) {
+		throw dateOffsetError(text, position);
 	}
 	return sign * milliseconds;
 }
@@ -250,30 +264,34 @@ function zonedInstant(
 	return wall - zoneOffsetAt(first, timeZone);
 }
 
+function calendarDateExists(year: number, month: number, day: number) {
+	if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+	const value = new Date(0);
+	value.setUTCFullYear(year, month - 1, day);
+	return (
+		value.getUTCFullYear() === year &&
+		value.getUTCMonth() === month - 1 &&
+		value.getUTCDate() === day
+	);
+}
+
 function parseAbsoluteDate(text: string, timeZone: string) {
 	const match = ABSOLUTE_DATE.exec(text.trim());
 	if (!match) return null;
+	const year = Number(match[1]);
+	const month = Number(match[2]);
+	const day = Number(match[3]);
+	if (!calendarDateExists(year, month, day)) return null;
 	if (match[4] === undefined) {
-		return new Date(
-			zonedInstant(
-				Number(match[1]),
-				Number(match[2]),
-				Number(match[3]),
-				timeZone,
-			),
-		);
+		return new Date(zonedInstant(year, month, day, timeZone));
 	}
-	const value = new Date(
-		Date.UTC(
-			Number(match[1]),
-			Number(match[2]) - 1,
-			Number(match[3]),
-			Number(match[4]),
-			Number(match[5]),
-			Number(match[6] ?? 0),
-		),
-	);
-	if (Number.isNaN(value.getTime())) return null;
+	const hour = Number(match[4]);
+	const minute = Number(match[5]);
+	const second = Number(match[6] ?? 0);
+	if (hour > 23 || minute > 59 || second > 59) return null;
+	const value = new Date(0);
+	value.setUTCFullYear(year, month - 1, day);
+	value.setUTCHours(hour, minute, second, 0);
 	return value;
 }
 
@@ -282,9 +300,14 @@ function parseAbsoluteDate(text: string, timeZone: string) {
  * context's `now`; a date-only absolute value is midnight in the context's
  * time zone, and a value with a time keeps its UTC reading.
  */
-function parseDateValue(literal: Literal, now: Date, timeZone: string) {
+function parseDateValue(
+	literal: Literal,
+	now: Date,
+	timeZone: string,
+	position?: JqlPosition,
+) {
 	if (literal.kind === "date") {
-		return literal.dateOnly
+		const value = literal.dateOnly
 			? new Date(
 					zonedInstant(
 						literal.value.getUTCFullYear(),
@@ -294,12 +317,20 @@ function parseDateValue(literal: Literal, now: Date, timeZone: string) {
 					),
 				)
 			: literal.value;
+		if (Number.isNaN(value.getTime())) {
+			throw new JqlError("Date value is invalid.", position);
+		}
+		return value;
 	}
 	const text =
 		literal.kind === "string" ? literal.value : String(literal.value);
-	const relative = parseRelativeDate(text);
+	const relative = parseRelativeDate(text, position);
 	if (relative !== null) return new Date(now.getTime() + relative);
-	return parseAbsoluteDate(text, timeZone);
+	const absolute = parseAbsoluteDate(text, timeZone);
+	if (!absolute) {
+		throw new JqlError(`Date value '${text}' is invalid.`, position);
+	}
+	return absolute;
 }
 
 const DURATION_UNIT_SECONDS: Record<string, number> = {
@@ -440,6 +471,35 @@ function startOfYear(value: Date, offsetYears: number, timeZone: string) {
 	return new Date(zonedInstant(parts.year + offsetYears, 1, 1, timeZone));
 }
 
+const DATE_FUNCTION_OFFSET_DAYS: Record<string, number> = {
+	startofday: 1,
+	startofweek: 7,
+	startofmonth: 365.2425 / 12,
+	startofyear: 365.2425,
+	endofday: 1,
+	endofweek: 7,
+	endofmonth: 365.2425 / 12,
+	endofyear: 365.2425,
+};
+
+function checkDateFunctionOffset(
+	name: string,
+	offset: number,
+	position: JqlPosition,
+) {
+	const unitDays = DATE_FUNCTION_OFFSET_DAYS[name];
+	if (unitDays === undefined) return;
+	const max = MAX_DATE_OFFSET_DAYS / unitDays;
+	const outside = (value: number) =>
+		!Number.isFinite(value) || Math.abs(value) > max;
+	if (outside(offset) || (name.startsWith("endof") && outside(offset + 1))) {
+		throw new JqlError(
+			`The offset for '${name}' is outside the supported range of 100 years.`,
+			position,
+		);
+	}
+}
+
 async function evaluateFunction(
 	fn: JqlFunctionOperand,
 	ctx: CompileContext,
@@ -452,6 +512,7 @@ async function evaluateFunction(
 			: offsetArgument.kind === "number"
 				? offsetArgument.value
 				: Number(literalString(offsetArgument) ?? "0");
+	checkDateFunctionOffset(name, offset, fn.position);
 
 	switch (name) {
 		case "currentuser":
@@ -665,8 +726,12 @@ async function updatedBy(
 
 	const from = await singleArgument(fn.args[1], ctx);
 	const to = await singleArgument(fn.args[2], ctx);
-	const fromDate = from ? parseDateValue(from, ctx.now, ctx.timeZone) : null;
-	const toDate = to ? parseDateValue(to, ctx.now, ctx.timeZone) : null;
+	const fromDate = from
+		? parseDateValue(from, ctx.now, ctx.timeZone, fn.position)
+		: null;
+	const toDate = to
+		? parseDateValue(to, ctx.now, ctx.timeZone, fn.position)
+		: null;
 
 	const conditions: SQL[] = [
 		sql`h.author_id = ${found.id}`,
@@ -1371,11 +1436,7 @@ async function coerceLiteral(
 		return value;
 	}
 
-	const date = parseDateValue(literal, ctx.now, ctx.timeZone);
-	if (!date) {
-		const text = literalString(literal) ?? "";
-		throw new JqlError(`Date value '${text}' is invalid.`, position);
-	}
+	const date = parseDateValue(literal, ctx.now, ctx.timeZone, position);
 	if (spec.type === "date") {
 		const text = literalString(literal);
 		const match = text ? ABSOLUTE_DATE.exec(text.trim()) : null;
@@ -2026,14 +2087,7 @@ async function compileHistory(
 
 	const timestamp = async (operand: JqlOperand) => {
 		const literal = await singleLiteral(operand, ctx);
-		const value = parseDateValue(literal, ctx.now, ctx.timeZone);
-		if (!value) {
-			throw new JqlError(
-				`Date value '${literalString(literal) ?? ""}' is invalid.`,
-				operand.position,
-			);
-		}
-		return value;
+		return parseDateValue(literal, ctx.now, ctx.timeZone, operand.position);
 	};
 
 	if (clause.after) {
