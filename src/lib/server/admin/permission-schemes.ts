@@ -23,6 +23,7 @@ import { audit } from "./audit.ts";
 
 const schemeParams = z.object({ id: z.uuid() });
 const grantParams = z.object({ id: z.uuid(), grantId: z.uuid() });
+const schemeProjectParams = z.object({ id: z.uuid(), projectId: z.uuid() });
 
 const projectRefSchema = z.object({
 	id: z.uuid(),
@@ -219,6 +220,7 @@ export {
 	grantSchema,
 	schemeDetailSchema,
 	schemeParams,
+	schemeProjectParams,
 	schemeSchema,
 };
 
@@ -599,4 +601,104 @@ export async function assignPermissionSchemeProject(
 			await projectMap(),
 		),
 	};
+}
+
+export async function removePermissionSchemeProject(
+	actor: CurrentUser,
+	id: string,
+	projectId: string,
+) {
+	requireAdminActor(actor);
+	const scheme = await loadScheme(id);
+	if (!scheme) {
+		throw new HttpError(404, "Permission scheme not found");
+	}
+	const projectIds = scheme.projectIds ?? [];
+	if (!projectIds.includes(projectId)) {
+		throw new HttpError(
+			404,
+			"Project is not assigned to this permission scheme",
+		);
+	}
+	const [project] = await db
+		.select({ id: projects.id, key: projects.key, name: projects.name })
+		.from(projects)
+		.where(eq(projects.id, projectId))
+		.limit(1);
+	if (!project) {
+		throw new HttpError(
+			404,
+			"Project is not assigned to this permission scheme",
+		);
+	}
+
+	await db.transaction(async (tx) => {
+		await tx
+			.update(permissionSchemes)
+			.set({
+				projectIds: projectIds.filter((value) => value !== project.id),
+				updatedAt: new Date(),
+			})
+			.where(eq(permissionSchemes.id, scheme.id));
+		await tx
+			.delete(permissionLocalAssignments)
+			.where(
+				and(
+					eq(permissionLocalAssignments.projectId, project.id),
+					eq(permissionLocalAssignments.schemeId, scheme.id),
+				),
+			);
+		await audit(tx, actor, {
+			action: "permission.scheme.unassign",
+			entityType: "permission_scheme",
+			entityId: scheme.id,
+			summary: `Removed ${project.key} from permission scheme ${scheme.name}`,
+			changes: {
+				from: { project: project.key, scheme: scheme.name },
+				to: null,
+			},
+		});
+	});
+}
+
+export async function deletePermissionScheme(actor: CurrentUser, id: string) {
+	requireAdminActor(actor);
+	const scheme = await loadScheme(id);
+	if (!scheme) {
+		throw new HttpError(404, "Permission scheme not found");
+	}
+	const projectIds = scheme.projectIds ?? [];
+	if (projectIds.length > 0) {
+		const byId = await projectMap();
+		const keys = projectsFor(projectIds, byId).map((project) => project.key);
+		const names =
+			keys.length > 0 ? keys.join(", ") : `${projectIds.length} project(s)`;
+		throw new HttpError(
+			409,
+			`The permission scheme ${scheme.name} is still assigned to ${names}. Remove the project${projectIds.length === 1 ? "" : "s"} from the scheme before deleting it.`,
+		);
+	}
+
+	const grants = await db
+		.select({ id: permissionGrants.id })
+		.from(permissionGrants)
+		.where(eq(permissionGrants.schemeId, scheme.id));
+	await db.transaction(async (tx) => {
+		await tx
+			.delete(permissionGrants)
+			.where(eq(permissionGrants.schemeId, scheme.id));
+		await tx
+			.delete(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id));
+		await audit(tx, actor, {
+			action: "permission.scheme.delete",
+			entityType: "permission_scheme",
+			entityId: scheme.id,
+			summary: `Deleted permission scheme ${scheme.name}`,
+			changes: {
+				from: { scheme: scheme.name, grants: grants.length },
+				to: null,
+			},
+		});
+	});
 }

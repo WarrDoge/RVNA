@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { enhance } from "$app/forms";
+	import { goto } from "$app/navigation";
 	import AdminPage from "#lib/admin/AdminPage.svelte";
 	import Banner from "#lib/admin/Banner.svelte";
 	import EmptyRow from "#lib/admin/EmptyRow.svelte";
@@ -20,13 +21,23 @@
 	let addingGrant = $state(false);
 	let assigning = $state(false);
 	let removing = $state<string | null>(null);
+	let removingProject = $state<string | null>(null);
 	let confirmingGrant = $state<Grant | null>(null);
+	let confirmingProject = $state<{
+		id: string;
+		key: string;
+		name: string;
+	} | null>(null);
+	let confirmingDelete = $state(false);
+	let deleting = $state(false);
 	let error = $state<string | null>(null);
 
 	const schemeId = $derived(data.detail?.scheme.id);
 	$effect(() => {
 		schemeId;
 		confirmingGrant = null;
+		confirmingProject = null;
+		confirmingDelete = false;
 	});
 
 	function holderLabel(grant: Grant, roles: RoleRef[]): string {
@@ -92,6 +103,48 @@
 		<Lozenge appearance={data.detail.scheme.source === "local" ? "moved" : "default"}>
 			{data.detail.scheme.source === "local" ? "Local" : "Imported"}
 		</Lozenge>
+		{#if data.detail.scheme.projects.length > 0}
+			<span class="delete-reason">
+				Remove every project before deleting this scheme.
+			</span>
+		{/if}
+		<form
+			id="delete-scheme"
+			method="POST"
+			use:enhance={() => {
+				error = null;
+				deleting = true;
+				return async ({ result, update }) => {
+					if (result.type === "failure") {
+						error = failureMessage(result);
+						deleting = false;
+						return;
+					}
+					if (result.type === "error") {
+						error = "Something went wrong";
+						deleting = false;
+						return;
+					}
+					if (result.type === "redirect") {
+						await goto(result.location);
+						return;
+					}
+					await update();
+				};
+			}}
+		>
+			<input type="hidden" name="intent" value="deleteScheme" />
+			<input type="hidden" name="schemeId" value={data.detail.scheme.id} />
+			<Button
+				type="button"
+				appearance="subtle"
+				isDisabled={data.detail.scheme.projects.length > 0}
+				isLoading={deleting}
+				onclick={() => (confirmingDelete = true)}
+			>
+				Delete scheme
+			</Button>
+		</form>
 		<Button appearance="primary" onclick={() => (addingGrant = true)}>
 			Add permission grant
 		</Button>
@@ -127,6 +180,41 @@
 						<li>
 							<a href={`/projects/${project.key}/issues`}>{project.name}</a>
 							<span class="subtle">({project.key})</span>
+							<form
+								id={`remove-project-${project.id}`}
+								method="POST"
+								use:enhance={() => {
+									error = null;
+									removingProject = project.id;
+									return async ({ result, update }) => {
+										if (result.type === "failure") {
+											error = failureMessage(result);
+											removingProject = null;
+											return;
+										}
+										if (result.type === "error") {
+											error = "Something went wrong";
+											removingProject = null;
+											return;
+										}
+										await update();
+										removingProject = null;
+									};
+								}}
+							>
+								<input type="hidden" name="intent" value="removeProject" />
+								<input type="hidden" name="schemeId" value={scheme.id} />
+								<input type="hidden" name="projectId" value={project.id} />
+								<Button
+									type="button"
+									appearance="subtle"
+									spacing="compact"
+									isLoading={removingProject === project.id}
+									onclick={() => (confirmingProject = project)}
+								>
+									Remove
+								</Button>
+							</form>
 						</li>
 					{/each}
 				</ul>
@@ -247,6 +335,39 @@
 				onClose={() => (confirmingGrant = null)}
 			/>
 		{/if}
+		{#if confirmingProject}
+			<ConfirmDialog
+				title="Remove project from permission scheme"
+				message={`Remove ${confirmingProject.key} — ${confirmingProject.name} from this scheme? The project uses the built-in default after that.`}
+				confirmLabel="Remove"
+				onConfirm={() => {
+					const project = confirmingProject;
+					confirmingProject = null;
+					if (project) {
+						const form = document.getElementById(
+							`remove-project-${project.id}`,
+						) as HTMLFormElement | null;
+						form?.requestSubmit();
+					}
+				}}
+				onClose={() => (confirmingProject = null)}
+			/>
+		{/if}
+		{#if confirmingDelete}
+			<ConfirmDialog
+				title="Delete permission scheme"
+				message={`Delete ${scheme.name}? Its grants are removed with it. This cannot be undone.`}
+				confirmLabel="Delete"
+				onConfirm={() => {
+					confirmingDelete = false;
+					const form = document.getElementById(
+						"delete-scheme",
+					) as HTMLFormElement | null;
+					form?.requestSubmit();
+				}}
+				onClose={() => (confirmingDelete = false)}
+			/>
+		{/if}
 	</AdminPage>
 {:else if data.id === ""}
 	<AdminPage title="Permission scheme" {breadcrumb}>
@@ -291,9 +412,24 @@
 		font-size: 12px;
 	}
 
+	.delete-reason {
+		color: var(--ds-text-subtle);
+		font-size: 12px;
+	}
+
 	.projects {
 		margin: 0;
 		padding-left: 20px;
+	}
+
+	.projects li {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+	}
+
+	.projects li form {
+		margin-left: auto;
 	}
 
 	.grants-table {

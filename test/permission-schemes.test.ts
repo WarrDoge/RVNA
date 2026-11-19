@@ -565,3 +565,149 @@ test("a non-admin cannot open the admin permission screens", async () => {
 	);
 	expect(global.statusCode).toBe(403);
 });
+
+test("removes a project from a scheme and the built-in default applies again", async () => {
+	const assigned = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		`/api/admin/permission-schemes/${importedSchemeId}/projects`,
+		{ projectId: otherProject.projectId },
+	);
+	expect(assigned.statusCode).toBe(200);
+
+	const denied = await injectAs(
+		app,
+		bob.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${importedSchemeId}/projects/${otherProject.projectId}`,
+	);
+	expect(denied.statusCode).toBe(403);
+
+	const missingScheme = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/00000000-0000-0000-0000-000000000000/projects/${otherProject.projectId}`,
+	);
+	expect(missingScheme.statusCode).toBe(404);
+
+	const hiddenBefore = await injectAs(
+		app,
+		bob.session,
+		"GET",
+		`/projects/${otherKey}/issues`,
+	);
+	expect(hiddenBefore.statusCode).toBe(404);
+
+	const removed = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${importedSchemeId}/projects/${otherProject.projectId}`,
+	);
+	expect(removed.statusCode).toBe(204);
+
+	const detail = await schemeDetail(importedSchemeId);
+	expect(detail.json().scheme.projects).not.toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ id: otherProject.projectId }),
+		]),
+	);
+	const again = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${importedSchemeId}/projects/${otherProject.projectId}`,
+	);
+	expect(again.statusCode).toBe(404);
+
+	const assignments = await db
+		.select({ schemeId: permissionLocalAssignments.schemeId })
+		.from(permissionLocalAssignments)
+		.where(eq(permissionLocalAssignments.projectId, otherProject.projectId));
+	expect(assignments.some((row) => row.schemeId === importedSchemeId)).toBe(
+		false,
+	);
+
+	const visibleAgain = await injectAs(
+		app,
+		bob.session,
+		"GET",
+		`/projects/${otherKey}/issues`,
+	);
+	expect(visibleAgain.statusCode).toBe(200);
+
+	const audits = await db
+		.select({ action: auditLog.action })
+		.from(auditLog)
+		.where(eq(auditLog.entityId, importedSchemeId));
+	expect(audits.map((row) => row.action)).toContain(
+		"permission.scheme.unassign",
+	);
+});
+
+test("deletes a scheme only after its projects are removed", async () => {
+	const assigned = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		`/api/admin/permission-schemes/${copiedSchemeId}/projects`,
+		{ projectId: otherProject.projectId },
+	);
+	expect(assigned.statusCode).toBe(200);
+
+	const blocked = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${copiedSchemeId}`,
+	);
+	expect(blocked.statusCode).toBe(409);
+	expect(blocked.json().error).toContain("Remove the project");
+
+	const denied = await injectAs(
+		app,
+		bob.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${copiedSchemeId}`,
+	);
+	expect(denied.statusCode).toBe(403);
+
+	const removed = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${copiedSchemeId}/projects/${otherProject.projectId}`,
+	);
+	expect(removed.statusCode).toBe(204);
+
+	const missing = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		"/api/admin/permission-schemes/00000000-0000-0000-0000-000000000000",
+	);
+	expect(missing.statusCode).toBe(404);
+
+	const deleted = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${copiedSchemeId}`,
+	);
+	expect(deleted.statusCode).toBe(204);
+	expect((await schemeDetail(copiedSchemeId)).statusCode).toBe(404);
+
+	const grants = await db
+		.select({ id: permissionGrants.id })
+		.from(permissionGrants)
+		.where(eq(permissionGrants.schemeId, copiedSchemeId));
+	expect(grants).toEqual([]);
+
+	const audits = await db
+		.select({ action: auditLog.action })
+		.from(auditLog)
+		.where(eq(auditLog.entityId, copiedSchemeId));
+	expect(audits.map((row) => row.action)).toContain("permission.scheme.delete");
+});

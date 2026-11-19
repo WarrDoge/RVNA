@@ -1,14 +1,17 @@
-import { fail } from "@sveltejs/kit";
+import { fail, redirect } from "@sveltejs/kit";
 import { listGroups } from "#lib/server/admin/groups.ts";
 import {
 	addPermissionGrant,
 	assignBody,
 	assignPermissionSchemeProject,
 	createGrantBody,
+	deletePermissionScheme,
 	getPermissionScheme,
 	grantParams,
 	removePermissionGrant,
+	removePermissionSchemeProject,
 	schemeParams,
+	schemeProjectParams,
 } from "#lib/server/admin/permission-schemes.ts";
 import { listAdminProjects } from "#lib/server/admin/projects.ts";
 import { isHttpError } from "#lib/server/http.ts";
@@ -131,6 +134,33 @@ export const actions = {
 			if (!parsed.success) return fail(400, { error: message(parsed.error) });
 			await assignPermissionSchemeProject(actor, id, parsed.data);
 			return { ok: true };
+		}
+
+		if (intent === "removeProject") {
+			const parsed = schemeProjectParams.safeParse({
+				id: String(form.get("schemeId") ?? ""),
+				projectId: String(form.get("projectId") ?? ""),
+			});
+			if (!parsed.success) {
+				return fail(404, {
+					error: "Project is not assigned to this permission scheme",
+				});
+			}
+			await removePermissionSchemeProject(
+				actor,
+				parsed.data.id,
+				parsed.data.projectId,
+			);
+			return { ok: true };
+		}
+
+		if (intent === "deleteScheme") {
+			const id = validSchemeId(form);
+			if (id === null) {
+				return fail(404, { error: "Permission scheme not found" });
+			}
+			await deletePermissionScheme(actor, id);
+			redirect(303, "/secure/admin/ViewPermissionSchemes.jspa");
 		}
 
 		return fail(400, { error: "Unknown action" });
