@@ -51,3 +51,19 @@ test("shell, personal access tokens and logout", async ({ page }) => {
 	expect(response.status()).toBe(200);
 	await expect(page).toHaveURL(/\/secure\/Dashboard\.jspa$/);
 });
+
+test("the old logout address asks before it ends the session", async ({
+	page,
+}) => {
+	await page.goto("/secure/Logout!default.jspa");
+	await expect(page.getByRole("heading", { name: "Log out" })).toBeVisible();
+
+	const logout = page.waitForResponse(
+		(response) =>
+			response.url().endsWith("/auth/logout") &&
+			response.request().method() === "POST",
+	);
+	await page.getByRole("button", { name: "Log out", exact: true }).click();
+	expect((await logout).status()).toBe(200);
+	await expect(page).toHaveURL(/\/secure\/Dashboard\.jspa$/);
+});

@@ -315,13 +315,27 @@ test("unmatched REST paths answer a JSON 404 instead of the app shell", async ()
 	expect(implemented.statusCode).toBe(200);
 });
 
-test("a Jira logout link ends the session", async () => {
-	const logout = await inject("GET", "/secure/Logout!default.jspa");
-	expect(logout.statusCode).toBe(302);
-	expect(logout.headers.location).toBe("/login.jsp");
+test("a Jira logout link asks before it ends the session", async () => {
+	const anonymous = await app.inject({
+		method: "GET",
+		url: "/secure/Logout!default.jspa",
+	});
+	expect(anonymous.statusCode).toBe(302);
+	expect(anonymous.headers.location).toBe(
+		"/auth/login?returnTo=%2Fsecure%2FLogout!default.jspa",
+	);
 
-	const me = await inject("GET", "/api/me");
-	expect(me.statusCode).toBe(401);
+	const confirmation = await inject("GET", "/secure/Logout!default.jspa");
+	expect(confirmation.statusCode).toBe(200);
+	expect(confirmation.headers["content-type"]).toContain("text/html");
+	expect(confirmation.body).toContain("Log out");
+
+	const stillSignedIn = await inject("GET", "/api/me");
+	expect(stillSignedIn.statusCode).toBe(200);
+
+	const logout = await inject("POST", "/auth/logout");
+	expect(logout.statusCode).toBe(200);
+	expect((await inject("GET", "/api/me")).statusCode).toBe(401);
 });
 
 test("the Jira REST API refuses a request without an API token", async () => {

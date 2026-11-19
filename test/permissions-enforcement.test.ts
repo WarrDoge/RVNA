@@ -264,8 +264,6 @@ const notFoundForNoAccess = new Set([
 	"POST /api/sprints/:id/move",
 ]);
 
-const endsSession = new Set(["GET /secure/Logout!default.jspa"]);
-
 const adminOnlyPrefixes = ["/api/admin/", "/plugins/servlet/"];
 const adminOnly = new Set([
 	"GET /api/projects/:key/gitlab",
@@ -699,11 +697,7 @@ test("every registered route hides an invisible project's data", async () => {
 
 	for (const route of routes) {
 		const key = routeKey(route);
-		if (
-			allowList.has(key) ||
-			endsSession.has(key) ||
-			KNOWN_UNPROTECTED.has(key)
-		) {
+		if (allowList.has(key) || KNOWN_UNPROTECTED.has(key)) {
 			continue;
 		}
 		const url = urlFor(route.pattern);
