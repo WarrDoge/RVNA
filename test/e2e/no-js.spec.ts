@@ -21,8 +21,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
 	if (!client) return;
 	await client.query("delete from users where username = $1", [username]);
-	await client.query("delete from login_throttle where key = $1", [
-		username.toLowerCase(),
+	await client.query("delete from login_throttle where key like $1", [
+		`${username.toLowerCase()}|%`,
 	]);
 	await client.end();
 });

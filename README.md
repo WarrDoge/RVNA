@@ -975,13 +975,15 @@ Remove the password from the environment afterwards.
 
 ### Lockout
 
-Failed logins are counted per typed username and per client IP, in the database. From 5 failures for
-a username the next attempt must wait 2, 4, 8, 16, then 32 seconds; at 10 failures the username is
-locked for 15 minutes. The IP counter has five times the thresholds (25 and 50), so an office
-behind one NAT does not lock itself out. A delayed or locked request is answered `429` with
+Failed logins are counted per typed username and client IP pair, and per client IP, in the database.
+From 5 failures for a username from one address the next attempt from that address must wait 2, 4,
+8, 16, then 32 seconds; at 10 failures that pair is locked for 15 minutes, while a correct password
+from another address still works. The IP counter has five times the thresholds (25 and 50), so an
+office behind one NAT does not lock itself out. A delayed or locked request is answered `429` with
 `Retry-After` and the password is not checked. A successful login, an expired lock, or an hour
 without failures resets the counter. Wrong, unknown, inactive and password-less accounts all give
-the same `401` answer.
+the same `401` answer. Known limit: an attacker with many addresses gets ten guesses per address for
+a name; the password rules carry that.
 Logins, failures and lockouts are written to the audit log. Behind a reverse proxy set
 `ADDRESS_HEADER=x-forwarded-for` and `XFF_DEPTH=1` (the Helm chart does when `trustProxy` is on):
 the client IP is then the address the proxy appended, which a client cannot forge. Without them

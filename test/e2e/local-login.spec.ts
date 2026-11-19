@@ -18,7 +18,9 @@ test.afterAll(async () => {
 			`%${username}%`,
 		]);
 		await pool.query("delete from users where username = $1", [username]);
-		await pool.query("delete from login_throttle where key = $1", [username]);
+		await pool.query("delete from login_throttle where key like $1", [
+			`${username.toLowerCase()}|%`,
+		]);
 	} finally {
 		await pool.end();
 	}

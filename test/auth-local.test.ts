@@ -80,6 +80,9 @@ function sidFrom(response: { headers: Record<string, unknown> }) {
 	return sid?.split(";")[0]?.slice(4);
 }
 
+const userKey = (username: string, ip: string) =>
+	`${username.toLowerCase()}|${ip}`;
+
 async function throttleRow(kind: "user" | "ip", key: string) {
 	const { rows } = await pool.query(
 		"select failures, last_failure_at, locked_until from login_throttle where kind = $1 and key = $2",
@@ -470,7 +473,7 @@ describe("throttling", () => {
 			expect(response.statusCode).toBe(401);
 		}
 		expect(
-			(await throttleRow("user", user.username.toLowerCase()))?.failures,
+			(await throttleRow("user", userKey(user.username, ip)))?.failures,
 		).toBe(5);
 
 		const delayed = await attempt(
@@ -483,7 +486,7 @@ describe("throttling", () => {
 		expect(Number(delayed.headers["retry-after"])).toBeLessThanOrEqual(2);
 		expect(delayed.headers["set-cookie"]).toBeUndefined();
 		expect(
-			(await throttleRow("user", user.username.toLowerCase()))?.failures,
+			(await throttleRow("user", userKey(user.username, ip)))?.failures,
 		).toBe(5);
 
 		const { rows } = await pool.query(
@@ -495,8 +498,8 @@ describe("throttling", () => {
 
 	test("the delay doubles with each failure and ends when it has passed", async () => {
 		const user = await makePasswordUser("grow");
-		const key = user.username.toLowerCase();
 		const ip = nextIp();
+		const key = userKey(user.username, ip);
 
 		await setThrottle("user", key, { failures: 7, ageSeconds: 0 });
 		const wait = await attempt({ username: user.username, password }, { ip });
@@ -515,8 +518,8 @@ describe("throttling", () => {
 
 	test("ten failures lock the key for 15 minutes, even for the right password", async () => {
 		const user = await makePasswordUser("lock");
-		const key = user.username.toLowerCase();
 		const ip = nextIp();
+		const key = userKey(user.username, ip);
 
 		await setThrottle("user", key, { failures: 9, ageSeconds: 60 });
 		const tenth = await attempt(
@@ -538,19 +541,58 @@ describe("throttling", () => {
 		expect((await throttleRow("user", key))?.failures).toBe(10);
 	});
 
+	test("a lock on one address leaves the same name usable from another", async () => {
+		const user = await makePasswordUser("pairlock");
+		const attacker = nextIp();
+		const owner = nextIp();
+		const key = userKey(user.username, attacker);
+
+		await setThrottle("user", key, { failures: 9, ageSeconds: 60 });
+		const tenth = await attempt(
+			{ username: user.username, password: "wrong password 123" },
+			{ ip: attacker },
+		);
+		expect(tenth.statusCode).toBe(401);
+		const row = await throttleRow("user", key);
+		expect(row?.failures).toBe(10);
+		expect(row?.locked_until).not.toBeNull();
+
+		const locked = await attempt(
+			{ username: user.username, password },
+			{ ip: attacker },
+		);
+		expect(locked.statusCode).toBe(429);
+		const other = await attempt(
+			{ username: user.username, password },
+			{ ip: owner },
+		);
+		expect(other.statusCode).toBe(200);
+	});
+
 	test("the lock looks the same for a name that does not exist", async () => {
 		const real = await makePasswordUser("lockreal");
 		const ghost = name("lockghost");
-		for (const typed of [real.username, ghost]) {
-			await setThrottle("user", typed.toLowerCase(), {
+		const realIp = nextIp();
+		const ghostIp = nextIp();
+		for (const [typed, ip] of [
+			[real.username, realIp],
+			[ghost, ghostIp],
+		] as const) {
+			await setThrottle("user", userKey(typed, ip), {
 				failures: 10,
 				ageSeconds: 0,
 				lockedInSeconds: 900,
 			});
 		}
 		const [a, b] = await Promise.all([
-			attempt({ username: real.username, password: "wrong password 123" }),
-			attempt({ username: ghost, password: "wrong password 123" }),
+			attempt(
+				{ username: real.username, password: "wrong password 123" },
+				{ ip: realIp },
+			),
+			attempt(
+				{ username: ghost, password: "wrong password 123" },
+				{ ip: ghostIp },
+			),
 		]);
 		expect(a.statusCode).toBe(429);
 		expect(b.statusCode).toBe(429);
@@ -561,34 +603,36 @@ describe("throttling", () => {
 
 	test("counters reset after an expired lock or an hour without failures", async () => {
 		const expired = await makePasswordUser("expired");
-		const expiredKey = expired.username.toLowerCase();
+		const expiredIp = nextIp();
+		const expiredKey = userKey(expired.username, expiredIp);
 		await setThrottle("user", expiredKey, {
 			failures: 10,
 			ageSeconds: 1000,
 			lockedInSeconds: -1,
 		});
-		const first = await attempt({
-			username: expired.username,
-			password: "wrong password 123",
-		});
+		const first = await attempt(
+			{ username: expired.username, password: "wrong password 123" },
+			{ ip: expiredIp },
+		);
 		expect(first.statusCode).toBe(401);
 		expect((await throttleRow("user", expiredKey))?.failures).toBe(1);
 
 		const stale = await makePasswordUser("stale");
-		const staleKey = stale.username.toLowerCase();
+		const staleIp = nextIp();
+		const staleKey = userKey(stale.username, staleIp);
 		await setThrottle("user", staleKey, { failures: 8, ageSeconds: 3700 });
-		const second = await attempt({
-			username: stale.username,
-			password: "wrong password 123",
-		});
+		const second = await attempt(
+			{ username: stale.username, password: "wrong password 123" },
+			{ ip: staleIp },
+		);
 		expect(second.statusCode).toBe(401);
 		expect((await throttleRow("user", staleKey))?.failures).toBe(1);
 	});
 
 	test("a success clears the user and IP counters", async () => {
 		const user = await makePasswordUser("clear");
-		const key = user.username.toLowerCase();
 		const ip = nextIp();
+		const key = userKey(user.username, ip);
 		await attempt(
 			{ username: user.username, password: "wrong password 123" },
 			{ ip },
@@ -682,7 +726,7 @@ describe("password change", () => {
 		const second = sidFrom(
 			await attempt({ username: user.username, password }),
 		) as string;
-		const key = user.username.toLowerCase();
+		const key = userKey(user.username, "127.0.0.1");
 		const newPassword = "another long passphrase 99";
 
 		const wrong = await injectAs(app, first, "POST", "/api/me/password", {
@@ -784,7 +828,7 @@ describe("password change", () => {
 		const session = sidFrom(
 			await attempt({ username: user.username, password }),
 		) as string;
-		await setThrottle("user", user.username.toLowerCase(), {
+		await setThrottle("user", userKey(user.username, "127.0.0.1"), {
 			failures: 6,
 			ageSeconds: 0,
 		});

@@ -31,8 +31,11 @@ const PURGE_EVERY_MS = 60 * 1000;
 
 /**
  * From `delayFrom` failures a growing delay (2, 4, ... 32 s) separates attempts;
- * at `lockAt` failures the key is locked for 15 minutes. The IP counter has x5
- * thresholds so an office behind one NAT does not lock itself out.
+ * at `lockAt` failures the key is locked for 15 minutes. The user key is the
+ * typed name and the client address, so one address cannot lock the account for
+ * its owner elsewhere. The IP counter has x5 thresholds so an office behind one
+ * NAT does not lock itself out. Many addresses still get ten guesses each for a
+ * name; the password rules carry that.
  */
 const limits = {
 	user: { delayFrom: 5, lockAt: 10 },
@@ -186,7 +189,7 @@ export async function loginLocal(
 	input: LocalLoginInput,
 ): Promise<LocalLoginResult> {
 	const { username, password, ip } = input;
-	const key = username.toLowerCase();
+	const key = `${username.toLowerCase()}|${ip}`;
 
 	const wait =
 		(await reserveAttempt("user", key)) || (await reserveAttempt("ip", ip));
@@ -267,7 +270,7 @@ export async function changePassword(
 		throw new HttpError(409, "This account signs in with SSO");
 	}
 
-	const key = actor.username.toLowerCase();
+	const key = `${actor.username.toLowerCase()}|${input.ip}`;
 	const wait = await reserveAttempt("user", key);
 	if (wait > 0) {
 		await auditThrottled(actor.username, input.ip, wait);
