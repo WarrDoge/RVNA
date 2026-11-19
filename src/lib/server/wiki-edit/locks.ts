@@ -90,13 +90,19 @@ export const lockBody = z
 	.object({ takeOver: z.boolean().optional() })
 	.nullish();
 
+async function readableLockPage(actor: CurrentUser, id: string) {
+	const { page } = await loadPage(db, id);
+	if (page.status === "trashed") fail(404, "Page not found");
+	await requireAccess(actor, page, "read");
+	return page;
+}
+
 export async function acquireLock(
 	actor: CurrentUser,
 	id: string,
 	input: z.infer<typeof lockBody>,
 ) {
-	const { page } = await loadPage(db, id);
-	if (page.status === "trashed") fail(409, "Page is in the trash");
+	const page = await readableLockPage(actor, id);
 	await requireAccess(actor, page, "edit");
 	const takeOver = input?.takeOver === true;
 
@@ -126,7 +132,7 @@ export async function acquireLock(
 }
 
 export async function heartbeatLock(actor: CurrentUser, id: string) {
-	const { page } = await loadPage(db, id);
+	const page = await readableLockPage(actor, id);
 
 	return db.transaction(async (tx) => {
 		await lockPage(tx, page.id);
@@ -154,6 +160,7 @@ export async function heartbeatLock(actor: CurrentUser, id: string) {
 }
 
 export async function releaseLock(actor: CurrentUser, id: string) {
+	await readableLockPage(actor, id);
 	await db
 		.delete(pageLocks)
 		.where(and(eq(pageLocks.pageId, id), eq(pageLocks.userId, actor.id)));

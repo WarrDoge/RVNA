@@ -112,6 +112,22 @@ describe("edit locks", () => {
 		expect(lost.body.lock.holder.id).toBe(alice.id);
 	});
 
+	test("lock routes answer 404 for a page the caller cannot read", async () => {
+		const page = await wiki.page(wiki.admin, space.key, "Hidden lock");
+		await wiki.admin.put(`/api/wiki/pages/${page.id}/restrictions`, {
+			read: { userIds: [alice.id], groups: [] },
+			update: { userIds: [], groups: [] },
+		});
+		const responses = await Promise.all([
+			bob.post(`/api/wiki/pages/${page.id}/lock`),
+			bob.post(`/api/wiki/pages/${page.id}/lock/heartbeat`),
+			bob.del(`/api/wiki/pages/${page.id}/lock`),
+		]);
+		for (const response of responses) {
+			expect(response.status).toBe(404);
+		}
+	});
+
 	test("taking over tells the first editor at the next heartbeat and keeps their draft", async () => {
 		const page = await wiki.page(alice, space.key, "Lock takeover");
 		await alice.post(`/api/wiki/pages/${page.id}/lock`);
@@ -153,6 +169,7 @@ describe("edit locks", () => {
 		expect(beat.body.status).toBe("ok");
 		expect(beat.body.lock.holder.id).toBe(alice.id);
 		const stranger = await wiki.user("stranger");
+		await wiki.grant(space.id, { userId: stranger.id }, ["read"]);
 		const denied = await stranger.post(
 			`/api/wiki/pages/${page.id}/lock/heartbeat`,
 		);
