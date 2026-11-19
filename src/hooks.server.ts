@@ -80,9 +80,11 @@ const securityHeadersHandle: Handle = async ({ event, resolve }) => {
 		response.headers.set("X-Content-Type-Options", "nosniff");
 		response.headers.set("X-Frame-Options", "SAMEORIGIN");
 		response.headers.set("Referrer-Policy", "same-origin");
-		// An answer from the API holds one person's data; no cache may keep it.
+		// An API answer or a signed-in page holds one person's data; no cache may keep it.
+		const type = response.headers.get("content-type");
 		if (
-			response.headers.get("content-type")?.startsWith("application/json") &&
+			(type?.startsWith("application/json") ||
+				(type?.startsWith("text/html") && event.locals.user)) &&
 			!response.headers.has("Cache-Control")
 		) {
 			response.headers.set("Cache-Control", "no-store");

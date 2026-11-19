@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
-import { buildServer } from "./helpers.ts";
+import { buildServer, cleanupTestData, login } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
+const run = randomUUID().slice(0, 8);
 let app: TestApp;
 
 beforeAll(async () => {
@@ -11,6 +13,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+	await cleanupTestData(run);
 	await app.close();
 	await pool.end();
 });
@@ -29,6 +32,26 @@ test("an API answer is not kept by any cache", async () => {
 		const { headers } = await app.inject({ method: "GET", url });
 		expect(headers["cache-control"], url).toBe("no-store");
 	}
+});
+
+test("a signed-in HTML page is not kept by any cache", async () => {
+	const { sessionId } = await login(app, {
+		sub: `sub-${run}-cache`,
+		username: `t-${run}-cache`,
+		name: "Cache User",
+		groups: [],
+	});
+	const page = await app.inject({
+		method: "GET",
+		url: "/secure/Dashboard.jspa",
+		cookies: { sid: sessionId as string },
+	});
+	expect(page.statusCode).toBe(200);
+	expect(page.headers["content-type"]).toContain("text/html");
+	expect(page.headers["cache-control"]).toBe("no-store");
+
+	const anonymous = await app.inject({ method: "GET", url: "/login.jsp" });
+	expect(anonymous.headers["cache-control"]).toBeUndefined();
 });
 
 test("a page allows only the app's own scripts", async () => {
