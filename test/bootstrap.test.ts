@@ -216,6 +216,16 @@ test("user:create makes a local administrator, then changes its password", async
 	expect(
 		await db.select().from(apiTokens).where(eq(apiTokens.userId, row.id)),
 	).toHaveLength(0);
+	const { rows: audits } = await pool.query<{
+		changes: { to?: { apiTokensRevoked?: number } };
+	}>(
+		"select changes from audit_log where entity_id = $1 and action = 'user.update'",
+		[row.id],
+	);
+	expect(audits).toHaveLength(1);
+	expect(audits[0]?.changes).toMatchObject({
+		to: { apiTokensRevoked: 1 },
+	});
 
 	const everything =
 		created.stdout + created.stderr + updated.stdout + updated.stderr;

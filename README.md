@@ -944,11 +944,13 @@ with Argon2id (a per-user salt, the parameters stored inside the hash; hashes ar
 login when the parameters are raised in `src/lib/server/passwords.ts`). A password needs at least 12
 characters; there are no composition rules, but it must not be the username or a very common password.
 
-Administrators create accounts, set and reset passwords on the Users administration screen. A user can
-change their own password on the profile page (`?selectedTab=password`); that signs every other session
-out. A user marked "must change password" sees only a "Change your password" screen until they choose
-a new one; every API call except `GET /api/me`, `POST /api/me/password` and logout answers
-`403 Password change required` meanwhile. API tokens (bearer) are not affected.
+Administrators create accounts, set and reset passwords on the Users administration screen. A password
+set by an administrator ends that user's sessions and removes their API tokens. A user can change their
+own password on the profile page (`?selectedTab=password`); that signs every other session out and
+removes their API tokens as well. A user marked "must change password" sees only a "Change your
+password" screen until they choose a new one; every API call except `GET /api/me`,
+`POST /api/me/password` and logout answers `403 Password change required` meanwhile. That gate does not
+apply to API tokens (bearer): the password reset that set the mark has already removed them.
 
 An account that only signs in with SSO has no password. A local account is never taken over by SSO:
 an IdP user whose username matches an account with a local password is refused (`403`, ask an

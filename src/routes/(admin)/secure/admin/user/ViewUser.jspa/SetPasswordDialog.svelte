@@ -100,7 +100,7 @@
 			<FormField
 				label="New password"
 				htmlFor="user-password"
-				hint="Saving a password signs the user out of every session. This also revokes the user's API tokens."
+				hint="Saving a password signs the user out of every session. This also removes the user's API tokens."
 			>
 				{#snippet children(aria)}
 				<input

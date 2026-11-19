@@ -79,7 +79,10 @@ export async function saveLocalUser(
 				})
 				.where(eq(users.id, existing.id));
 			await tx.delete(sessions).where(eq(sessions.userId, existing.id));
-			await tx.delete(apiTokens).where(eq(apiTokens.userId, existing.id));
+			const revoked = await tx
+				.delete(apiTokens)
+				.where(eq(apiTokens.userId, existing.id))
+				.returning({ id: apiTokens.id });
 			await recordAudit(tx, {
 				actorId: null,
 				actorName: input.actorName,
@@ -87,6 +90,7 @@ export async function saveLocalUser(
 				entityType: "user",
 				entityId: existing.id,
 				summary: `Set a new password for user ${existing.username}`,
+				changes: { to: { apiTokensRevoked: revoked.length } },
 			});
 			return { action: "updated", active: existing.active };
 		}
