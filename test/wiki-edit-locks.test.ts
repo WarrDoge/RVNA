@@ -284,7 +284,7 @@ describe("drafts", () => {
 			`/api/wiki/pages/${created.body.pageId}/draft`,
 			{ title: "x", bodyDoc: doc("x") },
 		);
-		expect(stranger.status).toBe(403);
+		expect(stranger.status).toBe(404);
 		expect(
 			(await bob.del(`/api/wiki/pages/${created.body.pageId}/draft`)).status,
 		).toBe(404);
@@ -308,7 +308,7 @@ describe("drafts", () => {
 		expect(context.body.draft.title).toBe("Typed title");
 		expect(
 			(await bob.get(`/api/wiki/edit/pages/${created.body.pageId}`)).status,
-		).toBe(403);
+		).toBe(404);
 
 		expect(
 			(await alice.del(`/api/wiki/pages/${created.body.pageId}/draft`)).status,
@@ -334,6 +334,6 @@ describe("drafts", () => {
 			title: "t",
 			bodyDoc: doc("x"),
 		});
-		expect(denied.status).toBe(403);
+		expect(denied.status).toBe(404);
 	});
 });

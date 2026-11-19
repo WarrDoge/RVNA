@@ -108,8 +108,8 @@ export async function replacePageRestrictions(
 	body: z.infer<typeof restrictionsBody>,
 ) {
 	const { page } = await loadPage(db, id);
-	assertCurrent(page);
 	const access = await requireAccess(actor, page, "restrict");
+	assertCurrent(page);
 	const input = {
 		read: {
 			userIds: [...new Set(body.read.userIds)],

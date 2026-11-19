@@ -107,8 +107,8 @@ export async function saveDraft(
 	input: z.infer<typeof saveDraftBody>,
 ) {
 	const { page } = await loadPage(db, id);
-	if (page.status === "trashed") fail(409, "Page is in the trash");
 	await requireAccess(actor, page, "edit");
+	if (page.status === "trashed") fail(409, "Page is in the trash");
 	const doc = checkDoc(input.bodyDoc);
 	const now = new Date();
 	const values = {

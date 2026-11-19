@@ -26,14 +26,7 @@ import {
 	requireReadableSpace,
 	spaceGrants,
 } from "./access.ts";
-import {
-	allow,
-	fail,
-	loadPage,
-	loadSpace,
-	loadUserRefs,
-	pageRef,
-} from "./common.ts";
+import { fail, loadPage, loadSpace, loadUserRefs, pageRef } from "./common.ts";
 import { attachmentUrl, docOf } from "./content.ts";
 import { ancestors } from "./helpers.ts";
 import { lockState } from "./locks.ts";
@@ -49,7 +42,7 @@ async function editorContext(
 	const { page, space } = await loadPage(db, pageId);
 	if (page.status === "trashed") fail(404, "Page not found");
 	const access = await pageAccess(user, page, wiki);
-	allow(access.read);
+	if (!access.read) fail(404, "Page not found");
 
 	const draftRow =
 		given ??
@@ -278,7 +271,7 @@ export async function pageEditSummary(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
 	if (page.status === "trashed") fail(404, "Page not found");
 	const access = await pageAccess(actor, page);
-	allow(access.read);
+	if (!access.read) fail(404, "Page not found");
 	const crumbs = await ancestors(db, page.id);
 	return {
 		page: pageRef(page, space.key),

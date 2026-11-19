@@ -67,8 +67,8 @@ export async function movePage(
 	body: z.infer<typeof moveBody>,
 ) {
 	const { page, space } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "edit");
+	assertCurrent(page);
 
 	const target =
 		body.spaceKey && body.spaceKey !== space.key
@@ -164,8 +164,8 @@ export async function copyPage(
 	body: z.infer<typeof copyBody>,
 ) {
 	const { page: source, space } = await loadPage(db, id);
-	assertCurrent(source);
 	await requireAccess(actor, source, "read");
+	assertCurrent(source);
 
 	const target =
 		body.spaceKey && body.spaceKey !== space.key
@@ -339,8 +339,8 @@ export async function copyPage(
 
 export async function trashPage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "trash");
+	assertCurrent(page);
 	if (space.homePageId === page.id) {
 		fail(409, "The space home page cannot be moved to the trash");
 	}
@@ -383,8 +383,8 @@ export async function trashPage(actor: CurrentUser, id: string) {
 
 export async function restorePage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	if (page.status !== "trashed") fail(409, "Page is not in the trash");
 	await requireAccess(actor, page, "edit");
+	if (page.status !== "trashed") fail(409, "Page is not in the trash");
 	await assertTitleFree(db, space.id, page.title);
 
 	const [trash] = await db
@@ -429,10 +429,10 @@ export async function restorePage(actor: CurrentUser, id: string) {
 
 export async function purgePage(actor: CurrentUser, id: string) {
 	const { page } = await loadPage(db, id);
+	await requireAccess(actor, page, "administer");
 	if (page.status !== "trashed") {
 		fail(409, "Only pages in the trash can be deleted permanently");
 	}
-	await requireAccess(actor, page, "administer");
 	const files = await db
 		.select({ path: pageAttachments.storagePath })
 		.from(pageAttachments)
@@ -447,8 +447,8 @@ export async function reorderChildren(
 	body: z.infer<typeof orderBody>,
 ) {
 	const { page } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "edit");
+	assertCurrent(page);
 	const { childIds } = body;
 	const current = await siblingIds(db, page.spaceId, page.id);
 	const listed = new Set(childIds);

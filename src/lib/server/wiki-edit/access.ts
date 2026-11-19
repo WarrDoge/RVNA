@@ -8,7 +8,7 @@ import {
 	spaceReadable,
 	type WikiAccess,
 } from "../wiki/permissions.ts";
-import { allow, type PageRow } from "./common.ts";
+import { allow, fail, type PageRow } from "./common.ts";
 
 export const SPACE_PERMISSIONS = [
 	"read",
@@ -160,6 +160,7 @@ export async function requireAccess(
 	wiki?: WikiAccess,
 ): Promise<PageAccess> {
 	const access = await pageAccess(user, page, wiki);
+	if (!access.read) fail(404, "Page not found");
 	allow(access[need]);
 	return access;
 }

@@ -135,8 +135,8 @@ export async function updatePage(
 	body: z.infer<typeof updateBody>,
 ) {
 	const { page, space } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "edit");
+	assertCurrent(page);
 	const doc = checkDoc(body.bodyDoc);
 	await assertNotLockedByOthers(db, page.id, actor.id);
 	const title = body.title ?? page.title;
@@ -181,8 +181,8 @@ export async function restoreVersion(
 	body: z.infer<typeof restoreVersionBody>,
 ) {
 	const { page, space } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "edit");
+	assertCurrent(page);
 	await assertNotLockedByOthers(db, page.id, actor.id);
 	const version = await loadVersion(db, page.id, body.version);
 	const doc = checkDoc(docOf(version));
@@ -210,8 +210,8 @@ export async function renamePage(
 ) {
 	const { title } = body;
 	const { page, space } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "edit");
+	assertCurrent(page);
 	await assertNotLockedByOthers(db, page.id, actor.id);
 	if (title === page.title) return pageRef(page, space.key);
 	await assertTitleFree(db, space.id, title, page.id);
@@ -242,8 +242,8 @@ export async function setPageLabels(
 	body: z.infer<typeof labelsBody>,
 ) {
 	const { page } = await loadPage(db, id);
-	assertCurrent(page);
 	await requireAccess(actor, page, "edit");
+	assertCurrent(page);
 	const labels = normalizeLabels(body.labels);
 	await db.transaction((tx) => setLabels(tx, page.id, labels));
 	const rows = await db

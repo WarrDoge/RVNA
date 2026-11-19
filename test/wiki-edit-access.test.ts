@@ -63,11 +63,11 @@ describe("space permission mapping", () => {
 	test("a user without permissions sees and changes nothing", async () => {
 		const page = await mk("Mapping hidden");
 		expect((await nobody.get(`/api/wiki/edit/pages/${page.id}`)).status).toBe(
-			403,
+			404,
 		);
 		expect(
 			(await nobody.put(`/api/wiki/pages/${page.id}`, updateBody)).status,
-		).toBe(403);
+		).toBe(404);
 		expect(
 			(
 				await nobody.post("/api/wiki/pages", {
@@ -229,7 +229,7 @@ describe("space permission mapping", () => {
 		const open = await wiki.space("O");
 		const page2 = await wiki.page(wiki.admin, open.key, "Open page");
 		expect((await nobody.get(`/api/wiki/edit/pages/${page2.id}`)).status).toBe(
-			403,
+			404,
 		);
 		await wiki.grant(open.id, { anonymous: true }, ["read"]);
 		expect((await nobody.get(`/api/wiki/edit/pages/${page2.id}`)).status).toBe(
@@ -368,18 +368,18 @@ describe("page restrictions", () => {
 		});
 		for (const id of [top.id, child.id]) {
 			expect((await creator.get(`/api/wiki/edit/pages/${id}`)).status).toBe(
-				403,
+				404,
 			);
 			expect(
 				(await creator.put(`/api/wiki/pages/${id}`, updateBody)).status,
-			).toBe(403);
+			).toBe(404);
 			expect(
 				(
 					await creator.post(`/api/wiki/pages/${id}/copy`, {
 						title: `Copy ${id}`,
 					})
 				).status,
-			).toBe(403);
+			).toBe(404);
 			expect((await reader.get(`/api/wiki/edit/pages/${id}`)).status).toBe(200);
 		}
 
@@ -388,6 +388,10 @@ describe("page restrictions", () => {
 			type: "text/plain",
 			content: "x",
 		});
+		const restrictions = {
+			read: { userIds: [], groups: [] },
+			update: { userIds: [], groups: [] },
+		};
 		const blocked = [
 			deleter.put(`/api/wiki/pages/${child.id}`, updateBody),
 			deleter.post(`/api/wiki/pages/${child.id}/rename`, {
@@ -398,6 +402,11 @@ describe("page restrictions", () => {
 				version: 1,
 			}),
 			deleter.post(`/api/wiki/pages/${child.id}/trash`),
+			deleter.post(`/api/wiki/pages/${child.id}/restore`),
+			deleter.del(`/api/wiki/pages/${child.id}`),
+			deleter.post(`/api/wiki/pages/${child.id}/copy`, {
+				title: "Secret copy",
+			}),
 			deleter.put(`/api/wiki/pages/${child.id}/labels`, { labels: ["a"] }),
 			deleter.post(`/api/wiki/pages/${child.id}/children/order`, {
 				childIds: [],
@@ -406,6 +415,10 @@ describe("page restrictions", () => {
 				title: "t",
 				bodyDoc: doc("d"),
 			}),
+			deleter.del(`/api/wiki/pages/${child.id}/draft`),
+			deleter.get(`/api/wiki/edit/pages/${child.id}`),
+			deleter.get(`/api/wiki/edit/pages/${child.id}/restrictions`),
+			deleter.put(`/api/wiki/pages/${child.id}/restrictions`, restrictions),
 			deleter.raw(
 				"POST",
 				`/api/wiki/pages/${child.id}/attachments`,
@@ -415,8 +428,7 @@ describe("page restrictions", () => {
 			deleter.post(`/api/wiki/pages/${child.id}/lock`),
 		];
 		for (const response of await Promise.all(blocked)) {
-			// Hiding the page is a 404 on the read-first routes, 403 on the rest.
-			expect([403, 404]).toContain(response.status);
+			expect(response.status).toBe(404);
 		}
 
 		const tree = await creator.get(`/api/wiki/edit/space-tree/${space.key}`);
@@ -493,7 +505,7 @@ describe("page restrictions", () => {
 		expect(
 			(await creator.get(`/api/wiki/edit/pages/${leaf.id}/restrictions`))
 				.status,
-		).toBe(403);
+		).toBe(404);
 	});
 
 	test("a change that would lock the caller out is refused unless they administer", async () => {

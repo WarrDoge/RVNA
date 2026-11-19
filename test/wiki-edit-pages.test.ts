@@ -434,7 +434,7 @@ describe("drafts of unpublished pages", () => {
 			bodyDoc: doc("x"),
 			draftPageId: created.body.pageId,
 		});
-		expect(stolen.status).toBe(403);
+		expect(stolen.status).toBe(404);
 	});
 });
 
