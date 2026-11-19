@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+node_modules
+test
+qa
+chart
+review-tmp
+test-results
+playwright-report
+build
+.svelte-kit
+.npm-cache
+README.md
+docs

@@ -1,0 +1,9 @@
+apiVersion: v2
+name: rvna
+description: RVNA, a self-hosted issue tracker, service desk and wiki
+home: https://github.com/WarrDoge/RVNA
+sources:
+  - https://github.com/WarrDoge/RVNA
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

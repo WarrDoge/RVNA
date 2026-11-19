@@ -1,0 +1,1 @@
+ALTER TABLE "service_desks" ADD COLUMN "open_access" boolean DEFAULT true NOT NULL;

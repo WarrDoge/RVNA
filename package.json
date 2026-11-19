@@ -1,0 +1,69 @@
+{
+	"name": "rvna",
+	"description": "A self-hosted issue tracker, service desk and wiki",
+	"repository": "github:WarrDoge/RVNA",
+	"private": true,
+	"license": "Apache-2.0",
+	"type": "module",
+	"scripts": {
+		"dev": "svelte-kit sync && node --env-file-if-exists=.env node_modules/vite/bin/vite.js",
+		"build": "svelte-kit sync && vite build",
+		"start": "BODY_SIZE_LIMIT=250M NODE_ENV=production node --env-file-if-exists=.env build",
+		"check": "biome check && node scripts/ensure-build.ts --if-missing && svelte-kit sync && node node_modules/typescript-native/bin/tsc --noEmit && svelte-check --tsconfig ./tsconfig.json",
+		"test": "node scripts/ensure-build.ts && vitest run",
+		"e2e": "node scripts/ensure-build.ts && playwright test",
+		"db:generate": "drizzle-kit generate",
+		"import": "node --env-file-if-exists=.env src/importer/main.ts",
+		"sla:rebuild": "node --env-file-if-exists=.env src/lib/server/sla-rebuild.ts",
+		"gitlab:backfill": "node --env-file-if-exists=.env src/gitlab/backfill.ts",
+		"user:create": "node --env-file-if-exists=.env src/lib/server/user-create.ts",
+		"parity": "node --env-file-if-exists=.env src/importer/main.ts parity",
+		"wiki:convert": "node --env-file-if-exists=.env src/lib/server/wiki-edit/convert-all.ts"
+	},
+	"dependencies": {
+		"@atlaskit/pragmatic-drag-and-drop": "^4.0.0",
+		"@sveltejs/kit": "^3.2.0",
+		"@tiptap/core": "^3.33.1",
+		"@tiptap/extension-image": "^3.33.1",
+		"@tiptap/extension-placeholder": "^3.33.1",
+		"@tiptap/extension-table": "^3.33.1",
+		"@tiptap/extension-task-item": "^3.33.1",
+		"@tiptap/extension-task-list": "^3.33.1",
+		"@tiptap/pm": "^3.33.1",
+		"@tiptap/starter-kit": "^3.33.1",
+		"busboy": "^1.6.0",
+		"drizzle-orm": "^0.45.4",
+		"nodemailer": "^10.5.0",
+		"openid-client": "^6.8.9",
+		"pg": "^8.23.1",
+		"pg-boss": "^12.38.2",
+		"sanitize-html": "^2.18.1",
+		"zod": "^4.6.7"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.6",
+		"@playwright/test": "^1.65.0",
+		"@sveltejs/adapter-node": "^6.0.2",
+		"@sveltejs/vite-plugin-svelte": "^7.3.1",
+		"@types/busboy": "^1.5.5",
+		"@types/node": "^26.6.6",
+		"@types/pg": "^8.23.1",
+		"@types/sanitize-html": "^2.16.2",
+		"cookie": "^2.0.2",
+		"drizzle-kit": "^0.31.11",
+		"svelte": "^5.57.3",
+		"svelte-check": "^4.7.8",
+		"typescript": "^6.0.3",
+		"typescript-native": "npm:typescript@^7.0.2",
+		"vite": "^8.3.8",
+		"vitest": "^5.1.0"
+	},
+	"imports": {
+		"#lib/*": "./src/lib/*"
+	},
+	"overrides": {
+		"@esbuild-kit/core-utils": {
+			"esbuild": "^0.25.4"
+		}
+	}
+}

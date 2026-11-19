@@ -1,0 +1,242 @@
+import { randomUUID } from "node:crypto";
+import { and, eq, isNull, or, type SQL, sql } from "drizzle-orm";
+import { db } from "./db.ts";
+import {
+	issueHistory,
+	issueHistoryItems,
+	issues,
+	projectWorkflows,
+	resolutions,
+	statuses,
+	workflowStatuses,
+	workflows,
+	workflowTransitions,
+} from "./schema.ts";
+
+export type StatusRef = {
+	id: string;
+	name: string;
+	category: "new" | "indeterminate" | "done";
+};
+
+export type WorkflowRef = {
+	id: string;
+	name: string;
+};
+
+export async function workflowForIssueType(
+	projectId: string,
+	issueTypeId: string,
+): Promise<WorkflowRef | null> {
+	const rows = await db
+		.select({
+			id: workflows.id,
+			name: workflows.name,
+			issueTypeId: projectWorkflows.issueTypeId,
+		})
+		.from(projectWorkflows)
+		.innerJoin(workflows, eq(workflows.id, projectWorkflows.workflowId))
+		.where(eq(projectWorkflows.projectId, projectId));
+
+	return (
+		rows.find((row) => row.issueTypeId === issueTypeId) ??
+		rows.find((row) => row.issueTypeId === null) ??
+		null
+	);
+}
+
+export async function statusesForWorkflow(
+	workflowId: string,
+): Promise<StatusRef[]> {
+	return db
+		.select({
+			id: statuses.id,
+			name: statuses.name,
+			category: statuses.category,
+		})
+		.from(workflowStatuses)
+		.innerJoin(statuses, eq(statuses.id, workflowStatuses.statusId))
+		.where(eq(workflowStatuses.workflowId, workflowId))
+		.orderBy(statuses.name);
+}
+
+const initialStatusNames = [
+	"To Do",
+	"Open",
+	"Backlog",
+	"Selected for Development",
+	"Peer review / change manager approval",
+	"Planning",
+	"Pending",
+];
+
+function chooseInitial(list: StatusRef[]): StatusRef | null {
+	for (const name of initialStatusNames) {
+		const match = list.find((status) => status.name === name);
+		if (match) return match;
+	}
+	return list.find((status) => status.category === "new") ?? list[0] ?? null;
+}
+
+export async function initialStatusFor(
+	workflowId: string,
+): Promise<StatusRef | null> {
+	const list = await statusesForWorkflow(workflowId);
+	const [workflow] = await db
+		.select({ initialStatusId: workflows.initialStatusId })
+		.from(workflows)
+		.where(eq(workflows.id, workflowId))
+		.limit(1);
+	const configured = list.find(
+		(status) => status.id === workflow?.initialStatusId,
+	);
+	if (configured) return configured;
+
+	const transitions = await db
+		.select({
+			fromStatusId: workflowTransitions.fromStatusId,
+			toStatusId: workflowTransitions.toStatusId,
+		})
+		.from(workflowTransitions)
+		.where(eq(workflowTransitions.workflowId, workflowId));
+
+	const targets = new Set(
+		transitions
+			.filter((transition) => transition.fromStatusId !== null)
+			.map((transition) => transition.toStatusId),
+	);
+	const entry = list.filter((status) => !targets.has(status.id));
+	return chooseInitial(entry.length > 0 ? entry : list);
+}
+
+export async function transitionsFrom(
+	workflowId: string,
+	statusId: string,
+): Promise<
+	{ id: string; name: string; asksResolution: boolean; to: StatusRef }[]
+> {
+	const rows = await db
+		.select({
+			id: workflowTransitions.id,
+			name: workflowTransitions.name,
+			asksResolution: workflowTransitions.asksResolution,
+			toId: statuses.id,
+			toName: statuses.name,
+			toCategory: statuses.category,
+		})
+		.from(workflowTransitions)
+		.innerJoin(statuses, eq(statuses.id, workflowTransitions.toStatusId))
+		.where(
+			and(
+				eq(workflowTransitions.workflowId, workflowId),
+				or(
+					eq(workflowTransitions.fromStatusId, statusId),
+					isNull(workflowTransitions.fromStatusId),
+				),
+			),
+		)
+		.orderBy(workflowTransitions.sequence, workflowTransitions.name);
+
+	return rows
+		.filter((row) => row.toId !== statusId)
+		.map((row) => ({
+			id: row.id,
+			name: row.name,
+			asksResolution: row.asksResolution,
+			to: { id: row.toId, name: row.toName, category: row.toCategory },
+		}));
+}
+
+/** SQL condition: the workflow that governs the issue (per issue type, else the project default) is `workflowId`. */
+export function governedBy(workflowId: string): SQL {
+	return sql`coalesce(
+		(select pw.workflow_id from project_workflows pw where pw.project_id = ${issues.projectId} and pw.issue_type_id = ${issues.typeId}),
+		(select pw.workflow_id from project_workflows pw where pw.project_id = ${issues.projectId} and pw.issue_type_id is null)
+	) = ${workflowId}`;
+}
+
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Moves issues to another status the way a manual status change does: one history entry per issue,
+ * `updated` bumped, and the resolution cleared when an issue leaves a done status.
+ */
+export async function moveIssues(
+	tx: Transaction,
+	authorId: string,
+	condition: SQL | undefined,
+	to: StatusRef,
+): Promise<number> {
+	const rows = await tx
+		.select({
+			id: issues.id,
+			statusId: issues.statusId,
+			statusName: statuses.name,
+			statusCategory: statuses.category,
+			resolutionId: issues.resolutionId,
+			resolutionName: resolutions.name,
+			resolved: issues.resolved,
+		})
+		.from(issues)
+		.innerJoin(statuses, eq(statuses.id, issues.statusId))
+		.leftJoin(resolutions, eq(resolutions.id, issues.resolutionId))
+		.where(condition);
+
+	const now = new Date();
+	let moved = 0;
+	for (const row of rows) {
+		if (row.statusId === to.id) continue;
+		const leavesDone = row.statusCategory === "done" && to.category !== "done";
+		const entersDone = row.statusCategory !== "done" && to.category === "done";
+		await tx
+			.update(issues)
+			.set({
+				statusId: to.id,
+				updated: now,
+				...(leavesDone && { resolutionId: null, resolved: null }),
+				...(entersDone && { resolved: row.resolved ?? now }),
+			})
+			.where(eq(issues.id, row.id));
+
+		const [entry] = await tx
+			.insert(issueHistory)
+			.values({
+				sourceId: `local:${randomUUID()}`,
+				issueId: row.id,
+				authorId,
+				created: now,
+			})
+			.returning({ id: issueHistory.id });
+		const items = [
+			{
+				field: "status",
+				fromValue: row.statusId,
+				fromText: row.statusName,
+				toValue: to.id,
+				toText: to.name,
+			},
+			...(leavesDone && row.resolutionId
+				? [
+						{
+							field: "resolution",
+							fromValue: row.resolutionId,
+							fromText: row.resolutionName,
+							toValue: null,
+							toText: null,
+						},
+					]
+				: []),
+		];
+		await tx.insert(issueHistoryItems).values(
+			items.map((item, sequence) => ({
+				sourceId: null,
+				historyId: entry.id,
+				fieldType: "jira",
+				sequence,
+				...item,
+			})),
+		);
+		moved++;
+	}
+	return moved;
+}

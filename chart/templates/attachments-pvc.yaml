@@ -1,0 +1,19 @@
+{{- if and .Values.attachments.enabled (not .Values.attachments.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rvna.fullname" . }}-attachments
+  labels:
+    {{- include "rvna.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.attachments.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.attachments.size }}
+{{- end }}

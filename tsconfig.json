@@ -1,0 +1,15 @@
+{
+	"extends": "$app/tsconfig",
+	"compilerOptions": {
+		"target": "ES2024",
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"module": "preserve",
+		"strict": true,
+		"erasableSyntaxOnly": true,
+		"allowJs": true,
+		"checkJs": false,
+		"types": ["node", "$app/types"]
+	},
+	"include": ["src", "test", "scripts", "qa", "*.config.ts"],
+	"exclude": ["node_modules", "build", ".svelte-kit"]
+}

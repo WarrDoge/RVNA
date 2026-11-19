@@ -1,0 +1,14 @@
+image:
+  repository: ghcr.io/warrdoge/rvna
+route:
+  parentRefs:
+    - name: gateway
+      namespace: flux-system
+  hostname: rvna.example.com
+database:
+  existingSecret: rvna-database
+oidc:
+  issuer: https://auth.example.com/application/o/rvna/
+  clientId: rvna
+  existingSecret: rvna-oidc
+terminationGracePeriodSeconds: 120

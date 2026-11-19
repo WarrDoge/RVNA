@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: rvna
+      POSTGRES_PASSWORD: rvna
+      POSTGRES_DB: rvna
+    ports:
+      - "127.0.0.1:55440:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rvna -d rvna"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    profiles: ["app"]
+    build: .
+    environment:
+      DATABASE_URL: postgres://rvna:rvna@db:5432/rvna
+      NODE_ENV: production
+      PORT: "3000"
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      ORIGIN: ${APP_URL:-http://localhost:3000}
+      MAX_UPLOAD_REQUEST_MB: ${MAX_UPLOAD_REQUEST_MB:-250}
+      BODY_SIZE_LIMIT: ${MAX_UPLOAD_REQUEST_MB:-250}M
+      MAX_ATTACHMENT_MB: ${MAX_ATTACHMENT_MB:-100}
+      ATTACHMENTS_DIR: /data/attachments
+      AVATARS_DIR: /data/avatars
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_SCOPES: ${OIDC_SCOPES:-openid profile email}
+      OIDC_GROUPS_CLAIM: ${OIDC_GROUPS_CLAIM:-groups}
+      ADMIN_GROUP: ${ADMIN_GROUP:-rvna-admins}
+      SESSION_TTL_DAYS: ${SESSION_TTL_DAYS:-14}
+      SMTP_URL: ${SMTP_URL:-}
+      MAIL_FROM: ${MAIL_FROM:-rvna <rvna@localhost>}
+      MAIL_REDIRECT_TO: ${MAIL_REDIRECT_TO:-}
+      SECRETS_KEY: ${SECRETS_KEY:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - app-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:
+  app-data:

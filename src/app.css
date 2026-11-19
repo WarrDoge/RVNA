@@ -1,0 +1,340 @@
+html,
+body {
+	margin: 0;
+	padding: 0;
+	background: var(--ds-surface, #1f1f21);
+	color: var(--ds-text, #cecfd2);
+	color-scheme: dark;
+	font-family:
+		-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+		"Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+	font-size: 14px;
+	line-height: 20px;
+}
+
+a {
+	color: var(--ds-link, #669df1);
+}
+
+* {
+	box-sizing: border-box;
+}
+
+button,
+input {
+	font: inherit;
+}
+
+input::placeholder {
+	color: var(--ds-text-subtle, #a9abaf);
+	opacity: 1;
+}
+
+.fat-menu-item {
+	display: block;
+	width: 100%;
+	padding: 8px 12px;
+	background: transparent;
+	border: 0;
+	text-align: left;
+	color: var(--ds-text, #cecfd2);
+	text-decoration: none;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 20px;
+}
+
+.fat-menu-item:hover,
+.fat-menu-item:focus-visible {
+	background: var(--ds-background-neutral-subtle-hovered, #ceced912);
+	outline: none;
+}
+
+.fat-table {
+	border-collapse: collapse;
+	font-size: 14px;
+	line-height: 20px;
+}
+
+.fat-table th {
+	padding: 8px 12px;
+	text-align: left;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--ds-text-subtle, #a9abaf);
+	border-bottom: 1px solid var(--ds-border, #3b3d42);
+	white-space: nowrap;
+}
+
+.fat-table td {
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--ds-border, #3b3d42);
+	color: var(--ds-text, #cecfd2);
+	vertical-align: middle;
+}
+
+.fat-issue-table th,
+.fat-issue-table td {
+	white-space: nowrap;
+}
+
+.fat-issue-table .fat-col-fill {
+	width: 100%;
+	min-width: max(20rem, 300px);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.fat-table tbody tr:hover {
+	background: var(--ds-background-neutral-subtle-hovered, #ceced912);
+}
+
+.fat-rich-text,
+.fat-editor-content {
+	font-size: 14px;
+	line-height: 20px;
+	color: var(--ds-text, #cecfd2);
+	overflow-wrap: anywhere;
+}
+
+.fat-rich-text > :first-child,
+.fat-editor-content > :first-child {
+	margin-top: 0;
+}
+
+.fat-rich-text p,
+.fat-editor-content p {
+	margin: 0 0 10px;
+}
+
+.fat-rich-text h1,
+.fat-editor-content h1 {
+	margin: 16px 0 8px;
+	font-size: 24px;
+	font-weight: 600;
+	line-height: 30px;
+}
+
+.fat-rich-text h2,
+.fat-editor-content h2 {
+	margin: 14px 0 8px;
+	font-size: 20px;
+	font-weight: 600;
+	line-height: 26px;
+}
+
+.fat-rich-text h3,
+.fat-editor-content h3 {
+	margin: 12px 0 6px;
+	font-size: 16px;
+	font-weight: 600;
+	line-height: 22px;
+}
+
+.fat-rich-text h4,
+.fat-rich-text h5,
+.fat-rich-text h6,
+.fat-editor-content h4,
+.fat-editor-content h5,
+.fat-editor-content h6 {
+	margin: 12px 0 6px;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.fat-rich-text ul,
+.fat-rich-text ol,
+.fat-editor-content ul,
+.fat-editor-content ol {
+	margin: 0 0 10px;
+	padding-left: 24px;
+}
+
+.fat-rich-text li,
+.fat-editor-content li {
+	margin: 2px 0;
+}
+
+.fat-rich-text blockquote,
+.fat-editor-content blockquote {
+	margin: 8px 0;
+	padding-left: 12px;
+	border-left: 3px solid var(--ds-border, #3b3d42);
+	color: var(--ds-text-subtle, #a9abaf);
+}
+
+.fat-rich-text code,
+.fat-editor-content code {
+	padding: 1px 4px;
+	border-radius: 3px;
+	background: var(--ds-background-neutral, #2c2e33);
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 13px;
+}
+
+.fat-rich-text pre,
+.fat-editor-content pre {
+	margin: 0 0 10px;
+	padding: 8px 10px;
+	border-radius: 3px;
+	background: var(--ds-background-input, #1d1f24);
+	overflow-x: auto;
+}
+
+.fat-rich-text pre code,
+.fat-editor-content pre code {
+	padding: 0;
+	background: transparent;
+}
+
+.fat-rich-text table,
+.fat-editor-content table {
+	border-collapse: collapse;
+	width: 100%;
+	margin: 0 0 10px;
+}
+
+.fat-rich-text th,
+.fat-rich-text td,
+.fat-editor-content th,
+.fat-editor-content td {
+	padding: 4px 8px;
+	border: 1px solid var(--ds-border, #3b3d42);
+	vertical-align: top;
+}
+
+.fat-rich-text img,
+.fat-editor-content img {
+	max-width: 100%;
+	height: auto;
+}
+
+.fat-rich-text a,
+.fat-editor-content a {
+	color: var(--ds-link, #669df1);
+}
+
+.fat-rich-text hr,
+.fat-editor-content hr {
+	margin: 12px 0;
+	border: 0;
+	border-top: 1px solid var(--ds-border, #3b3d42);
+}
+
+.fat-rich-text .panel,
+.fat-editor-content .panel {
+	margin: 8px 0;
+	border: 1px solid var(--ds-border, #3b3d42);
+	border-radius: 3px;
+}
+
+.fat-rich-text .panelHeader,
+.fat-editor-content .panelHeader {
+	padding: 6px 10px;
+	font-weight: 600;
+	background: var(--ds-background-neutral, #2c2e33);
+}
+
+.fat-rich-text .panelContent,
+.fat-editor-content .panelContent {
+	padding: 8px 10px;
+}
+
+.fat-rich-text .panelContent > :last-child,
+.fat-editor-content .panelContent > :last-child {
+	margin-bottom: 0;
+}
+
+.fat-editor-content ul[data-type="taskList"] {
+	list-style: none;
+	padding-left: 0;
+}
+
+.fat-editor-content ul[data-type="taskList"] li {
+	display: flex;
+	gap: 6px;
+	align-items: flex-start;
+}
+
+.fat-editor-content ul[data-type="taskList"] li > label {
+	margin-top: 2px;
+}
+
+.fat-editor-content ul[data-type="taskList"] li > div {
+	flex: 1;
+	min-width: 0;
+}
+
+.fat-editor-content p.is-editor-empty:first-child::before {
+	content: attr(data-placeholder);
+	float: left;
+	height: 0;
+	color: var(--ds-text-subtlest, #7a7d82);
+	pointer-events: none;
+}
+
+.fat-editor:focus-within {
+	border-color: var(--ds-border-focused, #669df1);
+}
+
+.fat-unknown-block {
+	padding: 4px;
+	border: 1px dashed var(--ds-border, #3b3d42);
+}
+
+.fat-sidebar-item:hover {
+	background: var(--ds-background-neutral-subtle-hovered, #ceced912);
+}
+
+.fat-lozenge {
+	display: inline-flex;
+	text-transform: uppercase;
+}
+
+.fat-lozenge > span {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.5px;
+	line-height: 16px;
+}
+
+.fat-row-actions {
+	opacity: 0;
+}
+
+.fat-table tbody tr:hover .fat-row-actions,
+.fat-table tbody tr:focus-within .fat-row-actions {
+	opacity: 1;
+}
+
+button {
+	border: 0;
+}
+
+.fat-table td > a[style*="font-weight: 500"] {
+	white-space: nowrap;
+}
+
+[role="dialog"]:focus {
+	outline: none;
+}
+
+@media (max-width: 1100px) {
+	header div:has(> input[role="combobox"]) {
+		/* biome-ignore lint/complexity/noImportantStyles: overrides the inline width */
+		width: 140px !important;
+	}
+
+	div[style*="grid-template-columns: 88px"] {
+		/* biome-ignore lint/complexity/noImportantStyles: overrides the inline grid */
+		grid-template-columns: 88px minmax(0, 1fr) !important;
+	}
+}
+
+.fat-issue-table .fat-col-fill a {
+	display: block;
+	min-width: max(20rem, 300px);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

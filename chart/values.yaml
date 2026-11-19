@@ -1,0 +1,172 @@
+# Replaces the chart name in resource labels. A release installed under the earlier
+# chart name sets both overrides to that name: a Deployment selector cannot change, and
+# a new full name would create a new, empty attachments volume.
+nameOverride: ""
+# Replaces the computed name of every resource.
+fullnameOverride: ""
+
+# Container image to deploy.
+image:
+  # Image repository, without a tag.
+  repository: ghcr.io/warrdoge/rvna
+  # Image tag; empty uses the chart appVersion.
+  tag: ""
+  # Image pull policy.
+  pullPolicy: IfNotPresent
+
+# Names of existing Secrets used to pull the image.
+imagePullSecrets: []
+
+# HTTPRoute for the app, served through a Gateway.
+route:
+  # Create the HTTPRoute.
+  enabled: true
+  # Gateway references, e.g. [{name: gateway, namespace: flux-system}].
+  parentRefs: []
+  # Public hostname; APP_URL is https://<hostname>.
+  hostname: ""
+  # Further hostnames the route answers on.
+  extraHostnames: []
+
+# PostgreSQL connection string, read from an existing Secret.
+database:
+  # Secret holding the connection string.
+  existingSecret: ""
+  # Key in that Secret.
+  secretKey: url
+
+# OpenID Connect provider; optional. Without an issuer only local accounts can sign in.
+oidc:
+  # Issuer URL; empty disables single sign-on.
+  issuer: ""
+  # Client ID.
+  clientId: ""
+  # Secret holding the client secret.
+  existingSecret: ""
+  # Key in that Secret.
+  secretKey: client-secret
+  # Requested scopes; empty uses the app default.
+  scopes: ""
+  # Claim holding group names; empty uses the app default.
+  groupsClaim: ""
+
+# Local account login.
+localLogin:
+  # Send the login page straight to SSO; /login.jsp?local=1 still shows the local form.
+  ssoAutoRedirect: false
+
+# Read the client IP and public origin from X-Forwarded-*, right behind a Gateway
+# that overwrites those headers (sets adapter-node's ADDRESS_HEADER, XFF_DEPTH,
+# PROTOCOL_HEADER and HOST_HEADER).
+trustProxy: false
+
+# Upload cap in MB; adapter-node's request limit is set to the same number.
+maxUploadRequestMb: 250
+
+# Largest single attachment in MB; must not exceed maxUploadRequestMb.
+maxAttachmentMb: 100
+
+# First administrator, created at startup only while no administrator exists.
+bootstrapAdmin:
+  # Existing Secret holding the username and the initial password; empty creates none.
+  existingSecret: ""
+  # Key in that Secret holding the username.
+  usernameKey: username
+  # Key in that Secret holding the password.
+  passwordKey: password
+
+# Group whose members are administrators; empty uses the app default.
+adminGroup: ""
+
+# Session lifetime in days; empty uses the app default.
+sessionTtlDays: ""
+
+# IANA time zone for dates when the browser sends none; empty uses the app default (UTC).
+appTimeZone: ""
+
+# Pod-level security context, merged into the fixed runAs settings.
+# fsGroup lets the app user write to the attachments volume.
+podSecurityContext:
+  # Group that owns mounted volumes.
+  fsGroup: 1000
+  # Only chown volumes whose root ownership is wrong.
+  fsGroupChangePolicy: OnRootMismatch
+
+# Container resources; no CPU limit is set.
+resources:
+  # Resource requests.
+  requests:
+    # CPU request.
+    cpu: 100m
+    # Memory request.
+    memory: 256Mi
+  # Resource limits.
+  limits:
+    # Memory limit.
+    memory: 512Mi
+
+# Additional environment variables for the container, appended last so they
+# override the ones above.
+extraEnv: []
+
+# Additional environment variable sources (ConfigMaps, Secrets) for the
+# container.
+extraEnvFrom: []
+
+# Notification email. Nothing is rendered while mail.existingSecret is empty.
+mail:
+  # Existing Secret holding the SMTP URL; empty disables email.
+  existingSecret: ""
+  # Key in that Secret holding the SMTP URL.
+  secretKey: smtp-url
+  # From address; empty uses the app default.
+  from: ""
+  # Send every message only to this address, for a non-production instance with real
+  # addresses; empty sends to the real recipients.
+  redirectTo: ""
+
+# Key for secrets at rest (GitLab webhook secret and access token).
+secretsKey:
+  # Existing Secret holding the key; empty disables secrets at rest.
+  existingSecret: ""
+  # Key in that Secret.
+  secretKey: secrets-key
+
+# Issue and wiki attachment storage; the app always gets a writable directory
+# here.
+attachments:
+  # Provision a PersistentVolumeClaim. Without it attachments live in an
+  # emptyDir and are lost with the pod.
+  enabled: true
+  # Requested size of the created claim.
+  size: 5Gi
+  # Storage class of the created claim; empty uses the cluster default.
+  storageClass: ""
+  # Existing claim to mount instead of creating one; wins over enabled.
+  existingClaim: ""
+  # Mount path, also exported as ATTACHMENTS_DIR.
+  mountPath: /data/attachments
+
+# Avatar storage under the attachments volume. The directory is created on first
+# upload; it must stay on the writable volume because the root is read-only.
+avatars:
+  # Absolute path; empty uses <attachments.mountPath>/avatars.
+  path: ""
+
+# Startup probe; the app waits for the database and the OIDC provider while
+# booting.
+startupProbe:
+  # Probe periods before the container is killed.
+  failureThreshold: 30
+  # Seconds between probe attempts.
+  periodSeconds: 10
+
+# Seconds Kubernetes waits after SIGTERM before killing the pod.
+terminationGracePeriodSeconds: 120
+
+# adapter-node's SHUTDOWN_TIMEOUT in seconds; keep it below
+# terminationGracePeriodSeconds so an in-flight upload can finish.
+shutdownTimeoutSeconds: 110
+
+# Seconds before the rollout is marked failed.
+progressDeadlineSeconds: 600

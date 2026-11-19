@@ -1,0 +1,36 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`a hostile summary is escaped and cannot inject headers 1`] = `
+"<!doctype html>
+<html><body style="margin:0;padding:0;background:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px">
+<tr><td align="center">
+<table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:100%;max-width:640px;background:#ffffff;border:1px solid #dfe1e6">
+<tr><td style="padding:16px 20px;background:#0052cc">
+<a href="http://127.0.0.1:3300/browse/MAIL-1" style="color:#ffffff;font-size:16px;font-weight:600;text-decoration:none">MAIL-1</a>
+<span style="color:#deebff;font-size:16px"> Fix &lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &quot;quotes&quot; Bcc: evil@example.test</span>
+</td></tr>
+<tr><td style="padding:20px">
+<p style="margin:0 0 10px;font-size:14px;line-height:20px;color:#172b4d"><strong>Avery Stone</strong> commented on <a href="http://127.0.0.1:3300/browse/MAIL-1" style="color:#0052cc;text-decoration:none">MAIL-1</a></p><div style="margin:0 0 12px;padding:10px 12px;border-left:3px solid #dfe1e6;font-size:14px;line-height:20px;color:#172b4d"><p>Look at <a class="user-hover" data-user-id="x">@Ada</a></p></div>
+</td></tr>
+<tr><td style="padding:16px 20px;border-top:1px solid #dfe1e6;font-size:12px;line-height:18px;color:#6b778c">
+<p style="margin:0 0 6px">You are receiving this because you are watching it.</p>
+<p style="margin:0">Manage your <a href="http://127.0.0.1:3300/secure/ViewProfile.jspa?selectedTab=notifications" style="color:#0052cc">notification settings</a>.</p>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>"
+`;
+
+exports[`a hostile summary is escaped and cannot inject headers 2`] = `
+"MAIL-1 Fix <script>alert("x")</script> & "quotes" Bcc: evil@example.test
+http://127.0.0.1:3300/browse/MAIL-1
+
+Avery Stone commented on MAIL-1
+
+Look at @Ada
+
+You are receiving this because you are watching it.
+Manage your notification settings: http://127.0.0.1:3300/secure/ViewProfile.jspa?selectedTab=notifications"
+`;

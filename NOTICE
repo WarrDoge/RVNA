@@ -1,0 +1,14 @@
+RVNA
+Copyright 2026 The RVNA authors
+
+This product includes software developed at Atlassian (https://www.atlassian.com/)
+and published under the Apache License, Version 2.0. Copyright 2019 Atlassian Pty Ltd.
+
+- src/theme.css: the theme CSS of the package @atlaskit/tokens, with changed font names.
+- src/reset.css: adapted from the package @atlaskit/css-reset.
+- src/lib/components/Button.svelte, Lozenge.svelte, Textfield.svelte and EmptyState.svelte:
+  the CSS is adapted from the packages @atlaskit/button, @atlaskit/lozenge,
+  @atlaskit/textfield and @atlaskit/empty-state.
+
+Jira, Jira Service Management, Confluence and Atlassian are trademarks of Atlassian.
+This project is not affiliated with or endorsed by Atlassian.

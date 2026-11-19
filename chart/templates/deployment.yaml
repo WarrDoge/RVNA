@@ -1,0 +1,204 @@
+{{- if ge (int .Values.shutdownTimeoutSeconds) (int .Values.terminationGracePeriodSeconds) }}
+{{- fail "shutdownTimeoutSeconds must be below terminationGracePeriodSeconds, or the pod is killed before it finishes closing" }}
+{{- end }}
+{{- if gt (int .Values.maxAttachmentMb) (int .Values.maxUploadRequestMb) }}
+{{- fail "maxAttachmentMb must not exceed maxUploadRequestMb" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "rvna.fullname" . }}
+  labels:
+    {{- include "rvna.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  selector:
+    matchLabels:
+      {{- include "rvna.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rvna.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- $extraEnvNames := list }}
+      {{- range .Values.extraEnv }}
+      {{- $extraEnvNames = append $extraEnvNames .name }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+        {{- with .Values.podSecurityContext }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: {{ include "rvna.name" . }}
+          image: "{{ required "image.repository is required" .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: PORT
+              value: "3000"
+            - name: APP_URL
+              value: {{ printf "https://%s" (required "route.hostname is required" .Values.route.hostname) | quote }}
+            - name: ORIGIN
+              value: {{ printf "https://%s" (required "route.hostname is required" .Values.route.hostname) | quote }}
+            - name: BODY_SIZE_LIMIT
+              value: {{ printf "%vM" .Values.maxUploadRequestMb | quote }}
+            - name: MAX_UPLOAD_REQUEST_MB
+              value: {{ .Values.maxUploadRequestMb | quote }}
+            - name: MAX_ATTACHMENT_MB
+              value: {{ .Values.maxAttachmentMb | quote }}
+            - name: ATTACHMENTS_DIR
+              value: {{ .Values.attachments.mountPath | quote }}
+            {{- if not (has "AVATARS_DIR" $extraEnvNames) }}
+            - name: AVATARS_DIR
+              value: {{ .Values.avatars.path | default (printf "%s/avatars" .Values.attachments.mountPath) | quote }}
+            {{- end }}
+            {{- if .Values.oidc.issuer }}
+            - name: OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ required "oidc.clientId is required with oidc.issuer" .Values.oidc.clientId | quote }}
+            {{- with .Values.oidc.scopes }}
+            - name: OIDC_SCOPES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.oidc.groupsClaim }}
+            - name: OIDC_GROUPS_CLAIM
+              value: {{ . | quote }}
+            {{- end }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "oidc.existingSecret is required with oidc.issuer" .Values.oidc.existingSecret }}
+                  key: {{ .Values.oidc.secretKey }}
+            {{- end }}
+            - name: SSO_AUTO_REDIRECT
+              value: {{ .Values.localLogin.ssoAutoRedirect | quote }}
+            {{- if .Values.trustProxy }}
+            - name: PROTOCOL_HEADER
+              value: x-forwarded-proto
+            - name: HOST_HEADER
+              value: x-forwarded-host
+            - name: ADDRESS_HEADER
+              value: x-forwarded-for
+            - name: XFF_DEPTH
+              value: "1"
+            {{- end }}
+            {{- with .Values.bootstrapAdmin.existingSecret }}
+            - name: BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.bootstrapAdmin.usernameKey }}
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.bootstrapAdmin.passwordKey }}
+            {{- end }}
+            {{- with .Values.adminGroup }}
+            - name: ADMIN_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.sessionTtlDays }}
+            - name: SESSION_TTL_DAYS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.appTimeZone }}
+            - name: APP_TIME_ZONE
+              value: {{ . | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "database.existingSecret is required" .Values.database.existingSecret }}
+                  key: {{ .Values.database.secretKey }}
+            {{- with .Values.secretsKey.existingSecret }}
+            - name: SECRETS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ . }}
+                  key: {{ $.Values.secretsKey.secretKey }}
+            {{- end }}
+            {{- if .Values.mail.existingSecret }}
+            - name: SMTP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mail.existingSecret }}
+                  key: {{ .Values.mail.secretKey }}
+            {{- with .Values.mail.from }}
+            - name: MAIL_FROM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.mail.redirectTo }}
+            - name: MAIL_REDIRECT_TO
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.shutdownTimeoutSeconds | quote }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: attachments
+              mountPath: {{ .Values.attachments.mountPath }}
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: {{ .Values.startupProbe.periodSeconds }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: attachments
+          {{- if .Values.attachments.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.attachments.existingClaim }}
+          {{- else if .Values.attachments.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "rvna.fullname" . }}-attachments
+          {{- else }}
+          emptyDir: {}
+          {{- end }}

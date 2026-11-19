@@ -1,0 +1,251 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"type": "object",
+	"properties": {
+		"nameOverride": {
+			"type": "string"
+		},
+		"fullnameOverride": {
+			"type": "string"
+		},
+		"image": {
+			"type": "object",
+			"properties": {
+				"repository": {
+					"type": "string"
+				},
+				"tag": {
+					"type": "string"
+				},
+				"pullPolicy": {
+					"type": "string"
+				}
+			}
+		},
+		"imagePullSecrets": {
+			"type": "array",
+			"items": {
+				"type": "object"
+			}
+		},
+		"route": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				},
+				"parentRefs": {
+					"type": "array",
+					"items": {
+						"type": "object"
+					}
+				},
+				"hostname": {
+					"type": "string"
+				},
+				"extraHostnames": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			}
+		},
+		"database": {
+			"type": "object",
+			"properties": {
+				"existingSecret": {
+					"type": "string"
+				},
+				"secretKey": {
+					"type": "string"
+				}
+			}
+		},
+		"oidc": {
+			"type": "object",
+			"properties": {
+				"issuer": {
+					"type": "string"
+				},
+				"clientId": {
+					"type": "string"
+				},
+				"existingSecret": {
+					"type": "string"
+				},
+				"secretKey": {
+					"type": "string"
+				},
+				"scopes": {
+					"type": "string"
+				},
+				"groupsClaim": {
+					"type": "string"
+				}
+			}
+		},
+		"localLogin": {
+			"type": "object",
+			"properties": {
+				"ssoAutoRedirect": {
+					"type": "boolean"
+				}
+			}
+		},
+		"trustProxy": {
+			"type": "boolean"
+		},
+		"maxUploadRequestMb": {
+			"type": "integer",
+			"minimum": 1
+		},
+		"maxAttachmentMb": {
+			"type": "integer",
+			"minimum": 1
+		},
+		"bootstrapAdmin": {
+			"type": "object",
+			"properties": {
+				"existingSecret": {
+					"type": "string"
+				},
+				"usernameKey": {
+					"type": "string"
+				},
+				"passwordKey": {
+					"type": "string"
+				}
+			}
+		},
+		"adminGroup": {
+			"type": "string"
+		},
+		"sessionTtlDays": {
+			"type": "string"
+		},
+		"appTimeZone": {
+			"type": "string"
+		},
+		"podSecurityContext": {
+			"type": "object"
+		},
+		"resources": {
+			"type": "object",
+			"properties": {
+				"requests": {
+					"type": "object"
+				},
+				"limits": {
+					"type": "object"
+				}
+			}
+		},
+		"extraEnv": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"required": ["name"],
+				"additionalProperties": true,
+				"properties": {
+					"name": {
+						"type": "string"
+					},
+					"value": {
+						"type": "string"
+					},
+					"valueFrom": {
+						"type": "object"
+					}
+				}
+			}
+		},
+		"extraEnvFrom": {
+			"type": "array",
+			"items": {
+				"type": "object"
+			}
+		},
+		"attachments": {
+			"type": "object",
+			"properties": {
+				"enabled": {
+					"type": "boolean"
+				},
+				"size": {
+					"type": "string"
+				},
+				"storageClass": {
+					"type": "string"
+				},
+				"existingClaim": {
+					"type": "string"
+				},
+				"mountPath": {
+					"type": "string"
+				}
+			}
+		},
+		"avatars": {
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string"
+				}
+			}
+		},
+		"startupProbe": {
+			"type": "object",
+			"properties": {
+				"failureThreshold": {
+					"type": "integer",
+					"minimum": 1
+				},
+				"periodSeconds": {
+					"type": "integer",
+					"minimum": 1
+				}
+			}
+		},
+		"terminationGracePeriodSeconds": {
+			"type": "integer",
+			"minimum": 1
+		},
+		"shutdownTimeoutSeconds": {
+			"type": "integer",
+			"minimum": 1
+		},
+		"progressDeadlineSeconds": {
+			"type": "integer",
+			"minimum": 1
+		},
+		"mail": {
+			"type": "object",
+			"properties": {
+				"existingSecret": {
+					"type": "string"
+				},
+				"secretKey": {
+					"type": "string"
+				},
+				"from": {
+					"type": "string"
+				},
+				"redirectTo": {
+					"type": "string"
+				}
+			}
+		},
+		"secretsKey": {
+			"type": "object",
+			"properties": {
+				"existingSecret": {
+					"type": "string"
+				},
+				"secretKey": {
+					"type": "string"
+				}
+			}
+		}
+	}
+}

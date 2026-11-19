@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Each build of main is a release: the image tag and the chart version are the same number.
+  APP_VERSION: 0.2.${{ github.run_number }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      # svelte-check needs about 3 GB.
+      NODE_OPTIONS: --max-old-space-size=4096
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rvna
+          POSTGRES_PASSWORD: rvna
+          POSTGRES_DB: rvna
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rvna -d rvna"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://rvna:rvna@localhost:5432/rvna
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      # npm test builds the SvelteKit server when it is missing or stale.
+      - run: npm test
+
+  e2e:
+    runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.65.0-noble
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: rvna
+          POSTGRES_PASSWORD: rvna
+          POSTGRES_DB: rvna
+        options: >-
+          --health-cmd "pg_isready -U rvna -d rvna"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://rvna:rvna@postgres:5432/rvna
+      HOME: /root
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm ci
+      # npm run e2e builds the app first when it is missing or stale.
+      - run: npm run e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-results
+          path: test-results/
+          retention-days: 7
+
+  image:
+    needs: [check, test, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # A pull request builds the image and pushes nothing. GitHub keeps its build cache
+      # apart from the cache of main, so it cannot plant layers in a release image.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.APP_VERSION }}
+            ${{ env.IMAGE }}:latest
+          # The source label links the package to this repository.
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.APP_VERSION }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # The chart is published only after its image: a chart without its image takes a
+  # deployment that follows new chart versions down.
+  chart:
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: helm lint chart --values chart/ci-values.yaml
+      - run: helm package chart --version "$APP_VERSION" --app-version "$APP_VERSION" --destination dist
+      - if: github.event_name == 'push'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          helm push "dist/rvna-$APP_VERSION.tgz" "oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
