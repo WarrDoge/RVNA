@@ -21,7 +21,7 @@ import { db } from "../db.ts";
 import type { HistoryItem } from "../history.ts";
 import { HttpError } from "../http.ts";
 import { loadCatalog } from "../jql/catalog.ts";
-import { ALL_PROJECTS, compileJql, type SearchUser } from "../jql/compile.ts";
+import { compileJql, type SearchUser } from "../jql/compile.ts";
 import { withStatementTimeout } from "../jql/timeout.ts";
 import { recordIssueEvent } from "../notifications.ts";
 import {
@@ -350,11 +350,20 @@ function jqlFailure(error: unknown): never {
 }
 
 async function validateJql(jql: string, user: SearchUser) {
-	const catalog = await loadCatalog();
+	const [catalog, visible] = await Promise.all([
+		loadCatalog(),
+		viewerProjectIds(user),
+	]);
+	const visibleIds = new Set(visible);
 	return compileJql(parseJql(jql), {
 		user,
-		catalog,
-		visibleProjectIds: ALL_PROJECTS,
+		catalog: {
+			...catalog,
+			projects: catalog.projects.filter((project) =>
+				visibleIds.has(project.id),
+			),
+		},
+		visibleProjectIds: visible,
 	});
 }
 

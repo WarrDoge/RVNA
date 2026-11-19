@@ -421,3 +421,142 @@ test("a board whose project the viewer cannot browse is not found", async () => 
 	expect(listPage.statusCode).toBe(200);
 	expect(listPage.body).not.toContain(hiddenBoardName);
 });
+
+type BoardMutation = {
+	label: string;
+	method: "POST" | "PATCH" | "PUT";
+	url: string;
+	body: (jql: string) => unknown;
+	successStatus: number;
+};
+
+const unknownKey = `NOPE${run.slice(0, 5).toUpperCase()}`;
+const boardMutations: BoardMutation[] = [
+	{
+		label: "create board filter",
+		method: "POST",
+		url: "/api/boards",
+		body: (jql) => ({
+			name: `Filtered board ${run}`,
+			type: "scrum",
+			project: visibleKey,
+			filterJql: jql,
+		}),
+		successStatus: 201,
+	},
+	{
+		label: "update board filter",
+		method: "PATCH",
+		url: `/api/boards/${visibleBoardRapidViewId}`,
+		body: (jql) => ({ filterJql: jql }),
+		successStatus: 200,
+	},
+	{
+		label: "update board sub-filter",
+		method: "PATCH",
+		url: `/api/boards/${visibleBoardRapidViewId}`,
+		body: (jql) => ({ subFilterJql: jql }),
+		successStatus: 200,
+	},
+	{
+		label: "replace swimlanes",
+		method: "PUT",
+		url: `/api/boards/${visibleBoardRapidViewId}/swimlanes`,
+		body: (jql) => ({ swimlanes: [{ name: "Lane", jql }] }),
+		successStatus: 200,
+	},
+	{
+		label: "replace quick filters",
+		method: "PUT",
+		url: `/api/boards/${visibleBoardRapidViewId}/quick-filters`,
+		body: (jql) => ({ quickFilters: [{ name: "Filter", jql }] }),
+		successStatus: 200,
+	},
+];
+
+test("saving a board filter does not reveal a project the viewer cannot browse", async () => {
+	for (const place of boardMutations) {
+		const hidden = await injectAs(
+			app,
+			owner.session,
+			place.method,
+			place.url,
+			place.body(`project = ${hiddenKey}`),
+		);
+		const unknown = await injectAs(
+			app,
+			owner.session,
+			place.method,
+			place.url,
+			place.body(`project = ${unknownKey}`),
+		);
+		expect({ place: place.label, status: hidden.statusCode }).toEqual({
+			place: place.label,
+			status: 400,
+		});
+		expect({ place: place.label, status: unknown.statusCode }).toEqual({
+			place: place.label,
+			status: 400,
+		});
+		expect(hidden.json().error).toBe(
+			unknown.json().error.replace(unknownKey, hiddenKey),
+		);
+
+		const saved = await injectAs(
+			app,
+			owner.session,
+			place.method,
+			place.url,
+			place.body(`project = ${visibleKey}`),
+		);
+		expect({ place: place.label, status: saved.statusCode }).toEqual({
+			place: place.label,
+			status: place.successStatus,
+		});
+		if (place.method === "POST") {
+			await injectAs(
+				app,
+				owner.session,
+				"DELETE",
+				`/api/boards/${saved.json().rapidViewId}`,
+			);
+		}
+	}
+});
+
+test("the board swimlane form does not reveal a project the viewer cannot browse", async () => {
+	async function save(jql: string) {
+		return app.inject({
+			method: "POST",
+			url: `/secure/RapidView.jspa?rapidView=${visibleBoardRapidViewId}`,
+			cookies: { sid: owner.session },
+			headers: {
+				"x-requested-with": "rvna",
+				origin: "http://127.0.0.1:3000",
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			payload: new URLSearchParams({
+				intent: "swimlanes",
+				rapidView: String(visibleBoardRapidViewId),
+				swimlaneStrategy: "queries",
+				laneName: "Lane",
+				laneJql: jql,
+			}).toString(),
+		});
+	}
+
+	const hidden = await save(`project = ${hiddenKey}`);
+	const unknown = await save(`project = ${unknownKey}`);
+	expect(hidden.statusCode).toBe(400);
+	expect(unknown.statusCode).toBe(400);
+	expect(hidden.body).toBe(unknown.body.replace(unknownKey, hiddenKey));
+
+	const saved = await save(`project = ${visibleKey}`);
+	expect(saved.statusCode).toBe(200);
+	const rows = await client.query<{ jql: string }>(
+		`select jql from board_swimlanes
+		 where board_id = (select id from boards where rapid_view_id = $1)`,
+		[visibleBoardRapidViewId],
+	);
+	expect(rows.rows.map((row) => row.jql)).toContain(`project = ${visibleKey}`);
+});
