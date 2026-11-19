@@ -2,6 +2,8 @@ import { fail } from "@sveltejs/kit";
 import {
 	copyBody,
 	copyPermissionScheme,
+	createBody,
+	createPermissionScheme,
 	listPermissionSchemes,
 	schemeParams,
 } from "#lib/server/admin/permission-schemes.ts";
@@ -28,7 +30,20 @@ function message(error: { issues: { message: string }[] }) {
 
 export const actions = {
 	default: adminAction(async ({ form }, actor) => {
-		if (String(form.get("intent") ?? "") !== "copy") {
+		const intent = String(form.get("intent") ?? "");
+
+		if (intent === "create") {
+			const description = String(form.get("description") ?? "");
+			const parsed = createBody.safeParse({
+				name: String(form.get("name") ?? ""),
+				...(description === "" ? {} : { description }),
+			});
+			if (!parsed.success) return fail(400, { error: message(parsed.error) });
+			const result = await createPermissionScheme(actor, parsed.data);
+			return { scheme: { id: result.scheme.id, name: result.scheme.name } };
+		}
+
+		if (intent !== "copy") {
 			return fail(400, { error: "Unknown action" });
 		}
 		const id = String(form.get("schemeId") ?? "");

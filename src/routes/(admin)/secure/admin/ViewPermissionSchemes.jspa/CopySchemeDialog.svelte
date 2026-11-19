@@ -7,23 +7,28 @@
 	import { inputStyle } from "#lib/admin/styles.ts";
 	import Button from "#lib/components/Button.svelte";
 	import Modal from "#lib/components/Modal.svelte";
-	
+
 	interface Scheme {
 		id: string;
 		name: string;
 	}
 
 	interface Props {
-		scheme: Scheme;
+		scheme?: Scheme | null;
+		mode?: "copy" | "create";
 		onClose: () => void;
 	}
 
-	let { scheme, onClose }: Props = $props();
-	let name = $state(untrack(() => `${scheme.name} copy`));
+	let { scheme = null, mode = "copy", onClose }: Props = $props();
+	let name = $state(
+		untrack(() => (mode === "copy" && scheme ? `${scheme.name} copy` : "")),
+	);
+	let description = $state("");
 	let error = $state<string | null>(null);
 	let busy = $state(false);
 
 	const formId = $props.id();
+	const creating = $derived(mode === "create");
 
 	function failureMessage(result: { data?: unknown }) {
 		const data = result.data as { error?: unknown } | null;
@@ -41,12 +46,17 @@
 		isLoading={busy}
 		isDisabled={name.trim() === ""}
 	>
-		Copy
+		{creating ? "Create" : "Copy"}
 	</Button>
 	<Button appearance="subtle" onclick={onClose}>Cancel</Button>
 {/snippet}
 
-<Modal title="Copy permission scheme" width={480} {onClose} {footer}>
+<Modal
+	title={creating ? "Create permission scheme" : "Copy permission scheme"}
+	width={480}
+	{onClose}
+	{footer}
+>
 	{#if error}
 		<Banner tone="danger">{error}</Banner>
 	{/if}
@@ -86,20 +96,36 @@
 			};
 		}}
 	>
-		<input type="hidden" name="intent" value="copy" />
-		<input type="hidden" name="schemeId" value={scheme.id} />
-		<FormField label="Name" htmlFor="copy-scheme-name">
+		<input type="hidden" name="intent" value={creating ? "create" : "copy"} />
+		{#if !creating && scheme}
+			<input type="hidden" name="schemeId" value={scheme.id} />
+		{/if}
+		<FormField label="Name" htmlFor="scheme-name">
 			<input
-				id="copy-scheme-name"
+				id="scheme-name"
 				name="name"
-				value={name}
-				oninput={(event) => (name = event.currentTarget.value)}
+				bind:value={name}
 				style={inputStyle}
 			/>
 		</FormField>
+		{#if creating}
+			<FormField label="Description (optional)" htmlFor="scheme-description">
+				<input
+					id="scheme-description"
+					name="description"
+					bind:value={description}
+					style={inputStyle}
+				/>
+			</FormField>
+		{/if}
 		<p class="hint">
-			The copy keeps the grants and gets a local source id. Projects are not
-			copied.
+			{#if creating}
+				The scheme starts with the built-in default grants. Projects are not
+				assigned.
+			{:else}
+				The copy keeps the grants and gets a local source id. Projects are not
+				copied.
+			{/if}
 		</p>
 	</form>
 </Modal>

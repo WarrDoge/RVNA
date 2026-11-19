@@ -146,6 +146,11 @@ export const DEFAULT_SCHEME_GRANTS: GrantLike[] = [
 	{
 		permissionKey: "BROWSE_PROJECTS",
 		holderType: "projectRole",
+		holderParameter: "member",
+	},
+	{
+		permissionKey: "BROWSE_PROJECTS",
+		holderType: "projectRole",
 		holderParameter: "viewer",
 	},
 	{

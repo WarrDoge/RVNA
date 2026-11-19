@@ -378,11 +378,6 @@ export const hydrationAllowList: HydrationAllowListEntry[] = [
 			"Add/edit issue-type modal, rendered only after a user action (`formOpen`).",
 	},
 	{
-		file: "src/routes/(admin)/secure/admin/ViewPermissionSchemes.jspa/CopySchemeDialog.svelte",
-		control: 'input[name="name"] (value)',
-		reason: "Copy-scheme dialog, opened by a user action.",
-	},
-	{
 		file: "src/routes/(admin)/secure/admin/workflows/ViewWorkflowSteps.jspa/PublishDialog.svelte",
 		control: "select (value)",
 		reason: "Publish-workflow dialog, opened by a user action.",

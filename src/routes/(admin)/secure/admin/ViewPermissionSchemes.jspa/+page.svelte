@@ -10,11 +10,19 @@
 
 	type Scheme = (typeof data.schemes)[number];
 	let copying = $state<Scheme | null>(null);
+	let creating = $state(false);
 </script>
+
+{#snippet actions()}
+	<Button appearance="primary" onclick={() => (creating = true)}>
+		Create permission scheme
+	</Button>
+{/snippet}
 
 <AdminPage
 	title="Permission schemes"
 	description="Permission schemes decide what each project role can do. A project without a scheme uses the built-in default."
+	{actions}
 >
 	<table class="fat-table schemes-table">
 		<thead>
@@ -68,12 +76,15 @@
 			{/each}
 			{#if data.schemes.length === 0}
 				<EmptyRow columns={4}>
-					No permission schemes yet. Import a project from Jira or copy a
-					scheme.
+					No permission schemes yet. Import a project from Jira, create a
+					scheme, or copy a scheme.
 				</EmptyRow>
 			{/if}
 		</tbody>
 	</table>
+	{#if creating}
+		<CopySchemeDialog mode="create" onClose={() => (creating = false)} />
+	{/if}
 	{#if copying}
 		<CopySchemeDialog scheme={copying} onClose={() => (copying = null)} />
 	{/if}

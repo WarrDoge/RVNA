@@ -4,7 +4,11 @@ import { z } from "zod";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
-import { PERMISSION_KEYS, requireAdminActor } from "../permissions.ts";
+import {
+	DEFAULT_SCHEME_GRANTS,
+	PERMISSION_KEYS,
+	requireAdminActor,
+} from "../permissions.ts";
 import {
 	groups,
 	permissionGrants,
@@ -71,6 +75,11 @@ const createGrantBody = z.object({
 
 const copyBody = z.object({
 	name: z.string().trim().min(1).max(255),
+});
+
+const createBody = z.object({
+	name: z.string().trim().min(1).max(255),
+	description: z.string().trim().max(2000).nullable().optional(),
 });
 
 const assignBody = z.object({ projectId: z.uuid() });
@@ -198,11 +207,13 @@ async function canonicalHolder(
 
 export type CreateGrantInput = z.infer<typeof createGrantBody>;
 export type CopySchemeInput = z.infer<typeof copyBody>;
+export type CreateSchemeInput = z.infer<typeof createBody>;
 export type AssignSchemeInput = z.infer<typeof assignBody>;
 
 export {
 	assignBody,
 	copyBody,
+	createBody,
 	createGrantBody,
 	grantParams,
 	grantSchema,
@@ -264,6 +275,57 @@ export async function getPermissionScheme(actor: CurrentUser, id: string) {
 		})),
 		roles,
 		permissionKeys: [...PERMISSION_KEYS],
+	};
+}
+
+export async function createPermissionScheme(
+	actor: CurrentUser,
+	body: CreateSchemeInput,
+) {
+	requireAdminActor(actor);
+
+	const created = await db.transaction(async (tx) => {
+		const [scheme] = await tx
+			.insert(permissionSchemes)
+			.values({
+				sourceId: `local:${randomUUID()}`,
+				name: body.name,
+				description: body.description ?? null,
+				projectIds: [],
+				raw: { defaultGrants: true },
+			})
+			.returning();
+		await tx.insert(permissionGrants).values(
+			DEFAULT_SCHEME_GRANTS.map((grant) => ({
+				sourceId: `local:${randomUUID()}`,
+				schemeId: scheme.id,
+				permissionKey: grant.permissionKey,
+				holderType: grant.holderType,
+				holderParameter: grant.holderParameter,
+				raw: { default: true },
+			})),
+		);
+		await audit(tx, actor, {
+			action: "permission.scheme.create",
+			entityType: "permission_scheme",
+			entityId: scheme.id,
+			summary: `Created permission scheme ${scheme.name}`,
+			changes: {
+				from: null,
+				to: {
+					scheme: scheme.name,
+					grants: DEFAULT_SCHEME_GRANTS.length,
+				},
+			},
+		});
+		return scheme;
+	});
+
+	return {
+		scheme: schemeView(
+			{ ...created, projectIds: created.projectIds ?? [] },
+			await projectMap(),
+		),
 	};
 }
 
