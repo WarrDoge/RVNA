@@ -1,7 +1,7 @@
 import { fail, redirect } from "@sveltejs/kit";
 import { SESSION_COOKIE, sessionCookieOptions } from "#lib/server/auth.ts";
 import { isHttpError } from "#lib/server/http.ts";
-import { authConfig, loginLocal } from "#lib/server/local-auth.ts";
+import { authConfig, loginLocal, loginSchema } from "#lib/server/local-auth.ts";
 import { loginRedirectTarget } from "#lib/server/oidc.ts";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -50,11 +50,18 @@ export const actions = {
 			});
 		}
 
+		const parsed = loginSchema.safeParse({ username, password, returnTo });
+		if (!parsed.success) {
+			return fail(400, {
+				error:
+					parsed.error.issues[0]?.message ?? "Invalid username or password",
+				username,
+			});
+		}
+
 		try {
 			const result = await loginLocal({
-				username,
-				password,
-				returnTo,
+				...parsed.data,
 				ip: getClientAddress(),
 				previousSessionId: cookies.get(SESSION_COOKIE),
 			});

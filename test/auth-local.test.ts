@@ -73,6 +73,22 @@ async function attempt(
 	return response;
 }
 
+function formAttempt(
+	fields: Record<string, string>,
+	options: { ip?: string } = {},
+) {
+	return app.inject({
+		method: "POST",
+		url: "/login.jsp",
+		remoteAddress: options.ip ?? nextIp(),
+		headers: {
+			origin: "http://127.0.0.1:3000",
+			"content-type": "application/x-www-form-urlencoded",
+		},
+		payload: new URLSearchParams(fields).toString(),
+	});
+}
+
 function sidFrom(response: { headers: Record<string, unknown> }) {
 	const header = response.headers["set-cookie"];
 	const values = Array.isArray(header) ? header.map(String) : [String(header)];
@@ -332,6 +348,50 @@ describe("POST /auth/local", () => {
 			"/api/users",
 		);
 		expect(list.body).not.toContain("$argon2");
+	});
+
+	test("the form applies the same credential bounds as the JSON endpoint", async () => {
+		const user = await makePasswordUser("formbounds");
+
+		const longName = await formAttempt({
+			username: "a".repeat(255),
+			password,
+		});
+		expect(longName.statusCode).toBe(400);
+
+		const longPassword = await formAttempt({
+			username: user.username,
+			password: "a".repeat(1025),
+		});
+		expect(longPassword.statusCode).toBe(400);
+
+		const atLimit = await formAttempt({
+			username: user.username,
+			password: "a".repeat(1024),
+		});
+		expect(atLimit.statusCode).toBe(401);
+	});
+
+	test("the name budget belongs to the resolved account, not the typed identifier", async () => {
+		const user = await makePasswordUser("sharedkey");
+		const ip = nextIp();
+		for (let index = 0; index < 5; index++) {
+			const response = await attempt(
+				{ username: user.username, password: "wrong password 123" },
+				{ ip },
+			);
+			expect(response.statusCode).toBe(401);
+		}
+		for (const typed of [
+			user.email as string,
+			` ${user.username.toUpperCase()} `,
+		]) {
+			const response = await attempt(
+				{ username: typed, password: "wrong password 123" },
+				{ ip },
+			);
+			expect(response.statusCode, typed).toBe(429);
+		}
 	});
 
 	test("records last_login_at and audits success and failure", async () => {

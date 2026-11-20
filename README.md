@@ -978,7 +978,8 @@ Remove the password from the environment afterwards.
 
 ### Lockout
 
-Failed logins are counted per typed username and client IP pair, and per client IP, in the database.
+Failed logins are counted per account and client IP pair (an identifier that matches no account uses
+its normalised text), and per client IP, in the database.
 From 5 failures for a username from one address the next attempt from that address must wait 2, 4,
 8, 16, then 32 seconds; at 10 failures that pair is locked for 15 minutes, while a correct password
 from another address still works. The IP counter has five times the thresholds (25 and 50), so an

@@ -2,13 +2,7 @@ import type { RequestHandler } from "@sveltejs/kit";
 import { z } from "zod";
 import { SESSION_COOKIE, sessionCookieOptions } from "#lib/server/auth.ts";
 import { endpoint, jsonResponse } from "#lib/server/http.ts";
-import { loginLocal } from "#lib/server/local-auth.ts";
-
-const loginBody = z.object({
-	username: z.string().trim().min(1).max(254),
-	password: z.string().min(1).max(1024),
-	returnTo: z.string().max(2048).optional(),
-});
+import { loginLocal, loginSchema } from "#lib/server/local-auth.ts";
 
 const response = z.object({
 	redirect: z.string(),
@@ -16,7 +10,7 @@ const response = z.object({
 });
 
 const login = endpoint(
-	{ auth: "none", body: loginBody, response },
+	{ auth: "none", body: loginSchema, response },
 	async ({ body, event }) => {
 		const result = await loginLocal({
 			...body,

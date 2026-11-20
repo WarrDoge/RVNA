@@ -1,4 +1,5 @@
 import { and, eq, ne, sql } from "drizzle-orm";
+import { z } from "zod";
 import { type CurrentUser, createSession, sha256 } from "./auth.ts";
 import { db } from "./db.ts";
 import { env, ssoConfigured } from "./env.ts";
@@ -35,11 +36,11 @@ const PURGE_EVERY_MS = 60 * 1000;
 /**
  * From `delayFrom` failures a growing delay (2, 4, ... 32 s) separates attempts;
  * at `lockAt` failures the key is locked for 15 minutes. The user key is the
- * typed name and the client address, so one address cannot lock the account for
- * its owner elsewhere. The IP counter has x5 thresholds and forgets failures after
- * 15 minutes without a new one, so an office behind one NAT does not stay locked
- * out. Many addresses still get ten guesses each for a name; the password rules
- * carry that.
+ * resolved account and the client address, so one address cannot lock the account
+ * for its owner elsewhere and every spelling of an account shares one budget. The
+ * IP counter has x5 thresholds and forgets failures after 15 minutes without a new
+ * one, so an office behind one NAT does not stay locked out. Many addresses still
+ * get ten guesses each for a name; the password rules carry that.
  */
 const limits = {
 	user: { delayFrom: 5, lockAt: 10 },
@@ -162,7 +163,7 @@ function tooManyAttempts(seconds: number) {
 }
 
 async function findLoginUser(typed: string) {
-	const lower = typed.toLowerCase();
+	const lower = typed.trim().toLowerCase();
 	const byUsername = await db
 		.select()
 		.from(users)
@@ -193,6 +194,12 @@ export function authConfig(): AuthConfig {
 	};
 }
 
+export const loginSchema = z.object({
+	username: z.string().trim().min(1).max(254),
+	password: z.string().min(1).max(1024),
+	returnTo: z.string().max(2048).optional(),
+});
+
 export type LocalLoginInput = {
 	username: string;
 	password: string;
@@ -211,22 +218,23 @@ export async function loginLocal(
 	input: LocalLoginInput,
 ): Promise<LocalLoginResult> {
 	const { username, password, ip } = input;
-	const key = `${username.toLowerCase()}|${ip}`;
+	const typed = username.trim();
+	const user = await findLoginUser(typed);
+	const key = `${(user?.username ?? typed).toLowerCase()}|${ip}`;
 
 	const wait =
 		(await reserveAttempt("user", key)) || (await reserveAttempt("ip", ip));
 	if (wait > 0) {
-		await auditThrottled(username, ip, wait);
+		await auditThrottled(typed, ip, wait);
 		throw tooManyAttempts(wait);
 	}
 
-	const user = await findLoginUser(username);
 	const result = await verifyPassword(password, user?.passwordHash ?? null);
 
 	if (!user?.active || !result.ok) {
 		await recordAudit(db, {
 			actorId: null,
-			actorName: username.slice(0, 100),
+			actorName: typed.slice(0, 100),
 			action: "login.failure",
 			entityType: "user",
 			entityId: user?.id ?? null,
