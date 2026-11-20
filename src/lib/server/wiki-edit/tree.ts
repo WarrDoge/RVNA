@@ -6,6 +6,7 @@ import { db } from "../db.ts";
 import {
 	pageAttachments,
 	pageLabels,
+	pageRestrictions,
 	pages,
 	pageVersions,
 	spaces,
@@ -242,6 +243,10 @@ export async function copyPage(
 				.from(pageAttachments)
 				.where(inArray(pageAttachments.pageId, oldIds))
 		: [];
+	const restrictionRows = await db
+		.select()
+		.from(pageRestrictions)
+		.where(inArray(pageRestrictions.pageId, oldIds));
 	const attachmentIdMap = new Map(
 		attachmentRows.map((row) => [row.id, randomUUID()]),
 	);
@@ -298,6 +303,17 @@ export async function copyPage(
 					message: "Copied from another page",
 				})),
 			);
+			if (restrictionRows.length > 0) {
+				await tx.insert(pageRestrictions).values(
+					restrictionRows.map((row) => ({
+						sourceId: newSourceId(),
+						pageId: newIdOf.get(row.pageId) as string,
+						operation: row.operation,
+						userId: row.userId,
+						groupName: row.groupName,
+					})),
+				);
+			}
 			if (attachmentRows.length > 0) {
 				await tx.insert(pageAttachments).values(
 					attachmentRows.map((row) => ({

@@ -261,6 +261,42 @@ describe("copy", () => {
 		expect(versions).toHaveLength(1);
 	});
 
+	test("carries the source page restrictions to the copy", async () => {
+		const top = await mk("Restricted copy source");
+		const child = await mk("Restricted copy child", top.id);
+		await wiki.admin.put(`/api/wiki/pages/${top.id}/restrictions`, {
+			read: { userIds: [editor.id], groups: [] },
+			update: { userIds: [editor.id], groups: [] },
+		});
+		await wiki.admin.put(`/api/wiki/pages/${child.id}/restrictions`, {
+			read: { userIds: [editor.id], groups: [] },
+			update: { userIds: [], groups: [] },
+		});
+		const copied = await editor.post(`/api/wiki/pages/${top.id}/copy`, {
+			title: "Restricted copy",
+			withChildren: true,
+		});
+		expect(copied.status).toBe(201);
+		const [copiedChild] = await rows<{ id: string }>(
+			"select id from pages where parent_id = $1",
+			[copied.body.id],
+		);
+		const restrictionsOf = (ids: string[]) =>
+			rows<{ operation: string; user_id: string; group_name: string | null }>(
+				"select operation, user_id, group_name from page_restrictions where page_id = any($1) order by operation, user_id, group_name",
+				[ids],
+			);
+		expect(await restrictionsOf([copied.body.id, copiedChild.id])).toEqual(
+			await restrictionsOf([top.id, child.id]),
+		);
+
+		const outsider = await wiki.user("outsider");
+		await wiki.grant(space.id, { userId: outsider.id }, ["read"]);
+		expect(
+			(await outsider.get(`/api/wiki/pages/${copied.body.id}`)).status,
+		).toBe(404);
+	});
+
 	test("without options copies only the page; the title must be free", async () => {
 		const top = await mk("Plain copy source");
 		await mk("Plain copy child", top.id);
