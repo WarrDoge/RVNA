@@ -166,6 +166,30 @@ describe("create", () => {
 		expect(missing.status).toBe(400);
 	});
 
+	test("rejects a link reference without attrs", async () => {
+		const malformed = await author.post("/api/wiki/pages", {
+			spaceKey: space.key,
+			title: "Malformed link",
+			bodyDoc: {
+				type: "doc",
+				content: [
+					{
+						type: "paragraph",
+						content: [
+							{
+								type: "text",
+								text: "hello",
+								marks: [{ type: "link", attrs: { ref: { tag: "ri:page" } } }],
+							},
+						],
+					},
+				],
+			},
+		});
+		expect(malformed.status).toBe(400);
+		expect(malformed.body.error).toMatch(/Invalid document/);
+	});
+
 	test("accepts documents over one megabyte and reports bad ids as 400", async () => {
 		const big = doc(...Array.from({ length: 40 }, () => "x".repeat(50_000)));
 		expect(JSON.stringify(big).length).toBeGreaterThan(1_048_576);

@@ -221,6 +221,21 @@ export function validateDoc(doc: unknown): string | null {
 			for (const mark of node.marks ?? []) {
 				if (!markTypes.has(mark.type))
 					return `unknown mark ${String(mark.type)}`;
+				if (mark.type === "link") {
+					const ref = mark.attrs?.ref as
+						| { tag?: unknown; attrs?: unknown }
+						| null
+						| undefined;
+					if (
+						ref != null &&
+						(typeof ref !== "object" ||
+							typeof ref.tag !== "string" ||
+							typeof ref.attrs !== "object" ||
+							ref.attrs === null)
+					) {
+						return "invalid link reference";
+					}
+				}
 				const error = validateMarkStyle(mark);
 				if (error) return error;
 			}

@@ -560,6 +560,14 @@ describe("docToHtml", () => {
 		expect(JSON.stringify(source)).not.toContain("/api/wiki/attachments/2");
 	});
 
+	test("ignores a link reference without attrs", () => {
+		const source = doc(
+			p(t("hello", mark("link", { ref: { tag: "ri:page" } }))),
+		);
+		expect(collectDocRefs(source)).toEqual({ pages: [], attachments: [] });
+		expect(() => resolveDocRefs(source, {})).not.toThrow();
+	});
+
 	test("an unresolved page link points at the create screen", () => {
 		const html = docToHtml(
 			storageToDoc(

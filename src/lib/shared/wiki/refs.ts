@@ -10,7 +10,9 @@ function isRef(value: unknown): value is RiRef {
 	return (
 		typeof value === "object" &&
 		value !== null &&
-		typeof (value as RiRef).tag === "string"
+		typeof (value as RiRef).tag === "string" &&
+		typeof (value as RiRef).attrs === "object" &&
+		(value as RiRef).attrs !== null
 	);
 }
 
@@ -18,7 +20,7 @@ export function pageLookupOf(
 	ref: RiRef,
 	defaultSpaceKey?: string,
 ): PageLookup | null {
-	if (ref.tag !== "ri:page") return null;
+	if (ref.tag !== "ri:page" || !ref.attrs) return null;
 	const title = ref.attrs["ri:content-title"];
 	if (title === undefined) return null;
 	return { title, spaceKey: ref.attrs["ri:space-key"] ?? defaultSpaceKey };
@@ -28,7 +30,7 @@ export function attachmentLookupOf(
 	ref: RiRef,
 	defaultSpaceKey?: string,
 ): AttachmentLookup | null {
-	if (ref.tag !== "ri:attachment") return null;
+	if (ref.tag !== "ri:attachment" || !ref.attrs) return null;
 	const fileName = ref.attrs["ri:filename"];
 	if (fileName === undefined) return null;
 	const page = ref.children?.find((child) => child.tag === "ri:page");
