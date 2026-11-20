@@ -2405,7 +2405,11 @@ export async function linkIssue(
 	key: string,
 	body: LinkIssueInput,
 ) {
-	await requireIssuePermissionFor(actor, key, "LINK_ISSUES");
+	if (body.direction === "outward") {
+		await requireIssuePermissionFor(actor, key, "LINK_ISSUES");
+	} else {
+		await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS");
+	}
 
 	const row = await loadIssueRow(key);
 	if (!row) throw new HttpError(404, "Issue not found");
@@ -2432,6 +2436,9 @@ export async function linkIssue(
 	}
 	if (target.id === row.id) {
 		throw new HttpError(400, "An issue cannot link to itself");
+	}
+	if (body.direction === "inward") {
+		await requireIssuePermissionFor(actor, target.key, "LINK_ISSUES");
 	}
 
 	const outward = body.direction === "outward";

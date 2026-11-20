@@ -23,6 +23,7 @@ import {
 	workflows,
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
+import { makeUser } from "./admin-helpers.ts";
 import {
 	adminGroup,
 	buildServer,
@@ -1375,4 +1376,59 @@ test("clone hides an unreadable source and refuses a caller without Create issue
 	);
 	expect(denied.statusCode).toBe(403);
 	expect(denied.json().error).toMatch(/CREATE_ISSUES/);
+});
+
+test("a link is checked against the outward issue, not the page it was created on", async () => {
+	const linker = await makeUser(run, "linker");
+	await grantDefaultProjectRole(
+		concurrencyProjectId,
+		[linker.username],
+		"member",
+	);
+
+	const linkedIssue = await createIssue(
+		userSession,
+		{ summary: `Linked issue ${run}` },
+		concurrencyKey,
+	);
+	const browsedIssue = await createIssue(userSession, {
+		summary: `Browsed issue ${run}`,
+	});
+	expect(linkedIssue.statusCode).toBe(201);
+	expect(browsedIssue.statusCode).toBe(201);
+	const linkedKey = linkedIssue.json().key as string;
+	const browsedKey = browsedIssue.json().key as string;
+
+	const inwardFromBrowsedProject = await inject(
+		"POST",
+		`/api/issues/${linkedKey}/links`,
+		linker.session,
+		{ typeId: blocksTypeId, targetKey: browsedKey, direction: "inward" },
+	);
+	expect(inwardFromBrowsedProject.statusCode).toBe(403);
+	expect(inwardFromBrowsedProject.json().error).toMatch(/LINK_ISSUES/);
+
+	const inwardFromLinkedProject = await inject(
+		"POST",
+		`/api/issues/${browsedKey}/links`,
+		linker.session,
+		{ typeId: blocksTypeId, targetKey: linkedKey, direction: "inward" },
+	);
+	expect(inwardFromLinkedProject.statusCode).toBe(201);
+
+	const outwardFromBrowsedProject = await inject(
+		"POST",
+		`/api/issues/${browsedKey}/links`,
+		linker.session,
+		{ typeId: blocksTypeId, targetKey: linkedKey, direction: "outward" },
+	);
+	expect(outwardFromBrowsedProject.statusCode).toBe(403);
+
+	const outwardFromLinkedProject = await inject(
+		"POST",
+		`/api/issues/${linkedKey}/links`,
+		linker.session,
+		{ typeId: blocksTypeId, targetKey: browsedKey, direction: "outward" },
+	);
+	expect(outwardFromLinkedProject.statusCode).toBe(201);
 });
