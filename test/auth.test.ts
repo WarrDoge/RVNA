@@ -349,6 +349,22 @@ test("logout deletes the session and redirects through the provider", async () =
 		"http://127.0.0.1:3000/",
 	);
 
+	const [row] = await db
+		.select({ id: users.id })
+		.from(users)
+		.where(eq(users.username, username("logout")));
+	const audited = await pool.query(
+		"select action, entity_type, entity_id, summary from audit_log where actor_id = $1 and action = 'auth.logout'",
+		[row?.id],
+	);
+	expect(audited.rows).toHaveLength(1);
+	expect(audited.rows[0]).toMatchObject({
+		action: "auth.logout",
+		entity_type: "user",
+		entity_id: row?.id,
+	});
+	expect(audited.rows[0].summary).toContain(username("logout"));
+
 	const me = await app.inject({
 		method: "GET",
 		url: "/api/me",

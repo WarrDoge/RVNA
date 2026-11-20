@@ -3,6 +3,7 @@ import { z } from "zod";
 import { type CurrentUser, randomValue, sha256 } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
+import { recordAudit } from "../local-auth.ts";
 import { apiTokens } from "../schema.ts";
 
 export const tokenCreateSchema = z.object({
@@ -62,6 +63,16 @@ export async function createToken(
 		})
 		.returning();
 
+	await recordAudit(db, {
+		actorId: actor.id,
+		actorName: actor.displayName,
+		action: "token.create",
+		entityType: "api_token",
+		entityId: row.id,
+		summary: `Created API token "${row.name}"`,
+		changes: { to: { id: row.id, name: row.name } },
+	});
+
 	return { ...view(row), token: value };
 }
 
@@ -72,6 +83,16 @@ export async function revokeToken(
 	const [deleted] = await db
 		.delete(apiTokens)
 		.where(and(eq(apiTokens.id, id), eq(apiTokens.userId, actor.id)))
-		.returning({ id: apiTokens.id });
+		.returning({ id: apiTokens.id, name: apiTokens.name });
 	if (!deleted) throw new HttpError(404, "Not found");
+
+	await recordAudit(db, {
+		actorId: actor.id,
+		actorName: actor.displayName,
+		action: "token.revoke",
+		entityType: "api_token",
+		entityId: deleted.id,
+		summary: `Revoked API token "${deleted.name}"`,
+		changes: { from: { id: deleted.id, name: deleted.name }, to: null },
+	});
 }

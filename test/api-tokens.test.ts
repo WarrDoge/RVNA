@@ -168,3 +168,45 @@ test("one user cannot revoke another user's token", async () => {
 	});
 	expect(response.statusCode).toBe(404);
 });
+
+test("creating and revoking a token writes an audit row without the token value", async () => {
+	const created = await createToken({
+		name: "Audited token",
+		expiresInDays: 7,
+	});
+	const { id, token } = created.json();
+
+	const afterCreate = await pool.query(
+		"select action, entity_type, entity_id, summary, changes from audit_log where entity_id = $1 order by created_at",
+		[id],
+	);
+	expect(afterCreate.rows).toHaveLength(1);
+	expect(afterCreate.rows[0]).toMatchObject({
+		action: "token.create",
+		entity_type: "api_token",
+		entity_id: id,
+	});
+	expect(afterCreate.rows[0].summary).toContain("Audited token");
+	expect(JSON.stringify(afterCreate.rows)).not.toContain(token);
+
+	const revoke = await app.inject({
+		method: "DELETE",
+		url: `/api/me/tokens/${id}`,
+		cookies: { sid: sessionId },
+		headers: { "x-requested-with": "rvna" },
+	});
+	expect(revoke.statusCode).toBe(204);
+
+	const afterRevoke = await pool.query(
+		"select action, entity_type, entity_id, summary from audit_log where entity_id = $1 order by created_at",
+		[id],
+	);
+	expect(afterRevoke.rows).toHaveLength(2);
+	expect(afterRevoke.rows[1]).toMatchObject({
+		action: "token.revoke",
+		entity_type: "api_token",
+		entity_id: id,
+	});
+	expect(afterRevoke.rows[1].summary).toContain("Audited token");
+	expect(JSON.stringify(afterRevoke.rows)).not.toContain(token);
+});
