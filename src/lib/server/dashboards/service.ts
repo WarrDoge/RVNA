@@ -76,12 +76,17 @@ const configSchemas = {
 		filterId: z.uuid().nullable().default(null),
 		project: z.string().min(1).max(32).nullable().default(null),
 	}),
-	"two-dimensional": z.object({
-		xStatistic: statisticSchema.default("status"),
-		yStatistic: statisticSchema.default("priority"),
-		filterId: z.uuid().nullable().default(null),
-		project: z.string().min(1).max(32).nullable().default(null),
-	}),
+	"two-dimensional": z
+		.object({
+			xStatistic: statisticSchema.default("status"),
+			yStatistic: statisticSchema.default("priority"),
+			filterId: z.uuid().nullable().default(null),
+			project: z.string().min(1).max(32).nullable().default(null),
+		})
+		.refine((config) => config.xStatistic !== config.yStatistic, {
+			message: "Choose two different statistics",
+			path: ["yStatistic"],
+		}),
 	"created-vs-resolved": z.object({
 		filterId: z.uuid().nullable().default(null),
 		project: z.string().min(1).max(32).nullable().default(null),

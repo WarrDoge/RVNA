@@ -619,6 +619,9 @@ export async function loadGadgetData(
 		case "two-dimensional": {
 			const x = (config.xStatistic ?? "status") as StatisticType;
 			const y = (config.yStatistic ?? "priority") as StatisticType;
+			if (x === y) {
+				throw new HttpError(400, "Choose two different statistics");
+			}
 			const where = await scopedWhere(config, user);
 			return { ...base, matrix: await statisticMatrix(x, y, where) };
 		}

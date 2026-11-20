@@ -379,6 +379,50 @@ test("Two Dimensional Filter Statistics crosses two statistics", async () => {
 	expect(toDo?.total).toBe(1);
 });
 
+test("identical two-dimensional axes are refused and a stored one is an error", async () => {
+	const refused = await request(
+		"POST",
+		`/api/dashboards/${dashboardId}/gadgets`,
+		session,
+		{
+			type: "two-dimensional",
+			config: { xStatistic: "status", yStatistic: "status", project: key },
+		},
+	);
+	expect(refused.statusCode).toBe(400);
+
+	const gadget = await addGadget("two-dimensional", {
+		xStatistic: "status",
+		yStatistic: "priority",
+		project: key,
+	});
+	await client.query(
+		"update dashboard_gadgets set config = $1::jsonb where id = $2",
+		[
+			JSON.stringify({
+				xStatistic: "status",
+				yStatistic: "status",
+				project: key,
+			}),
+			gadget.id,
+		],
+	);
+	const response = await request(
+		"GET",
+		`/api/gadgets/${gadget.id}/data`,
+		session,
+	);
+	expect(response.statusCode).toBe(400);
+
+	const page = await request(
+		"GET",
+		`/secure/Dashboard.jspa?selectPageId=${dashboardId}`,
+		otherSession,
+	);
+	expect(page.statusCode).toBe(200);
+	expect(page.body).toContain("Choose two different statistics");
+});
+
 test("Created vs Resolved counts the days of the window", async () => {
 	const gadget = await addGadget("created-vs-resolved", {
 		project: key,
