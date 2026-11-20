@@ -1118,12 +1118,13 @@ function actionEvent(
 	path: string,
 	params: Record<string, string>,
 	form: FormData,
+	routeId = path,
 ) {
 	return {
 		locals: { user },
 		url: new URL(`http://localhost${path}`),
 		params,
-		route: { id: path },
+		route: { id: routeId },
 		request: new Request(`http://localhost${path}`, {
 			method: "POST",
 			body: form,
@@ -1231,13 +1232,25 @@ describe("portal pages", () => {
 
 		expect(
 			await createPortalActions.default(
-				actionEvent(customer, path, params, form("", "0")),
+				actionEvent(
+					customer,
+					path,
+					params,
+					form("", "0"),
+					"/servicedesk/customer/portal/[id]/create/[requestTypeId]",
+				),
 			),
 		).toMatchObject({ status: 400, data: { error: "Details is required" } });
 
 		expect(
 			await createPortalActions.default(
-				actionEvent(customer, path, params, form("<p>Details</p>", "0")),
+				actionEvent(
+					customer,
+					path,
+					params,
+					form("<p>Details</p>", "0"),
+					"/servicedesk/customer/portal/[id]/create/[requestTypeId]",
+				),
 			),
 		).toMatchObject({
 			status: 400,
@@ -1245,7 +1258,13 @@ describe("portal pages", () => {
 		});
 
 		const created = await createPortalActions.default(
-			actionEvent(customer, path, params, form("<p>Details</p>", "1")),
+			actionEvent(
+				customer,
+				path,
+				params,
+				form("<p>Details</p>", "1"),
+				"/servicedesk/customer/portal/[id]/create/[requestTypeId]",
+			),
 		);
 		expect(created).toMatchObject({
 			created: {

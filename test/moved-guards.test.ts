@@ -84,6 +84,14 @@ test("the moved write guard rejects an archived project by SvelteKit route id", 
 		projectId,
 	]);
 	expect(routePattern("/api/issues/[key]")).toBe("/api/issues/:key");
+	expect(routePattern("/(admin)/secure/admin/ViewUser.jspa")).toBe(
+		"/secure/admin/ViewUser.jspa",
+	);
+	expect(
+		routePattern(
+			"/(app)/servicedesk/customer/portal/[id]/create/[requestTypeId]",
+		),
+	).toBe("/servicedesk/customer/portal/:id/create/:requestTypeId");
 	await expect(
 		prepareWrite(event("PATCH", "/api/issues/[key]"), { key: issueKey }, {}),
 	).rejects.toMatchObject({
@@ -164,13 +172,26 @@ test("every moved mutating route is covered by the write guards", async () => {
 	);
 	for (const route of moved) {
 		if (isExemptWriteRoute(route.pattern)) continue;
-		if (route.kind === "endpoint" || route.pattern.includes(":key")) {
-			expect(
-				writeRouteScopes[routeKey(route)],
-				`${routeKey(route)} needs a write scope or an exemption`,
-			).toBeDefined();
-		}
+		expect(
+			writeRouteScopes[routeKey(route)],
+			`${routeKey(route)} needs a write scope or an exemption`,
+		).toBeDefined();
 	}
+});
+
+test("a mutating route without a write scope is refused", async () => {
+	expect(
+		await rejectArchivedWriteFor({
+			method: "POST",
+			route: "/secure/Unregistered.jspa",
+		}),
+	).toBe("This action is not allowed");
+	expect(
+		await rejectArchivedWriteFor({
+			method: "GET",
+			route: "/secure/Unregistered.jspa",
+		}),
+	).toBeNull();
 });
 
 test("the route table accepts a real UUID in a moved write scope", async () => {

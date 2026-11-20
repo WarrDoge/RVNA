@@ -294,6 +294,58 @@ describe("board configuration writes", () => {
 		).rejects.toThrow();
 		expect((await boardRow(boardId)).swimlane_strategy).toBe("none");
 	});
+
+	test("board page actions refuse writes to an archived project", async () => {
+		const attemptedName = `Archived page board ${run}`;
+		await client.query("update projects set archived = true where id = $1", [
+			visible.projectId,
+		]);
+		try {
+			const create = await app.inject({
+				method: "POST",
+				url: "/secure/ManageRapidViews.jspa",
+				cookies: { sid: owner.session },
+				headers: {
+					origin: "http://127.0.0.1:3000",
+					"content-type": "application/x-www-form-urlencoded",
+				},
+				payload: new URLSearchParams({
+					intent: "create",
+					name: attemptedName,
+					type: "kanban",
+					filterJql: `project = ${visibleKey}`,
+					project: visibleKey,
+				}).toString(),
+			});
+			expect(create.statusCode).toBe(403);
+
+			const update = await app.inject({
+				method: "POST",
+				url: "/secure/RapidView.jspa",
+				cookies: { sid: owner.session },
+				headers: {
+					origin: "http://127.0.0.1:3000",
+					"content-type": "application/x-www-form-urlencoded",
+				},
+				payload: new URLSearchParams({
+					intent: "general",
+					rapidView: String(rapidViewId),
+					name: attemptedName,
+					filterJql: `project = ${visibleKey}`,
+				}).toString(),
+			});
+			expect(update.statusCode).toBe(403);
+		} finally {
+			await client.query("update projects set archived = false where id = $1", [
+				visible.projectId,
+			]);
+			await client.query("delete from boards where name = $1", [attemptedName]);
+			await client.query("update boards set name = $1 where id = $2", [
+				"Board pages fixture",
+				boardId,
+			]);
+		}
+	});
 });
 
 describe("sprint summary", () => {

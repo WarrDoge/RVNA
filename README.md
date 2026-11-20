@@ -492,7 +492,8 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
   password change while the mark is set. The gate applies to API token (bearer) requests too.
 - Previous project keys and archived-project writes are applied by `endpoint()` and `pageAction()`
   automatically: they run after the body is parsed, which `handle` cannot do without consuming it.
-  A server task never has to remember either guard.
+  A mutating route is either in `writeRouteScopes` or exempt; anything else is refused, so a new
+  route fails closed until it is classified. A server task never has to remember either guard.
 
 SvelteKit's built-in CSRF check stays disabled with `csrf.trustedOrigins: ['*']`. It runs after
 `handle` and cannot distinguish a page action from a token-authenticated multipart upload with no

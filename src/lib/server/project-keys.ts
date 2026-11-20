@@ -144,6 +144,10 @@ export const writeRouteScopes: Record<string, WriteScope> = {
 	"PATCH /api/projects/:key/gitlab": { kind: "project" },
 	"PATCH /api/servicedesk/projects/:key/settings": { kind: "project" },
 	"POST /api/boards": { kind: "body-project" },
+	"POST /boards/:rapidViewId/plan": { kind: "board" },
+	"POST /boards/:rapidViewId/work": { kind: "board" },
+	"POST /secure/ManageRapidViews.jspa": { kind: "body-project" },
+	"POST /secure/RapidView.jspa": { kind: "board" },
 	"PATCH /api/boards/:rapidViewId": { kind: "board" },
 	"DELETE /api/boards/:rapidViewId": { kind: "board" },
 	"PUT /api/boards/:rapidViewId/columns": { kind: "board" },
@@ -180,12 +184,24 @@ export const exemptWritePrefixes = [
 	"/api/dashboards",
 	"/api/wiki",
 	"/api/gadgets",
+	"/issues",
+	"/pages",
+	"/spaces",
+	"/secure/admin",
 ];
 
 export const mutatingMethods = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 /** A view is user activity, not a project write, so archived projects still record it. */
-export const exemptWriteRoutes = new Set(["/api/issues/:key/view"]);
+export const exemptWriteRoutes = new Set([
+	"/api/issues/:key/view",
+	"/login.jsp",
+	"/secure/ConfigurePortalPages!default.jspa",
+	"/secure/Dashboard.jspa",
+	"/secure/ManageFilters.jspa",
+	"/secure/ViewProfile.jspa",
+	"/secure/project/ViewProjects.jspa",
+]);
 
 export function isUnder(path: string, prefix: string) {
 	return path === prefix || path.startsWith(`${prefix}/`);
@@ -224,6 +240,22 @@ async function projectIdByIssueKey(key: string) {
 		.where(eq(issues.key, key.toUpperCase()))
 		.limit(1);
 	return row?.projectId ?? null;
+}
+
+function boardRapidViewId(request: WriteRequest) {
+	const params = request.params as { rapidViewId?: unknown } | undefined;
+	const fromBody =
+		request.body instanceof FormData
+			? request.body.get("rapidView")
+			: request.body &&
+					typeof request.body === "object" &&
+					"rapidView" in request.body
+				? (request.body as { rapidView?: unknown }).rapidView
+				: undefined;
+	const value = params?.rapidViewId ?? fromBody;
+	if (value === undefined || value === null || value === "") return null;
+	const rapidViewId = Number(value);
+	return Number.isInteger(rapidViewId) ? rapidViewId : null;
 }
 
 /** The project a mutating request writes to, or null when the route will answer 404 itself. */
@@ -266,9 +298,8 @@ export async function projectIdForWrite(
 			return row?.projectId ?? null;
 		}
 		case "board": {
-			const params = request.params as { rapidViewId?: unknown } | undefined;
-			const rapidViewId = Number(params?.rapidViewId);
-			if (!Number.isInteger(rapidViewId)) return null;
+			const rapidViewId = boardRapidViewId(request);
+			if (rapidViewId === null) return null;
 			const [row] = await db
 				.select({ projectId: boards.projectId })
 				.from(boards)
@@ -311,9 +342,13 @@ export async function projectIdForWrite(
 	}
 }
 
-/** SvelteKit route ids use [key]; the write table uses :key. */
+/** SvelteKit route ids use [key] and route groups; the write table uses neither. */
 export function routePattern(routeId: string) {
-	return routeId.replace(/\[(?:\.\.\.)?([^\]]+)\]/g, ":$1");
+	const path = routeId
+		.split("/")
+		.filter((segment) => segment !== "" && !/^\(.+\)$/.test(segment))
+		.join("/");
+	return `/${path}`.replace(/\[(?:\.\.\.)?([^\]]+)\]/g, ":$1");
 }
 
 /** The archived-project answer for a parsed route, or null when the write is allowed. */
@@ -327,7 +362,7 @@ export async function rejectArchivedWriteFor(input: {
 	if (input.route === "" || isExemptWriteRoute(input.route)) return null;
 
 	const scope = writeRouteScopes[`${input.method} ${input.route}`];
-	if (!scope) return null;
+	if (!scope) return "This action is not allowed";
 
 	const projectId = await projectIdForWrite(input, scope);
 	if (!projectId) return null;
