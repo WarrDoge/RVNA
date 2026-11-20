@@ -1,7 +1,7 @@
 import { fail } from "@sveltejs/kit";
 import { z } from "zod";
 import { SESSION_COOKIE } from "#lib/server/auth.ts";
-import { HttpError, isHttpError } from "#lib/server/http.ts";
+import { HttpError, isBearer, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
 import { changePassword } from "#lib/server/local-auth.ts";
 import { me } from "#lib/server/me/service.ts";
@@ -15,18 +15,17 @@ import {
 	createToken as createApiToken,
 	listTokens,
 	revokeToken as revokeApiToken,
+	tokenCreateSchema,
 } from "#lib/server/tokens/service.ts";
 import type { Actions, PageServerLoad } from "./$types";
-
-const tokenSchema = z.object({
-	name: z.string().trim().min(1, "Enter a token name").max(200),
-	expiresInDays: z.coerce.number().int().positive().max(3650).optional(),
-});
 
 const MIN_PASSWORD_LENGTH = 12;
 
 export const load = pageLoad(async (event, actor) => {
 	const selectedTab = event.url.searchParams.get("selectedTab");
+	if (isBearer(event.request) && selectedTab === "tokens") {
+		throw new HttpError(403, "Bearer tokens cannot manage tokens");
+	}
 	const username = event.url.searchParams.get("name") ?? actor.username;
 
 	const meView = me(actor);
@@ -69,6 +68,12 @@ export const actions = {
 
 		if (actor.mustChangePassword && intent !== "changePassword") {
 			throw new HttpError(403, "Password change required");
+		}
+		if (
+			(intent === "createToken" || intent === "revokeToken") &&
+			isBearer(event.request)
+		) {
+			throw new HttpError(403, "Bearer tokens cannot manage tokens");
 		}
 
 		if (intent === "changePassword") {
@@ -117,9 +122,9 @@ export const actions = {
 
 		if (intent === "createToken") {
 			const rawDays = String(form.get("expiresInDays") ?? "").trim();
-			const parsed = tokenSchema.safeParse({
+			const parsed = tokenCreateSchema.safeParse({
 				name: form.get("name"),
-				expiresInDays: rawDays === "" ? undefined : rawDays,
+				expiresInDays: rawDays === "" ? undefined : Number(rawDays),
 			});
 			if (!parsed.success) {
 				return fail(400, {

@@ -60,12 +60,15 @@ async function makePasswordUser(label: string, mustChange = false) {
 async function makeTokenUser(label: string, mustChange = true) {
 	const user = await makePasswordUser(label, mustChange);
 	const token = `rvna_${randomValue()}`;
-	await db.insert(apiTokens).values({
-		userId: user.id,
-		name: `${label} token`,
-		tokenHash: sha256(token),
-	});
-	return { ...user, token };
+	const [row] = await db
+		.insert(apiTokens)
+		.values({
+			userId: user.id,
+			name: `${label} token`,
+			tokenHash: sha256(token),
+		})
+		.returning({ id: apiTokens.id });
+	return { ...user, token, tokenId: row.id };
 }
 
 test("an invalid token expiry is rejected instead of creating a token that never expires", async () => {
@@ -95,12 +98,13 @@ test("a forced password change allows only the password action", async () => {
 		})
 		.returning({ id: apiTokens.id });
 
-	for (const fields of [
+	const actions: Record<string, string>[] = [
 		{ intent: "createToken", name: "Escape token" },
 		{ intent: "revokeToken", id: token?.id ?? "" },
 		{ intent: "saveNotifications", emailNotifications: "on" },
 		{ intent: "anythingElse" },
-	]) {
+	];
+	for (const fields of actions) {
 		const response = await formPost(
 			user.session,
 			"/secure/ViewProfile.jspa?selectedTab=password",
@@ -154,6 +158,51 @@ test("the forced password change applies to bearer requests too", async () => {
 		},
 	});
 	expect(changed.statusCode).toBe(204);
+});
+
+test("the profile token action refuses bearer callers", async () => {
+	const user = await makeTokenUser("bearer-tokens", false);
+	const headers = {
+		authorization: `Bearer ${user.token}`,
+		origin: "http://127.0.0.1:3000",
+		"content-type": "application/x-www-form-urlencoded",
+	};
+
+	const create = await app.inject({
+		method: "POST",
+		url: "/secure/ViewProfile.jspa",
+		headers,
+		payload: new URLSearchParams({
+			intent: "createToken",
+			name: "Bearer-made token",
+		}).toString(),
+	});
+	expect(create.statusCode).toBe(403);
+	expect(create.body).toContain("Bearer tokens cannot manage tokens");
+
+	const revoke = await app.inject({
+		method: "POST",
+		url: "/secure/ViewProfile.jspa",
+		headers,
+		payload: new URLSearchParams({
+			intent: "revokeToken",
+			id: user.tokenId,
+		}).toString(),
+	});
+	expect(revoke.statusCode).toBe(403);
+
+	const list = await app.inject({
+		method: "GET",
+		url: "/secure/ViewProfile.jspa?selectedTab=tokens",
+		headers,
+	});
+	expect(list.statusCode).toBe(403);
+
+	const tokens = await db
+		.select({ id: apiTokens.id })
+		.from(apiTokens)
+		.where(eq(apiTokens.userId, user.id));
+	expect(tokens).toEqual([{ id: user.tokenId }]);
 });
 
 test("changing the forced password refreshes locals so the profile renders normally", async () => {

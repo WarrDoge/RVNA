@@ -1,8 +1,20 @@
 import { and, desc, eq } from "drizzle-orm";
+import { z } from "zod";
 import { type CurrentUser, randomValue, sha256 } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { apiTokens } from "../schema.ts";
+
+export const tokenCreateSchema = z.object({
+	name: z.string().trim().min(1).max(200),
+	expiresInDays: z.number().int().positive().max(3650).optional(),
+});
+
+function tokenExpiresAt(expiresInDays: number | undefined) {
+	return expiresInDays
+		? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
+		: null;
+}
 
 export type TokenView = {
 	id: string;
@@ -38,9 +50,7 @@ export async function createToken(
 	input: { name: string; expiresInDays?: number },
 ): Promise<CreatedToken> {
 	const value = `rvna_${randomValue()}`;
-	const expiresAt = input.expiresInDays
-		? new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000)
-		: null;
+	const expiresAt = tokenExpiresAt(input.expiresInDays);
 
 	const [row] = await db
 		.insert(apiTokens)
