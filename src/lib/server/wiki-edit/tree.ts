@@ -399,7 +399,7 @@ export async function trashPage(actor: CurrentUser, id: string) {
 
 export async function restorePage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	await requireAccess(actor, page, "edit");
+	await requireAccess(actor, page, "trash");
 	if (page.status !== "trashed") fail(409, "Page is not in the trash");
 	await assertTitleFree(db, space.id, page.title);
 

@@ -207,6 +207,22 @@ describe("space permission mapping", () => {
 		expect(set.status).toBe(200);
 	});
 
+	test("restore needs the same capability as moving a page to the trash", async () => {
+		const page = await mk("Moderated restore");
+		expect(
+			(await creator.post(`/api/wiki/pages/${page.id}/trash`)).status,
+		).toBe(403);
+		expect(
+			(await deleter.post(`/api/wiki/pages/${page.id}/trash`)).status,
+		).toBe(200);
+		expect(
+			(await creator.post(`/api/wiki/pages/${page.id}/restore`)).status,
+		).toBe(403);
+		expect(
+			(await deleter.post(`/api/wiki/pages/${page.id}/restore`)).status,
+		).toBe(200);
+	});
+
 	test("administer implies every permission of its space", async () => {
 		const page = await mk("Mapping administer");
 		expect(
