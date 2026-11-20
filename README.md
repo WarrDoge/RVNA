@@ -486,10 +486,10 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
   adds a nonce to its own inline script), no plugins, no `<base>` to another site, no framing by another
   site. Stored HTML is sanitized on write; the policy is the second barrier. A new inline `<script>` or
   an HTML `on…=` attribute will not run; the browser tests fail when the policy blocks something.
-- Forced password change: API routes answer `403 { "error": "Password change required" }` except
-  `GET /api/me` and `POST /api/me/password`; every page request, unknown addresses included,
-  redirects to `/secure/ViewProfile.jspa?selectedTab=password`, which stays reachable. API token
-  (bearer) requests are exempt: the check applies to session requests only.
+- Forced password change: every request answers `403 { "error": "Password change required" }` except
+  `GET /api/me` and `POST /api/me/password`; a session request to a page (unknown addresses included)
+  redirects to `/secure/ViewProfile.jspa?selectedTab=password` instead, and that page runs only its
+  password change while the mark is set. The gate applies to API token (bearer) requests too.
 - Previous project keys and archived-project writes are applied by `endpoint()` and `pageAction()`
   automatically: they run after the body is parsed, which `handle` cannot do without consuming it.
   A server task never has to remember either guard.
@@ -948,9 +948,10 @@ Administrators create accounts, set and reset passwords on the Users administrat
 set by an administrator ends that user's sessions and removes their API tokens. A user can change their
 own password on the profile page (`?selectedTab=password`); that signs every other session out and
 removes their API tokens as well. A user marked "must change password" sees only a "Change your
-password" screen until they choose a new one; every API call except `GET /api/me`,
-`POST /api/me/password` and logout answers `403 Password change required` meanwhile. That gate does not
-apply to API tokens (bearer): the password reset that set the mark has already removed them.
+password" screen until they choose a new one; every data request except `GET /api/me`,
+`POST /api/me/password` and logout answers `403 Password change required` meanwhile, every other
+page request redirects to that screen, and its other actions answer the same 403. The gate applies
+to API tokens (bearer) too: they get that 403 for every request but the two API exceptions.
 
 An account that only signs in with SSO has no password. A local account is never taken over by SSO:
 an IdP user whose username matches an account with a local password is refused (`403`, ask an

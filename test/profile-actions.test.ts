@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { createSession } from "../src/lib/server/auth.ts";
+import { createSession, randomValue, sha256 } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { hashPassword } from "../src/lib/server/passwords.ts";
 import { apiTokens, users } from "../src/lib/server/schema.ts";
@@ -57,6 +57,17 @@ async function makePasswordUser(label: string, mustChange = false) {
 	return { id: row.id, username, session };
 }
 
+async function makeTokenUser(label: string, mustChange = true) {
+	const user = await makePasswordUser(label, mustChange);
+	const token = `rvna_${randomValue()}`;
+	await db.insert(apiTokens).values({
+		userId: user.id,
+		name: `${label} token`,
+		tokenHash: sha256(token),
+	});
+	return { ...user, token };
+}
+
 test("an invalid token expiry is rejected instead of creating a token that never expires", async () => {
 	const user = await makeUser(run, "expiry");
 	const response = await formPost(user.session, "/secure/ViewProfile.jspa", {
@@ -104,6 +115,45 @@ test("a forced password change allows only the password action", async () => {
 		.from(apiTokens)
 		.where(eq(apiTokens.userId, user.id));
 	expect(tokens).toEqual([{ id: token?.id }]);
+});
+
+test("the forced password change applies to bearer requests too", async () => {
+	const user = await makeTokenUser("bearer-gate");
+	const headers = { authorization: `Bearer ${user.token}` };
+
+	const blocked = await app.inject({
+		method: "GET",
+		url: "/api/projects",
+		headers,
+	});
+	expect(blocked.statusCode).toBe(403);
+	expect(blocked.json()).toEqual({ error: "Password change required" });
+
+	const page = await app.inject({
+		method: "GET",
+		url: "/secure/ViewProfile.jspa",
+		headers,
+	});
+	expect(page.statusCode).toBe(403);
+
+	const allowed = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		headers,
+	});
+	expect(allowed.statusCode).toBe(200);
+	expect(allowed.json().mustChangePassword).toBe(true);
+
+	const changed = await app.inject({
+		method: "POST",
+		url: "/api/me/password",
+		headers: { ...headers, "x-requested-with": "rvna" },
+		payload: {
+			currentPassword: "first long passphrase",
+			newPassword: "second long passphrase",
+		},
+	});
+	expect(changed.statusCode).toBe(204);
 });
 
 test("changing the forced password refreshes locals so the profile renders normally", async () => {

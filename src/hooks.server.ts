@@ -166,12 +166,19 @@ export const sessionHandle: Handle = async ({ event, resolve }) => {
 	if (blocked) return blocked;
 
 	const user = event.locals.user;
-	if (user?.mustChangePassword && !bearer) {
+	if (user?.mustChangePassword) {
 		const pathname = requestPath(event.url.pathname);
 		const method =
 			event.request.method === "HEAD" ? "GET" : event.request.method;
 		const key = `${method} ${event.route.id ?? pathname}`;
-		if (isDataPath(pathname)) {
+		if (bearer) {
+			if (!passwordChangeAllowed.has(key)) {
+				return jsonResponse(
+					{ error: "Password change required" },
+					{ status: 403 },
+				);
+			}
+		} else if (isDataPath(pathname)) {
 			if (!passwordChangeAllowed.has(key) && !pathname.startsWith("/auth/")) {
 				return jsonResponse(
 					{ error: "Password change required" },
