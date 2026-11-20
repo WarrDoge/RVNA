@@ -136,7 +136,8 @@ export async function pageAccess(
 	const hidden =
 		page.status === "draft" && !user.isAdmin && page.creatorId !== user.id;
 	const read =
-		!hidden && pageReadable(wiki ?? (await loadWikiAccess(user)), page);
+		!hidden &&
+		(bypass || pageReadable(wiki ?? (await loadWikiAccess(user)), page));
 	const update = bypass || (await updateAllowed(user, [page.id])).has(page.id);
 	const own = page.creatorId === user.id;
 	return {

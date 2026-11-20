@@ -40,7 +40,7 @@ function matchesUser(
  * without any such row is readable by administrators only, as in Confluence. A
  * page is readable when its space is readable and neither the page nor any
  * ancestor has a read restriction that excludes the user. Application
- * administrators see everything.
+ * administrators and space administrators see everything.
  */
 export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
 	const spaceRows = await db.select({ id: spaces.id }).from(spaces);
@@ -49,6 +49,7 @@ export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
 	const permissionRows = await db
 		.select({
 			spaceId: spacePermissions.spaceId,
+			permission: spacePermissions.permission,
 			userId: spacePermissions.userId,
 			groupName: spacePermissions.groupName,
 			anonymous: spacePermissions.anonymous,
@@ -57,10 +58,18 @@ export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
 		.where(inArray(spacePermissions.permission, ["read", "administer"]));
 
 	const readRowsBySpace = new Map<string, typeof permissionRows>();
+	const administeredSpaceIds = new Set<string>();
 	for (const row of permissionRows) {
 		const list = readRowsBySpace.get(row.spaceId) ?? [];
 		list.push(row);
 		readRowsBySpace.set(row.spaceId, list);
+		if (
+			row.permission === "administer" &&
+			(row.anonymous ||
+				matchesUser(user, { userId: row.userId, groupName: row.groupName }))
+		) {
+			administeredSpaceIds.add(row.spaceId);
+		}
 	}
 
 	const hiddenPageIds = new Set<string>();
@@ -92,24 +101,36 @@ export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
 
 		if (restrictedPages.size > 0) {
 			const pageRows = await db
-				.select({ id: pages.id, parentId: pages.parentId })
+				.select({
+					id: pages.id,
+					parentId: pages.parentId,
+					spaceId: pages.spaceId,
+				})
 				.from(pages);
 			const children = new Map<string | null, string[]>();
+			const spaceOfPage = new Map<string, string>();
 			for (const row of pageRows) {
 				const list = children.get(row.parentId) ?? [];
 				list.push(row.id);
 				children.set(row.parentId, list);
+				spaceOfPage.set(row.id, row.spaceId);
 			}
 
 			const blocked: string[] = [];
 			for (const [pageId, rows] of restrictedPages) {
-				if (!rows.some((row) => matchesUser(user, row))) blocked.push(pageId);
+				if (
+					!rows.some((row) => matchesUser(user, row)) &&
+					!administeredSpaceIds.has(spaceOfPage.get(pageId) ?? "")
+				) {
+					blocked.push(pageId);
+				}
 			}
 
 			const queue = [...blocked];
 			while (queue.length > 0) {
 				const pageId = queue.shift() as string;
 				if (hiddenPageIds.has(pageId)) continue;
+				if (administeredSpaceIds.has(spaceOfPage.get(pageId) ?? "")) continue;
 				hiddenPageIds.add(pageId);
 				queue.push(...(children.get(pageId) ?? []));
 			}

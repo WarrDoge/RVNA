@@ -461,6 +461,37 @@ describe("page restrictions", () => {
 		expect(found.body).toHaveLength(2);
 	});
 
+	test("a space administrator sees and lifts restrictions in the space", async () => {
+		const page = await mk("Admin visible");
+		await wiki.admin.put(`/api/wiki/pages/${page.id}/restrictions`, {
+			read: { userIds: [reader.id], groups: [] },
+			update: { userIds: [reader.id], groups: [] },
+		});
+
+		expect((await spaceAdmin.get(`/api/wiki/pages/${page.id}`)).status).toBe(
+			200,
+		);
+		expect(
+			(await spaceAdmin.get(`/api/wiki/edit/pages/${page.id}`)).status,
+		).toBe(200);
+		expect(
+			(await spaceAdmin.get(`/api/wiki/edit/pages/${page.id}/restrictions`))
+				.status,
+		).toBe(200);
+		const tree = await spaceAdmin.get(`/api/wiki/edit/space-tree/${space.key}`);
+		expect(tree.body.map((node: { id: string }) => node.id)).toContain(page.id);
+
+		const lifted = await spaceAdmin.put(
+			`/api/wiki/pages/${page.id}/restrictions`,
+			{
+				read: { userIds: [], groups: [] },
+				update: { userIds: [], groups: [] },
+			},
+		);
+		expect(lifted.status).toBe(200);
+		expect((await creator.get(`/api/wiki/pages/${page.id}`)).status).toBe(200);
+	});
+
 	test("discarding a draft answers 404 for a page the caller cannot read", async () => {
 		const page = await mk("Secret discard");
 		await wiki.admin.put(`/api/wiki/pages/${page.id}/restrictions`, {
