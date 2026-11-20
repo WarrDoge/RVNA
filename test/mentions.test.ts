@@ -1,12 +1,31 @@
-import { expect, test } from "vitest";
+import { eq } from "drizzle-orm";
+import { afterAll, beforeAll, expect, test } from "vitest";
+import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	extractMentionedUserIds,
 	sanitizeBodyHtml,
 } from "../src/lib/server/html.ts";
 import { newMentions } from "../src/lib/server/notifications.ts";
+import { users } from "../src/lib/server/schema.ts";
+import { sanitizeWikiBody } from "../src/lib/server/wiki/storage.ts";
 
 const userId = "3f8a1f0e-9d3f-4a5b-8a1e-2b6c7d8e9f00";
 const otherId = "7c2b4d5e-1a3f-4b6c-9d8e-0f1a2b3c4d5e";
+const unresolvedId = "00000000-0000-4000-8000-000000000000";
+
+beforeAll(async () => {
+	await runMigrations();
+	await db.insert(users).values({
+		id: userId,
+		username: "avery",
+		displayName: "Avery Stone",
+	});
+});
+
+afterAll(async () => {
+	await db.delete(users).where(eq(users.id, userId));
+	await pool.end();
+});
 
 function mention(id: string, name: string) {
 	return `<a class="user-hover" data-user-id="${id}">@${name}</a>`;
@@ -15,8 +34,30 @@ function mention(id: string, name: string) {
 test("the sanitizer keeps exactly the mention anchor", async () => {
 	const html = `<p>Hello ${mention(userId, "Avery Stone")}</p>`;
 	expect(await sanitizeBodyHtml(html)).toBe(
-		`<p>Hello <a class="user-hover" data-user-id="${userId}">@Avery Stone</a></p>`,
+		`<p>Hello <a class="user-hover" data-user-id="${userId}" href="/secure/ViewProfile.jspa?name=avery">@Avery Stone</a></p>`,
 	);
+});
+
+test("a mention chip never keeps the author's href", async () => {
+	const forged = await sanitizeBodyHtml(
+		`<p><a class="user-hover" data-user-id="${userId}" href="https://evil.example/login">@Avery</a></p>`,
+	);
+	expect(forged).not.toContain("evil.example");
+	expect(forged).toContain('href="/secure/ViewProfile.jspa?name=avery"');
+
+	const unknown = await sanitizeBodyHtml(
+		`<p><a class="user-hover" data-user-id="${unresolvedId}" href="https://evil.example/login">@Ghost</a></p>`,
+	);
+	expect(unknown).not.toContain("evil.example");
+	expect(unknown).not.toContain("href=");
+});
+
+test("the wiki sanitizer drops the href of a mention chip", () => {
+	const clean = sanitizeWikiBody(
+		`<p><a class="user-mention" data-user-id="${userId}" href="https://evil.example/login">@Avery</a></p>`,
+	);
+	expect(clean).not.toContain("evil.example");
+	expect(clean).toContain('class="user-mention"');
 });
 
 test("a forged data-user-id on other tags is dropped", async () => {

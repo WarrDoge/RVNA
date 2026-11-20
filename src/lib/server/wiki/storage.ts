@@ -652,10 +652,15 @@ export function sanitizeWikiBody(html: string): string {
 		allowedIframeHostnames: iframeHosts,
 		allowIframeRelativeUrls: true,
 		transformTags: {
-			a: (tagName, attributes) => ({
-				tagName,
-				attribs: withSafeRel(attributes),
-			}),
+			a: (tagName, attributes) => {
+				const classes = (attributes.class ?? "").split(/\s+/);
+				if (classes.includes("user-mention")) {
+					const attribs = { ...attributes };
+					delete attribs.href;
+					return { tagName, attribs: withSafeRel(attribs) };
+				}
+				return { tagName, attribs: withSafeRel(attributes) };
+			},
 			// Page authors control the storage body: the only form that may reach a
 			// reader is the search form the livesearch macro renders.
 			form: (tagName, attributes) =>

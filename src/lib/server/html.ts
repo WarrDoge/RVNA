@@ -1,5 +1,6 @@
 import { inArray } from "drizzle-orm";
 import sanitizeHtml from "sanitize-html";
+import { profileHref } from "../profile-link.ts";
 import { db } from "./db.ts";
 import { users } from "./schema.ts";
 
@@ -58,7 +59,9 @@ export function withSafeRel(attributes: Record<string, string>) {
 		: attributes;
 }
 
-function cleanBodyHtml(html: string, labels?: Map<string, string>) {
+type MentionUser = { displayName: string; username: string };
+
+function cleanBodyHtml(html: string, users?: Map<string, MentionUser>) {
 	return sanitizeHtml(html, {
 		allowedTags,
 		allowedAttributes,
@@ -67,13 +70,20 @@ function cleanBodyHtml(html: string, labels?: Map<string, string>) {
 		allowProtocolRelative: false,
 		transformTags: {
 			a: (tagName: string, attributes: Record<string, string>) => {
-				const attribs = withSafeRel(attributes);
-				const classes = (attribs.class ?? "").split(/\s+/);
-				const userId = attribs["data-user-id"];
-				const label = userId ? labels?.get(userId) : undefined;
-				return classes.includes(mentionClass) && label !== undefined
-					? { tagName, attribs, text: `@${label}` }
-					: { tagName, attribs };
+				const classes = (attributes.class ?? "").split(/\s+/);
+				const userId = attributes["data-user-id"];
+				if (classes.includes(mentionClass) && userId) {
+					const user = users?.get(userId);
+					const attribs = { ...attributes };
+					delete attribs.href;
+					if (user) attribs.href = profileHref(user.username);
+					return {
+						tagName,
+						attribs: withSafeRel(attribs),
+						...(user ? { text: `@${user.displayName}` } : {}),
+					};
+				}
+				return { tagName, attribs: withSafeRel(attributes) };
 			},
 		},
 	}).trim();
@@ -90,10 +100,10 @@ export async function sanitizeBodyHtml(
 	const ids = mentionIds(clean);
 	if (ids.length === 0) return clean;
 
-	const labels = await loadMentionLabels(ids);
-	if (labels.size === 0) return clean;
+	const users = await loadMentionUsers(ids);
+	if (users.size === 0) return clean;
 
-	const rewritten = cleanBodyHtml(html, labels);
+	const rewritten = cleanBodyHtml(html, users);
 	return rewritten === "" ? null : rewritten;
 }
 
@@ -123,12 +133,21 @@ function mentionIds(clean: string): string[] {
 	return [...ids];
 }
 
-async function loadMentionLabels(ids: string[]) {
+async function loadMentionUsers(ids: string[]) {
 	const rows = await db
-		.select({ id: users.id, displayName: users.displayName })
+		.select({
+			id: users.id,
+			displayName: users.displayName,
+			username: users.username,
+		})
 		.from(users)
 		.where(inArray(users.id, ids));
-	return new Map(rows.map((row) => [row.id, row.displayName]));
+	return new Map<string, MentionUser>(
+		rows.map((row) => [
+			row.id,
+			{ displayName: row.displayName, username: row.username },
+		]),
+	);
 }
 
 export function escapeHtml(value: string) {
