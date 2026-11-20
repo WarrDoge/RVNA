@@ -464,6 +464,18 @@ test("unknown macros render a neutral placeholder naming the macro", async () =>
 	expect(html).not.toContain("ac:parameter");
 });
 
+test("macro names that exist on Object.prototype render the placeholder", async () => {
+	for (const name of ["__proto__", "constructor", "toString"]) {
+		const page = await createPage(
+			`Prototype ${name}`,
+			storage(`<ac:structured-macro ac:name="${name}" />`),
+		);
+		const html = await render(page);
+		expect(html).toContain('class="wiki-unknown-macro"');
+		expect(html).toContain(name);
+	}
+});
+
 test("every macro in the table is registered by name", () => {
 	for (const macroCase of macroCases) {
 		const name = macroCase.name.split(" ")[0] as string;

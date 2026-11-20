@@ -633,7 +633,9 @@ export async function renderMacro(
 	macro: ParsedMacro,
 	ctx: MacroContext,
 ): Promise<string> {
-	const renderer = macroRenderers[macro.name];
+	const renderer = Object.hasOwn(macroRenderers, macro.name)
+		? macroRenderers[macro.name]
+		: undefined;
 	if (!renderer) return unknownMacro(macro);
 	try {
 		return await renderer(macro, ctx);
