@@ -19,6 +19,7 @@ import {
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
 import { searchIssues } from "../src/lib/server/search/service.ts";
+import { makeUser } from "./admin-helpers.ts";
 import {
 	adminGroup,
 	buildServer,
@@ -655,6 +656,27 @@ describe("board data and moves", () => {
 			sprintId: sprint1Id,
 		});
 		expect(response.statusCode).toBe(400);
+	});
+
+	test("a column-only move still needs the scheduling permission", async () => {
+		const viewer = await makeUser(run, "viewer");
+		await grantDefaultProjectRole(projectId, [viewer.username], "viewer");
+		const issue = await createIssue(ownerSession, "Rank guard issue", "0|z");
+		const todo = scrumBoard.columns.find((column) => column.name === "To Do");
+		if (!todo) throw new Error("The To Do column is missing");
+
+		const response = await move(viewer.session, {
+			issues: [issue.key],
+			columnId: todo.id,
+		});
+		expect(response.statusCode).toBe(403);
+		expect(response.json().error).toMatch(/SCHEDULE_ISSUES/);
+
+		const [stored] = await db
+			.select({ rank: issues.rank })
+			.from(issues)
+			.where(eq(issues.id, issue.id));
+		expect(stored?.rank).toBe("0|z");
 	});
 });
 

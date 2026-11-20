@@ -1931,6 +1931,13 @@ export async function moveIssues(
 		}
 	}
 
+	const epicOnly =
+		body.epic !== undefined &&
+		body.before === undefined &&
+		body.after === undefined &&
+		body.sprintId === undefined &&
+		body.columnId === undefined;
+
 	for (const row of rows) {
 		const needed: PermissionKey[] = [];
 		const transition = transitions.get(row.id)?.transition;
@@ -1941,25 +1948,12 @@ export async function moveIssues(
 			if (toDone && !fromDone) needed.push("RESOLVE_ISSUES");
 			if (!toDone && fromDone) needed.push("CLOSE_ISSUES");
 		}
-		if (
-			body.sprintId !== undefined ||
-			body.before !== undefined ||
-			body.after !== undefined
-		) {
-			needed.push("SCHEDULE_ISSUES");
-		}
+		if (!epicOnly) needed.push("SCHEDULE_ISSUES");
 		if (body.epic !== undefined) needed.push("EDIT_ISSUES");
 		for (const permission of needed) {
 			await requireIssuePermissionFor(actor, row.key, permission);
 		}
 	}
-
-	const epicOnly =
-		body.epic !== undefined &&
-		body.before === undefined &&
-		body.after === undefined &&
-		body.sprintId === undefined &&
-		body.columnId === undefined;
 	const targetPlan = epicOnly
 		? null
 		: await targetContainerPlan(board, config, actor, body);
