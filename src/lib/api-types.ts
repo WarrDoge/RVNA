@@ -318,7 +318,7 @@ export type Filter = {
 	favourite: boolean;
 	favouriteCount: number;
 	canEdit: boolean;
-	sharedWith: { projectIds: string[]; groups: string[] };
+	sharedWith?: { projectIds: string[]; groups: string[] };
 	createdAt: string;
 	updatedAt: string;
 };

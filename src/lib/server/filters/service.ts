@@ -36,10 +36,12 @@ export const filterSchema = z.object({
 	favourite: z.boolean(),
 	favouriteCount: z.number().int(),
 	canEdit: z.boolean(),
-	sharedWith: z.object({
-		projectIds: z.array(z.uuid()),
-		groups: z.array(z.string()),
-	}),
+	sharedWith: z
+		.object({
+			projectIds: z.array(z.uuid()),
+			groups: z.array(z.string()),
+		})
+		.optional(),
 	createdAt: z.iso.datetime(),
 	updatedAt: z.iso.datetime(),
 });
@@ -91,6 +93,7 @@ type FilterRow = {
 };
 
 function toFilter(row: FilterRow, viewerId: string, isAdmin: boolean) {
+	const canEdit = row.ownerId === viewerId || isAdmin;
 	return {
 		id: row.id,
 		name: row.name,
@@ -108,11 +111,15 @@ function toFilter(row: FilterRow, viewerId: string, isAdmin: boolean) {
 		},
 		favourite: Number(row.favourite) > 0,
 		favouriteCount: Number(row.favouriteCount),
-		canEdit: row.ownerId === viewerId || isAdmin,
-		sharedWith: {
-			projectIds: row.sharedProjects,
-			groups: row.sharedGroups,
-		},
+		canEdit,
+		...(canEdit
+			? {
+					sharedWith: {
+						projectIds: row.sharedProjects,
+						groups: row.sharedGroups,
+					},
+				}
+			: {}),
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
@@ -421,16 +428,15 @@ function toPageFilter(
 		owner: filter.owner,
 		favourite: filter.favourite,
 		canEdit: filter.canEdit,
-		sharedSome:
-			filter.sharedWith.projectIds.length + filter.sharedWith.groups.length > 0,
+		sharedSome: row.sharedProjects.length + row.sharedGroups.length > 0,
 		updatedAt: filter.updatedAt,
 	};
 	if (!filter.canEdit) return base satisfies PageFilter;
 	return {
 		...base,
 		sharedWith: {
-			projectIds: filter.sharedWith.projectIds,
-			groups: filter.sharedWith.groups,
+			projectIds: row.sharedProjects,
+			groups: row.sharedGroups,
 			groupIds: row.sharedGroupIds,
 		},
 	} satisfies PageFilter;

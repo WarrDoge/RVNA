@@ -432,6 +432,33 @@ test("an administrator may share a filter with anything", async () => {
 	expect(response.json().sharedWith.groups).toEqual([`t-${run}-viewers`]);
 });
 
+test("a viewer does not receive the share list", async () => {
+	const created = await request("POST", "/api/filters", adminSession, {
+		name: `Viewer share ${run}`,
+		jql: "project = DEMO",
+		shared: true,
+		sharedProjectIds: [hiddenProjectId],
+		sharedGroupIds: [groupId],
+	});
+	expect(created.statusCode).toBe(201);
+	const id = created.json().id as string;
+
+	const list = await request("GET", "/api/filters?scope=visible", otherSession);
+	const row = (list.json() as { id: string }[]).find(
+		(filter) => filter.id === id,
+	);
+	expect(row).toBeDefined();
+	expect(row).toMatchObject({ shared: true });
+	expect((row as { sharedWith?: unknown }).sharedWith).toBeUndefined();
+
+	const single = await request("GET", `/api/filters/${id}`, otherSession);
+	expect(single.statusCode).toBe(200);
+	expect(single.json().sharedWith).toBeUndefined();
+
+	const editor = await request("GET", `/api/filters/${id}`, adminSession);
+	expect(editor.json().sharedWith.projectIds).toEqual([hiddenProjectId]);
+});
+
 test("an existing share survives an edit even when the owner could not add it now", async () => {
 	const created = await createFilter(`Existing shares ${run}`);
 	await pool.query(
@@ -511,8 +538,10 @@ test("an edit that omits a share the editor cannot see keeps it", async () => {
 		sharedProjectIds: [],
 		sharedGroupIds: [],
 	});
-	expect(updated.sharedWith.projectIds).toEqual([hiddenProjectId]);
-	expect(updated.sharedWith.groups).toEqual([`t-${run}-viewers`]);
+	expect(updated.sharedWith).toMatchObject({
+		projectIds: [hiddenProjectId],
+		groups: [`t-${run}-viewers`],
+	});
 });
 
 test("an edit replaces a share the editor can see", async () => {
@@ -527,7 +556,7 @@ test("an edit replaces a share the editor can see", async () => {
 	const updated = await updateFilter(actor, created.id, {
 		sharedProjectIds: [],
 	});
-	expect(updated.sharedWith.projectIds).toEqual([]);
+	expect(updated.sharedWith?.projectIds).toEqual([]);
 });
 
 test("a filter page only gives share IDs to an editor", async () => {
