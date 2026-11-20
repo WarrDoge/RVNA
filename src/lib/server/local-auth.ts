@@ -25,7 +25,10 @@ export async function recordAudit(
 
 const GENERIC_FAILURE = "Incorrect username or password";
 const LOCK_MINUTES = 15;
-const STALE_MS = 60 * 60 * 1000;
+const STALE_MS = {
+	user: 60 * 60 * 1000,
+	ip: 15 * 60 * 1000,
+} as const;
 const MAX_DELAY_SECONDS = 32;
 const PURGE_EVERY_MS = 60 * 1000;
 
@@ -33,9 +36,10 @@ const PURGE_EVERY_MS = 60 * 1000;
  * From `delayFrom` failures a growing delay (2, 4, ... 32 s) separates attempts;
  * at `lockAt` failures the key is locked for 15 minutes. The user key is the
  * typed name and the client address, so one address cannot lock the account for
- * its owner elsewhere. The IP counter has x5 thresholds so an office behind one
- * NAT does not lock itself out. Many addresses still get ten guesses each for a
- * name; the password rules carry that.
+ * its owner elsewhere. The IP counter has x5 thresholds and forgets failures after
+ * 15 minutes without a new one, so an office behind one NAT does not stay locked
+ * out. Many addresses still get ten guesses each for a name; the password rules
+ * carry that.
  */
 const limits = {
 	user: { delayFrom: 5, lockAt: 10 },
@@ -57,7 +61,8 @@ async function purgeStaleThrottle() {
 /**
  * Counts one attempt against the key before the password is checked, so a burst of
  * parallel requests cannot all slip past the limit. Returns 0 when the attempt may
- * proceed, otherwise the seconds to wait. A successful login clears the counters.
+ * proceed, otherwise the seconds to wait. A successful login clears the name counter;
+ * the address counter only forgets its failures after a quiet period.
  */
 async function reserveAttempt(kind: ThrottleKind, key: string) {
 	await purgeStaleThrottle();
@@ -87,7 +92,8 @@ async function reserveAttempt(kind: ThrottleKind, key: string) {
 		}
 
 		const expired =
-			(lockedUntil !== null && lockedUntil <= now) || now - last > STALE_MS;
+			(lockedUntil !== null && lockedUntil <= now) ||
+			now - last > STALE_MS[kind];
 		const failures = expired ? 0 : row.failures;
 		if (failures >= delayFrom) {
 			const delay = Math.min(
@@ -118,6 +124,22 @@ async function clearAttempts(kind: ThrottleKind, key: string) {
 	await db
 		.delete(loginThrottle)
 		.where(and(eq(loginThrottle.kind, kind), eq(loginThrottle.key, key)));
+}
+
+/** Undo the reservation of a successful attempt, leaving earlier failures in place. */
+async function releaseAttempt(kind: ThrottleKind, key: string) {
+	await db.transaction(async (tx) => {
+		const [row] = await tx
+			.update(loginThrottle)
+			.set({ failures: sql`greatest(${loginThrottle.failures} - 1, 0)` })
+			.where(and(eq(loginThrottle.kind, kind), eq(loginThrottle.key, key)))
+			.returning({ failures: loginThrottle.failures });
+		if (row?.failures === 0) {
+			await tx
+				.delete(loginThrottle)
+				.where(and(eq(loginThrottle.kind, kind), eq(loginThrottle.key, key)));
+		}
+	});
 }
 
 /** One `login.locked` row per attempted name and minute, so a flood cannot fill the log. */
@@ -214,7 +236,7 @@ export async function loginLocal(
 	}
 
 	await clearAttempts("user", key);
-	await clearAttempts("ip", ip);
+	await releaseAttempt("ip", ip);
 
 	if (result.needsRehash) {
 		await db

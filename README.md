@@ -983,10 +983,11 @@ From 5 failures for a username from one address the next attempt from that addre
 8, 16, then 32 seconds; at 10 failures that pair is locked for 15 minutes, while a correct password
 from another address still works. The IP counter has five times the thresholds (25 and 50), so an
 office behind one NAT does not lock itself out. A delayed or locked request is answered `429` with
-`Retry-After` and the password is not checked. A successful login, an expired lock, or an hour
-without failures resets the counter. Wrong, unknown, inactive and password-less accounts all give
-the same `401` answer. Known limit: an attacker with many addresses gets ten guesses per address for
-a name; the password rules carry that.
+`Retry-After` and the password is not checked. A successful login clears only that account's counter
+at that address; the address counter is never cleared by a success and forgets its failures after
+15 minutes without a new failure. An expired lock or an hour without failures resets a name counter.
+Wrong, unknown, inactive and password-less accounts all give the same `401` answer. Known limit: an
+attacker with many addresses gets ten guesses per address for a name; the password rules carry that.
 Logins, failures and lockouts are written to the audit log. Behind a reverse proxy set
 `ADDRESS_HEADER=x-forwarded-for` and `XFF_DEPTH=1` (the Helm chart does when `trustProxy` is on):
 the client IP is then the address the proxy appended, which a client cannot forge. Without them

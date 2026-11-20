@@ -629,7 +629,7 @@ describe("throttling", () => {
 		expect((await throttleRow("user", staleKey))?.failures).toBe(1);
 	});
 
-	test("a success clears the user and IP counters", async () => {
+	test("a success clears only that user's counter at that address", async () => {
 		const user = await makePasswordUser("clear");
 		const ip = nextIp();
 		const key = userKey(user.username, ip);
@@ -647,7 +647,18 @@ describe("throttling", () => {
 		const ok = await attempt({ username: user.username, password }, { ip });
 		expect(ok.statusCode).toBe(200);
 		expect(await throttleRow("user", key)).toBeUndefined();
-		expect(await throttleRow("ip", ip)).toBeUndefined();
+		expect((await throttleRow("ip", ip))?.failures).toBe(2);
+	});
+
+	test("the per-address counter forgets failures after 15 minutes without a new one", async () => {
+		const ip = nextIp();
+		await setThrottle("ip", ip, { failures: 25, ageSeconds: 901 });
+		const response = await attempt(
+			{ username: name("ipstale"), password: "wrong password 123" },
+			{ ip },
+		);
+		expect(response.statusCode).toBe(401);
+		expect((await throttleRow("ip", ip))?.failures).toBe(1);
 	});
 
 	test("the per-IP counter has five times the thresholds and blocks every name", async () => {
@@ -710,10 +721,10 @@ describe("throttling", () => {
 		const ip = nextIp();
 		await attempt(
 			{ username: user.username, password: "wrong password 123" },
-			{ ip, headers: { "x-forwarded-for": "203.0.113.9" } },
+			{ ip, headers: { "x-forwarded-for": "198.51.100.9" } },
 		);
 		expect((await throttleRow("ip", ip))?.failures).toBe(1);
-		expect(await throttleRow("ip", "203.0.113.9")).toBeUndefined();
+		expect(await throttleRow("ip", "198.51.100.9")).toBeUndefined();
 	});
 });
 
@@ -901,7 +912,15 @@ describe("forced password change", () => {
 			url: "/api/projects",
 			headers: { authorization: `Bearer ${token}` },
 		});
-		expect(bearer.statusCode).toBe(200);
+		expect(bearer.statusCode).toBe(403);
+		expect(bearer.json()).toEqual({ error: "Password change required" });
+
+		const bearerMe = await app.inject({
+			method: "GET",
+			url: "/api/me",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(bearerMe.statusCode).toBe(200);
 
 		const changed = await injectAs(app, sid, "POST", "/api/me/password", {
 			currentPassword: password,
