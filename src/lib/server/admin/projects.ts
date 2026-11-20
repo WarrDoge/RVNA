@@ -33,6 +33,7 @@ import {
 	users,
 	workflows,
 } from "../schema.ts";
+import { pageAttachments } from "../schema-wiki.ts";
 import { audit } from "./audit.ts";
 
 const projectParams = z.object({ key: z.string().min(1).max(100) });
@@ -694,6 +695,12 @@ async function removeUnreferencedFiles(
 			.where(eq(attachments.storagePath, file.storagePath))
 			.limit(1);
 		if (referenced) continue;
+		const [pageReferenced] = await db
+			.select({ id: pageAttachments.id })
+			.from(pageAttachments)
+			.where(eq(pageAttachments.storagePath, file.storagePath))
+			.limit(1);
+		if (pageReferenced) continue;
 		const path = resolve(root, file.storagePath);
 		if (!path.startsWith(root + sep)) continue;
 		await unlink(path).catch(() => undefined);
@@ -706,6 +713,12 @@ async function removeUnreferencedFiles(
 			.where(eq(attachments.sha256, hash))
 			.limit(1);
 		if (referenced) continue;
+		const [pageReferenced] = await db
+			.select({ id: pageAttachments.id })
+			.from(pageAttachments)
+			.where(eq(pageAttachments.sha256, hash))
+			.limit(1);
+		if (pageReferenced) continue;
 		const directory = resolve(root, hash);
 		if (!directory.startsWith(root + sep)) continue;
 		await rm(directory, { recursive: true, force: true }).catch(

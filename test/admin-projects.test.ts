@@ -34,6 +34,11 @@ import {
 	workflows,
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
+import {
+	pageAttachments,
+	pages,
+	spaces,
+} from "../src/lib/server/schema-wiki.ts";
 import { injectAs, makeUser, newRun, type TestUser } from "./admin-helpers.ts";
 import { buildServer, cleanupTestData } from "./helpers.ts";
 import { allAppRoutes, routeKey } from "./route-inventory.ts";
@@ -133,6 +138,47 @@ async function insertAttachment(
 		})
 		.returning({ id: attachments.id });
 	return { id: row.id, storagePath, sha256, path };
+}
+
+async function insertPageAttachment(content: string, fileName = "wiki.txt") {
+	const suffix = randomUUID().slice(0, 8);
+	const [space] = await db
+		.insert(spaces)
+		.values({
+			sourceId: `${tag}:space:${suffix}`,
+			key: keyFor(`W${suffix.slice(0, 3).toUpperCase()}`),
+			name: `${tag} wiki space`,
+		})
+		.returning({ id: spaces.id });
+	const [page] = await db
+		.insert(pages)
+		.values({
+			sourceId: `${tag}:page:${suffix}`,
+			spaceId: space.id,
+			title: `${tag} wiki page ${suffix}`,
+			creatorId: admin.id,
+			created: new Date(),
+			updated: new Date(),
+		})
+		.returning({ id: pages.id });
+	const id = randomUUID();
+	const sha256 = createHash("sha256").update(content).digest("hex");
+	const storagePath = join(sha256, id);
+	const path = join(env.ATTACHMENTS_DIR, storagePath);
+	await mkdir(dirname(path), { recursive: true });
+	await writeFile(path, content);
+	await db.insert(pageAttachments).values({
+		sourceId: `local:${id}`,
+		pageId: page.id,
+		fileName,
+		mimeType: "text/plain",
+		size: Buffer.byteLength(content),
+		authorId: admin.id,
+		created: new Date(),
+		storagePath,
+		sha256,
+	});
+	return { storagePath, sha256, path };
 }
 
 async function countRows(table: PgTable, where: SQL) {
@@ -270,6 +316,9 @@ afterAll(async () => {
 	await pool.query("delete from priorities where id = $1", [priorityId]);
 	await pool.query("delete from link_types where id = $1", [linkTypeId]);
 	await pool.query("delete from fields where id = $1", [fieldId]);
+	await pool.query("delete from spaces where source_id like $1", [
+		`${tag}:space:%`,
+	]);
 	await cleanupTestData(run);
 	await app.close();
 });
@@ -1212,6 +1261,14 @@ describe("deleting projects", () => {
 			"kept.txt",
 		);
 
+		// A wiki page attachment with the same content lives in the same hash directory.
+		const wiki = await insertPageAttachment("wiki only content");
+		const wikiBytes = await insertAttachment(
+			issue.id,
+			"wiki only content",
+			"wiki-shared.txt",
+		);
+
 		const wrong = await injectAs(
 			app,
 			admin.session,
@@ -1243,7 +1300,9 @@ describe("deleting projects", () => {
 
 		await expect(stat(own.path)).rejects.toThrow();
 		await expect(stat(shared.path)).rejects.toThrow();
+		await expect(stat(wikiBytes.path)).rejects.toThrow();
 		expect((await stat(kept.path)).isFile()).toBe(true);
+		expect((await stat(wiki.path)).isFile()).toBe(true);
 
 		const audits = await auditRows("project.delete", project.id);
 		expect(audits).toHaveLength(1);
