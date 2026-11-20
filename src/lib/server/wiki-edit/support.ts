@@ -281,12 +281,12 @@ export async function pageEditSummary(actor: CurrentUser, id: string) {
 	};
 }
 
-/** The trash buttons the actor may use: create restores, administer purges. */
+/** The trash buttons the actor may use: delete restores, administer purges. */
 export async function trashPermissions(actor: CurrentUser, spaceKey: string) {
 	const space = await loadSpace(db, spaceKey);
 	const grants = await spaceGrants(actor, space.id);
 	return {
-		canRestore: can(grants, "create"),
+		canRestore: can(grants, "delete") || can(grants, "delete_own"),
 		canPurge: can(grants, "administer"),
 	};
 }
