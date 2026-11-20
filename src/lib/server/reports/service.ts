@@ -14,6 +14,7 @@ import {
 	type StatusCategory,
 } from "../../shared/agile-reports/index.ts";
 import { JqlError, parseJql } from "../../shared/jql/index.ts";
+import { canAccessProjectlessBoard } from "../agile/service.ts";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
@@ -689,7 +690,12 @@ function jqlFailure(error: unknown): never {
 async function requireReportBoard(user: CurrentUser, rapidViewId: number) {
 	const board = await loadBoard(rapidViewId);
 	if (!board) throw new HttpError(404, "Board not found");
-	if (!board.projectId) return board;
+	if (!board.projectId) {
+		if (!(await canAccessProjectlessBoard(board, user))) {
+			throw new HttpError(404, "Board not found");
+		}
+		return board;
+	}
 	const project = await projectForId(board.projectId);
 	if (!project || !(await can(user, "BROWSE_PROJECTS", project))) {
 		throw new HttpError(404, "Board not found");

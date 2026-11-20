@@ -1082,7 +1082,10 @@ export async function canManageBoard(
 	return Boolean(project) && (await can(user, permission, project));
 }
 
-async function canAccessProjectlessBoard(board: BoardRow, user: CurrentUser) {
+export async function canAccessProjectlessBoard(
+	board: Pick<BoardRow, "ownerId" | "filterJql" | "subFilterJql">,
+	user: CurrentUser,
+) {
 	if (user.isAdmin || board.ownerId === user.id) return true;
 	const catalog = await loadCatalog();
 	const visible = await viewerProjectIds(user);

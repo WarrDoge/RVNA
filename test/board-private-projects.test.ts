@@ -20,12 +20,15 @@ const visibleKey = fixtureKey(run);
 const hiddenKey = `PH${run.slice(0, 5).toUpperCase()}`;
 const visibleBoardRapidViewId = 970_000 + Number.parseInt(run.slice(0, 4), 16);
 const hiddenBoardRapidViewId = visibleBoardRapidViewId + 1;
+const projectlessHiddenRapidViewId = hiddenBoardRapidViewId + 1;
 const visibleBoardName = `Visible private board ${run}`;
 const hiddenBoardName = `Hidden private board ${run}`;
+const projectlessHiddenSprintName = `Hidden projectless sprint ${run}`;
 
 let app: TestApp;
 let client: Client;
 let owner: TestUser;
+let outsider: TestUser;
 let visible: SeedResult;
 let hidden: SeedResult;
 let epicTypeId: string;
@@ -37,6 +40,7 @@ let visibleBacklogIssueKey: string;
 let hiddenBacklogIssueKey: string;
 let visibleBoardId: string;
 let hiddenBoardId: string;
+let projectlessHiddenBoardId: string;
 let activeSprintId: string;
 
 function actor(user: TestUser): CurrentUser {
@@ -133,6 +137,7 @@ beforeAll(async () => {
 	await client.connect();
 	app = buildServer();
 	owner = await makeUser(run, "owner");
+	outsider = await makeUser(run, "outsider");
 
 	visible = await createProjectFixture(client, {
 		run: `${run}vis`,
@@ -234,6 +239,30 @@ beforeAll(async () => {
 		filterJql: `project = ${hiddenKey} ORDER BY key ASC`,
 		ownerId: owner.id,
 	});
+	const projectlessHidden = await client.query<{ id: string }>(
+		`insert into boards
+			(rapid_view_id, source_id, name, type, filter_jql, project_id, owner_id,
+			 config_imported)
+		 values ($1, $2, $3, 'scrum', $4, null, $5, true)
+		 returning id`,
+		[
+			projectlessHiddenRapidViewId,
+			`test:${run}:projectless-hidden-board`,
+			"Projectless hidden fixture board",
+			`project = ${hiddenKey}`,
+			owner.id,
+		],
+	);
+	projectlessHiddenBoardId = projectlessHidden.rows[0].id;
+	await client.query(
+		`insert into sprints (source_id, board_id, name, state, sequence)
+		 values ($1, $2, $3, 'future', 0)`,
+		[
+			`test:${run}:projectless-hidden-sprint`,
+			projectlessHiddenBoardId,
+			projectlessHiddenSprintName,
+		],
+	);
 
 	const sprint = await client.query<{ id: string }>(
 		`insert into sprints
@@ -259,7 +288,7 @@ beforeAll(async () => {
 afterAll(async () => {
 	if (!client) return;
 	await client.query("delete from boards where id = any($1::uuid[])", [
-		[visibleBoardId, hiddenBoardId].filter(Boolean),
+		[visibleBoardId, hiddenBoardId, projectlessHiddenBoardId].filter(Boolean),
 	]);
 	await client.query("delete from sprints where source_id like $1", [
 		`test:${run}:sprint%`,
@@ -420,6 +449,33 @@ test("a board whose project the viewer cannot browse is not found", async () => 
 	);
 	expect(listPage.statusCode).toBe(200);
 	expect(listPage.body).not.toContain(hiddenBoardName);
+});
+
+test("a report hides a projectless board the actor cannot open", async () => {
+	const normal = await injectAs(
+		app,
+		outsider.session,
+		"GET",
+		`/api/boards/${projectlessHiddenRapidViewId}`,
+	);
+	expect(normal.statusCode).toBe(404);
+
+	const report = await injectAs(
+		app,
+		outsider.session,
+		"GET",
+		`/api/boards/${projectlessHiddenRapidViewId}/reports/sprints`,
+	);
+	expect(report.statusCode).toBe(404);
+	expect(report.body).not.toContain(projectlessHiddenSprintName);
+
+	const ownerReport = await injectAs(
+		app,
+		owner.session,
+		"GET",
+		`/api/boards/${projectlessHiddenRapidViewId}/reports/sprints`,
+	);
+	expect(ownerReport.statusCode).toBe(200);
 });
 
 type BoardMutation = {
