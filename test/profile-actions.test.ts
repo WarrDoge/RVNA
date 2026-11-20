@@ -73,6 +73,39 @@ test("an invalid token expiry is rejected instead of creating a token that never
 	expect(created).toBeUndefined();
 });
 
+test("a forced password change allows only the password action", async () => {
+	const user = await makePasswordUser("must-token", true);
+	const [token] = await db
+		.insert(apiTokens)
+		.values({
+			userId: user.id,
+			name: "Existing token",
+			tokenHash: randomUUID(),
+		})
+		.returning({ id: apiTokens.id });
+
+	for (const fields of [
+		{ intent: "createToken", name: "Escape token" },
+		{ intent: "revokeToken", id: token?.id ?? "" },
+		{ intent: "saveNotifications", emailNotifications: "on" },
+		{ intent: "anythingElse" },
+	]) {
+		const response = await formPost(
+			user.session,
+			"/secure/ViewProfile.jspa?selectedTab=password",
+			fields,
+		);
+		expect(response.statusCode).toBe(403);
+		expect(response.body).toContain("Password change required");
+	}
+
+	const tokens = await db
+		.select({ id: apiTokens.id })
+		.from(apiTokens)
+		.where(eq(apiTokens.userId, user.id));
+	expect(tokens).toEqual([{ id: token?.id }]);
+});
+
 test("changing the forced password refreshes locals so the profile renders normally", async () => {
 	const user = await makePasswordUser("must-change", true);
 	const response = await formPost(

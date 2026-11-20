@@ -1,7 +1,7 @@
 import { fail } from "@sveltejs/kit";
 import { z } from "zod";
 import { SESSION_COOKIE } from "#lib/server/auth.ts";
-import { isHttpError } from "#lib/server/http.ts";
+import { HttpError, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
 import { changePassword } from "#lib/server/local-auth.ts";
 import { me } from "#lib/server/me/service.ts";
@@ -66,6 +66,10 @@ export const load = pageLoad(async (event, actor) => {
 export const actions = {
 	default: pageAction(async ({ event, form }, actor) => {
 		const intent = String(form.get("intent") ?? "");
+
+		if (actor.mustChangePassword && intent !== "changePassword") {
+			throw new HttpError(403, "Password change required");
+		}
 
 		if (intent === "changePassword") {
 			const currentPassword = String(form.get("currentPassword") ?? "");
