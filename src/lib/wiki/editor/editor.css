@@ -526,7 +526,7 @@ textarea.wke-input {
 	position: absolute;
 	inset: 0;
 	z-index: 2;
-	background: #4c9aff40;
+	background: #3db3a440;
 	content: "";
 	pointer-events: none;
 }

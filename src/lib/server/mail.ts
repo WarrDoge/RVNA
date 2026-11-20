@@ -335,16 +335,16 @@ export function renderNotificationMail(input: {
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f5f7;padding:24px 12px">
 <tr><td align="center">
 <table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:100%;max-width:640px;background:#ffffff;border:1px solid #dfe1e6">
-<tr><td style="padding:16px 20px;background:#0052cc">
+<tr><td style="padding:16px 20px;background:#1d7a6e">
 <a href="${escapeHtml(issueUrl)}" style="color:#ffffff;font-size:16px;font-weight:600;text-decoration:none">${escapeHtml(input.issue.key)}</a>
-<span style="color:#deebff;font-size:16px"> ${escapeHtml(summary)}</span>
+<span style="color:#d5f2ee;font-size:16px"> ${escapeHtml(summary)}</span>
 </td></tr>
 <tr><td style="padding:20px">
 ${input.events.map((event) => eventHtml(event, issueUrl, input.issue.key)).join("")}
 </td></tr>
 <tr><td style="padding:16px 20px;border-top:1px solid #dfe1e6;font-size:12px;line-height:18px;color:#6b778c">
 <p style="margin:0 0 6px">You are receiving this because ${escapeHtml(joinReasons(input.reasons))}.</p>
-<p style="margin:0">Manage your <a href="${escapeHtml(settingsUrl)}" style="color:#0052cc">notification settings</a>.</p>
+<p style="margin:0">Manage your <a href="${escapeHtml(settingsUrl)}" style="color:#1d7a6e">notification settings</a>.</p>
 </td></tr>
 </table>
 </td></tr>

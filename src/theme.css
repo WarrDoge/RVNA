@@ -1,7 +1,7 @@
 /*
  * Theme tokens from the package @atlaskit/tokens.
  * Copyright 2019 Atlassian Pty Ltd. Licensed under the Apache License, Version 2.0; see LICENSE and NOTICE.
- * Changed for RVNA: the font family names.
+ * Changed for RVNA: the font family names, and the brand, selection, link and focus colours.
  */
 html[data-color-mode="light"][data-theme~="light:dark"], [data-subtree-theme][data-color-mode="light"][data-theme~="light:dark"],
 html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data-color-mode="dark"][data-theme~="dark:dark"] {
@@ -134,8 +134,8 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-background-code-removed-highlight: #42221F;
   --ds-background-code-removed-line: #5D1F1AB2;
   --ds-background-disabled: #E3E4F21F;
-  --ds-background-draghandle: #669DF1;
-  --ds-background-droptarget: #1C2B42;
+  --ds-background-draghandle: #3DB3A4;
+  --ds-background-droptarget: #17302E;
   --ds-background-input: #242528;
   --ds-background-input-hovered: #2B2C2F;
   --ds-background-input-pressed: #242528;
@@ -151,21 +151,21 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-background-neutral-bold: #CECFD2;
   --ds-background-neutral-bold-hovered: #BFC1C4;
   --ds-background-neutral-bold-pressed: #A9ABAF;
-  --ds-background-selected: #1C2B42;
-  --ds-background-selected-hovered: #123263;
-  --ds-background-selected-pressed: #1558BC;
-  --ds-background-selected-bold: #669DF1;
-  --ds-background-selected-bold-hovered: #8FB8F6;
-  --ds-background-selected-bold-pressed: #CFE1FD;
-  --ds-background-brand-subtlest: #1C2B42;
-  --ds-background-brand-subtlest-hovered: #123263;
-  --ds-background-brand-subtlest-pressed: #144794;
-  --ds-background-brand-bold: #669DF1;
-  --ds-background-brand-bold-hovered: #8FB8F6;
-  --ds-background-brand-bold-pressed: #ADCBFB;
-  --ds-background-brand-boldest: #E9F2FE;
-  --ds-background-brand-boldest-hovered: #CFE1FD;
-  --ds-background-brand-boldest-pressed: #ADCBFB;
+  --ds-background-selected: #17302E;
+  --ds-background-selected-hovered: #15443F;
+  --ds-background-selected-pressed: #1D6F65;
+  --ds-background-selected-bold: #3DB3A4;
+  --ds-background-selected-bold-hovered: #6FCFC2;
+  --ds-background-selected-bold-pressed: #C4EFE9;
+  --ds-background-brand-subtlest: #17302E;
+  --ds-background-brand-subtlest-hovered: #15443F;
+  --ds-background-brand-subtlest-pressed: #185A52;
+  --ds-background-brand-bold: #3DB3A4;
+  --ds-background-brand-bold-hovered: #6FCFC2;
+  --ds-background-brand-bold-pressed: #9BE0D6;
+  --ds-background-brand-boldest: #E3F7F4;
+  --ds-background-brand-boldest-hovered: #C4EFE9;
+  --ds-background-brand-boldest-pressed: #9BE0D6;
   --ds-background-danger: #42221F;
   --ds-background-danger-hovered: #5D1F1A;
   --ds-background-danger-pressed: #872821;
@@ -239,14 +239,14 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-border-accent-gray-subtle: #4B4D51;
   --ds-border-code: #E3E4F21F;
   --ds-border-disabled: #CECED912;
-  --ds-border-dropindicator: #4688EC;
+  --ds-border-dropindicator: #2A9D8F;
   --ds-border-dropindicator-warning: #F68909;
-  --ds-border-focused: #8FB8F6;
+  --ds-border-focused: #6FCFC2;
   --ds-border-input: #7E8188;
   --ds-border-input-search: #E3E4F21F;
   --ds-border-inverse: #18191A;
-  --ds-border-selected: #669DF1;
-  --ds-border-brand: #669DF1;
+  --ds-border-selected: #3DB3A4;
+  --ds-border-brand: #3DB3A4;
   --ds-border-danger: #F15B50;
   --ds-border-danger-subtle: #AE2E24;
   --ds-border-warning: #F68909;
@@ -292,8 +292,8 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-text-code-tags: #FCA700;
   --ds-text-disabled: #E5E9F640;
   --ds-text-inverse: #1F1F21;
-  --ds-text-selected: #669DF1;
-  --ds-text-brand: #669DF1;
+  --ds-text-selected: #3DB3A4;
+  --ds-text-brand: #3DB3A4;
   --ds-text-danger: #FD9891;
   --ds-text-danger-bolder: #FFD5D2;
   --ds-text-warning: #FBC828;
@@ -320,8 +320,8 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-icon-accent-gray: #7E8188;
   --ds-icon-disabled: #E5E9F640;
   --ds-icon-inverse: #1F1F21;
-  --ds-icon-selected: #669DF1;
-  --ds-icon-brand: #669DF1;
+  --ds-icon-selected: #3DB3A4;
+  --ds-icon-brand: #3DB3A4;
   --ds-icon-danger: #F15B50;
   --ds-icon-warning: #FBC828;
   --ds-icon-warning-inverse: #1F1F21;
@@ -330,8 +330,8 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-icon-information: #4688EC;
   --ds-icon-subtlest: #96999E;
   --ds-icon-subtle: #A9ABAF;
-  --ds-link: #669DF1;
-  --ds-link-pressed: #8FB8F6;
+  --ds-link: #3DB3A4;
+  --ds-link-pressed: #6FCFC2;
   --ds-link-visited: #D8A0F7;
   --ds-link-visited-pressed: #EED7FC;
   --ds-interaction-hovered: #ffffff33;
@@ -339,7 +339,7 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-skeleton: #CECED912;
   --ds-skeleton-subtle: #BDBDBD0A;
   --ds-blanket: #10121499;
-  --ds-blanket-selected: #1D7AFC14;
+  --ds-blanket-selected: #2A9D8F14;
   --ds-blanket-danger: #E3493514;
   --ds-chart-categorical-1: #4688EC;
   --ds-chart-categorical-1-hovered: #669DF1;
@@ -419,8 +419,8 @@ html[data-color-mode="dark"][data-theme~="dark:dark"], [data-subtree-theme][data
   --ds-chart-gray-bolder-hovered: #A9ABAF;
   --ds-chart-gray-boldest: #A9ABAF;
   --ds-chart-gray-boldest-hovered: #BFC1C4;
-  --ds-chart-brand: #4688EC;
-  --ds-chart-brand-hovered: #669DF1;
+  --ds-chart-brand: #2A9D8F;
+  --ds-chart-brand-hovered: #3DB3A4;
   --ds-chart-danger: #E2483D;
   --ds-chart-danger-hovered: #F15B50;
   --ds-chart-danger-bold: #FFB8B2;
