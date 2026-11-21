@@ -13,6 +13,7 @@ import {
 	pageComments,
 	pageLabels,
 	pageRestrictions,
+	pageVersions,
 	permissionGrants,
 	permissionSchemes,
 	projects,
@@ -21,7 +22,7 @@ import {
 	users,
 } from "../src/lib/server/schema.ts";
 import { pages, spaces } from "../src/lib/server/schema-wiki.ts";
-import { visiblePages } from "../src/lib/server/wiki/data.ts";
+import { pageContributors, visiblePages } from "../src/lib/server/wiki/data.ts";
 import {
 	type MacroContext,
 	renderMacro,
@@ -581,6 +582,30 @@ describe("reader visibility", () => {
 		const html = (await render(linkHostPage, reader)) ?? "";
 		expect(html).toContain("wiki-missing-link");
 		expect(html).not.toContain(hiddenPage.sourceId);
+	});
+
+	test("contributors of a page the reader cannot see are not returned", async () => {
+		await db.insert(pageVersions).values({
+			sourceId: `ws-hidden-version-${randomUUID()}`,
+			pageId: hiddenPage.id,
+			number: 1,
+			title: hiddenPage.title,
+			bodyStorage: "<p>secret</p>",
+			bodyHtml: "<p>secret</p>",
+			authorId: editor.id,
+			created: new Date(Date.UTC(2026, 0, 1)),
+		});
+		expect(
+			await pageContributors(await loadWikiAccess(nobody), hiddenPage.id),
+		).toEqual([]);
+		expect(
+			(
+				await pageContributors(
+					await loadWikiAccess({ ...editor, isAdmin: true }),
+					hiddenPage.id,
+				)
+			).length,
+		).toBe(1);
 	});
 
 	test("a restricted home page and raw description are not serialised", async () => {

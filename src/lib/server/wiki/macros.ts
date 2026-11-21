@@ -453,7 +453,7 @@ const createFromTemplate: MacroRenderer = (macro, ctx) => {
 };
 
 const contributors: MacroRenderer = async (macro, ctx) => {
-	const rows = await pageContributors(ctx.page.id, {
+	const rows = await pageContributors(ctx.access, ctx.page.id, {
 		limit: integerParam(macro.params.limit, 10, 1, 50),
 		order: macro.params.order,
 	});

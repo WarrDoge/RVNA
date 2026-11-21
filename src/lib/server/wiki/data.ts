@@ -93,16 +93,19 @@ function toPageLink(row: PageLinkRow): PageLink {
 	};
 }
 
-export function visiblePages(access: WikiAccess) {
+function readablePages(access: WikiAccess) {
 	const spaceIds = [...access.readableSpaceIds];
 	const filters = [
 		spaceIds.length > 0 ? inArray(pages.spaceId, spaceIds) : sql`false`,
-		eq(pages.status, "current"),
 	];
 	if (access.hiddenPageIds.size > 0) {
 		filters.push(notInArray(pages.id, [...access.hiddenPageIds]));
 	}
 	return and(...filters);
+}
+
+export function visiblePages(access: WikiAccess) {
+	return and(readablePages(access), eq(pages.status, "current"));
 }
 
 function visibleRaw(access: WikiAccess, alias = "p") {
@@ -252,6 +255,7 @@ export type Contributor = {
 };
 
 export async function pageContributors(
+	access: WikiAccess,
 	pageId: string,
 	options: { limit?: number; order?: string } = {},
 ): Promise<Contributor[]> {
@@ -270,7 +274,8 @@ export async function pageContributors(
 		})
 		.from(pageVersions)
 		.innerJoin(users, eq(users.id, pageVersions.authorId))
-		.where(eq(pageVersions.pageId, pageId))
+		.innerJoin(pages, eq(pages.id, pageVersions.pageId))
+		.where(and(eq(pageVersions.pageId, pageId), readablePages(access)))
 		.groupBy(users.id, users.username, users.displayName)
 		.orderBy(order)
 		.limit(Math.min(Math.max(options.limit ?? 10, 1), 50));
