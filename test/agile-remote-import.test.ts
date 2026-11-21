@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	fetchSprintReport,
@@ -41,6 +41,7 @@ const run = randomUUID().slice(0, 8);
 const tag = `agile-remote-${run}`;
 const projectKey = `R${run.slice(0, 6).toUpperCase()}`;
 const rapidViewId = 880000 + Number.parseInt(run.slice(0, 4), 16);
+const secondRapidViewId = rapidViewId + 1;
 const sprintId = 770000 + Number.parseInt(run.slice(0, 3), 16);
 const ownerName = `t-${tag}-owner`;
 const issueKeys = [`${projectKey}-1`, `${projectKey}-2`];
@@ -231,6 +232,11 @@ const sprintReport: JiraSprintReport = {
 
 class FakeClient {
 	readonly calls: string[] = [];
+	private readonly sprints: JiraSprint[];
+
+	constructor(sprints: JiraSprint[] = [jiraSprint]) {
+		this.sprints = sprints;
+	}
 
 	async getJson(path: string): Promise<unknown> {
 		this.calls.push(path);
@@ -250,7 +256,7 @@ class FakeClient {
 			return filter;
 		}
 		if (path === `/rest/agile/1.0/board/${rapidViewId}/sprint`) {
-			return { values: [jiraSprint], isLast: true };
+			return { values: this.sprints, isLast: true };
 		}
 		if (path === `/rest/agile/1.0/board/${rapidViewId}/issue`) {
 			return {
@@ -278,7 +284,14 @@ class FakeClient {
 }
 
 async function cleanup() {
-	await db.delete(boards).where(eq(boards.sourceId, String(rapidViewId)));
+	await db
+		.delete(boards)
+		.where(
+			inArray(boards.sourceId, [
+				String(rapidViewId),
+				String(secondRapidViewId),
+			]),
+		);
 	await db.delete(projects).where(eq(projects.key, projectKey));
 	await db.delete(users).where(eq(users.username, ownerName));
 	await db.delete(statuses).where(eq(statuses.sourceId, `${tag}-new`));
@@ -589,6 +602,41 @@ describe("importJiraAgile", () => {
 		expect(reset.rank).toBe("0|a");
 		expect(reset.locallyChangedAt).toBeNull();
 		expect(await membershipCount()).toBe(1);
+	});
+
+	test("cleaning up one board keeps a sprint that another board still lists", async () => {
+		await importJiraAgile(new FakeClient() as unknown as JiraClient, db, {
+			privateApis: true,
+		});
+		const [sprintRow] = await db
+			.select()
+			.from(sprints)
+			.where(eq(sprints.sourceId, String(sprintId)));
+		const [other] = await db
+			.insert(boards)
+			.values({
+				rapidViewId: secondRapidViewId,
+				sourceId: String(secondRapidViewId),
+				name: "Other board",
+				type: "scrum",
+				filterJql: "",
+			})
+			.returning();
+		await db.insert(boardSprints).values({
+			boardId: other.id,
+			sprintId: sprintRow.id,
+			sequence: 0,
+		});
+
+		await importJiraAgile(new FakeClient([]) as unknown as JiraClient, db, {
+			privateApis: true,
+		});
+
+		const kept = await db
+			.select()
+			.from(boardSprints)
+			.where(eq(boardSprints.boardId, other.id));
+		expect(kept.map((row) => row.sprintId)).toEqual([sprintRow.id]);
 	});
 
 	test("imports a board when Jira has none of the Jira Software fields", async () => {

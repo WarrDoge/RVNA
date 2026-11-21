@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
 	boardColumnStatuses,
 	boardColumns,
@@ -786,9 +786,12 @@ async function replaceBoardSprints(
 	const missing = sprintIds.filter((id) => !existingIds.has(id));
 	if (stale.length > 0) {
 		await database.delete(boardSprints).where(
-			inArray(
-				boardSprints.sprintId,
-				stale.map((row) => row.sprintId),
+			and(
+				eq(boardSprints.boardId, boardId),
+				inArray(
+					boardSprints.sprintId,
+					stale.map((row) => row.sprintId),
+				),
 			),
 		);
 	}
