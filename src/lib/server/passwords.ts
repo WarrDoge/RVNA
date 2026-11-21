@@ -87,6 +87,14 @@ function encode(parameters: Parameters, salt: Buffer, tag: Buffer) {
 
 type Parsed = { parameters: Parameters; salt: Buffer; tag: Buffer };
 
+// A corrupt row must not turn a login into a memory or CPU bomb. The limits are
+// generous multiples of what hashPassword writes, so raising those still parses.
+const MAX_MEMORY = hashParameters.memory * 4;
+const MAX_PASSES = hashParameters.passes * 4;
+const MAX_PARALLELISM = hashParameters.parallelism * 4;
+const MIN_SALT_LENGTH = 8;
+const MIN_TAG_LENGTH = 16;
+
 function parse(stored: string): Parsed | null {
 	const match = stored.match(
 		/^\$argon2id\$v=19\$m=(\d+),t=(\d+),p=(\d+)\$([A-Za-z0-9+/=]+)\$([A-Za-z0-9+/=]+)$/,
@@ -94,13 +102,26 @@ function parse(stored: string): Parsed | null {
 	if (!match) return null;
 	const salt = Buffer.from(match[4] as string, "base64");
 	const tag = Buffer.from(match[5] as string, "base64");
+	const memory = Number(match[1]);
+	const passes = Number(match[2]);
+	const parallelism = Number(match[3]);
+	if (
+		!Number.isSafeInteger(memory) ||
+		!Number.isSafeInteger(passes) ||
+		!Number.isSafeInteger(parallelism) ||
+		memory < 8 * parallelism ||
+		memory > MAX_MEMORY ||
+		passes < 1 ||
+		passes > MAX_PASSES ||
+		parallelism < 1 ||
+		parallelism > MAX_PARALLELISM ||
+		salt.length < MIN_SALT_LENGTH ||
+		tag.length < MIN_TAG_LENGTH
+	) {
+		return null;
+	}
 	return {
-		parameters: {
-			memory: Number(match[1]),
-			passes: Number(match[2]),
-			parallelism: Number(match[3]),
-			tagLength: tag.length,
-		},
+		parameters: { memory, passes, parallelism, tagLength: tag.length },
 		salt,
 		tag,
 	};
