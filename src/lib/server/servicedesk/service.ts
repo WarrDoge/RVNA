@@ -270,18 +270,16 @@ export async function deskQueue(
 }
 
 export async function deskIssueSla(actor: CurrentUser, key: string) {
-	const [issue] = await db
-		.select({ id: issues.id, projectId: issues.projectId })
-		.from(issues)
-		.where(eq(issues.key, key.toUpperCase()))
-		.limit(1);
-	if (!issue) throw new HttpError(404, "Issue not found");
-	const desk = await deskByProjectId(issue.projectId);
+	const issue = await requireIssuePermissionFor(
+		actor,
+		key,
+		"BROWSE_PROJECTS",
+	);
+	const desk = await deskByProjectId(issue.project.id);
 	if (!desk) throw new HttpError(404, "Issue not found");
 	if (!(await isAgent(actor, desk))) {
 		throw new HttpError(403, "Only agents can see SLAs");
 	}
-	await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS");
 	return { metrics: await issueSla(issue.id) };
 }
 

@@ -1805,6 +1805,21 @@ describe("portal access when the desk is open", () => {
 		).toBe(404);
 	});
 
+	test("a non-agent cannot use the SLA answer to probe issue existence", async () => {
+		const existing = await inject(
+			"GET",
+			`/api/servicedesk/issues/${projectKey}-1/sla`,
+			newcomerSession,
+		);
+		const missing = await inject(
+			"GET",
+			`/api/servicedesk/issues/${projectKey}-99999/sla`,
+			newcomerSession,
+		);
+		expect(existing.statusCode).toBe(404);
+		expect(missing.statusCode).toBe(404);
+	});
+
 	test("an agent without BROWSE_PROJECTS cannot read the SLA of an issue", async () => {
 		const username = `t-${run}-sla-agent`;
 		const slaAgent = await login(app, {
