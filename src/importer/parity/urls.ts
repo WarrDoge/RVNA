@@ -179,8 +179,10 @@ async function requestOne(
 			const response = await fetchImpl(current, {
 				method: "GET",
 				headers: {
-					Authorization: `Bearer ${appToken}`,
 					Accept: "text/html",
+					...(current.origin === appOrigin && {
+						Authorization: `Bearer ${appToken}`,
+					}),
 				},
 				redirect: "manual",
 			});

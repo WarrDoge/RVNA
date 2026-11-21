@@ -935,6 +935,42 @@ describe("parity checks", () => {
 		expect(new Set(methods)).toEqual(new Set(["GET"]));
 	});
 
+	test("old URL requests keep the app token on the app origin only", async () => {
+		const seen: { url: string; authorization: string | null }[] = [];
+		const fetchImpl = (async (
+			input: string | URL | Request,
+			init?: RequestInit,
+		) => {
+			const url = new URL(String(input));
+			seen.push({
+				url: url.href,
+				authorization: new Headers(init?.headers).get("authorization"),
+			});
+			return new Response("ok", { status: 200 });
+		}) as typeof fetch;
+		const result = await requestOldUrls(
+			[
+				{ path: "/browse/DEMO-1", status: null, chain: [], ok: null },
+				{
+					path: "https://evil.example/x",
+					status: null,
+					chain: [],
+					ok: null,
+				},
+				{ path: "//evil.example/y", status: null, chain: [], ok: null },
+			],
+			"https://app.example.test",
+			"app-token",
+			fetchImpl,
+		);
+		expect(result.urls.every((url) => url.ok)).toBe(true);
+		expect(seen[0]?.authorization).toBe("Bearer app-token");
+		expect(seen.slice(1).map((request) => request.authorization)).toEqual([
+			null,
+			null,
+		]);
+	});
+
 	test("old URL selection is deterministic and bounded", () => {
 		const issues = new Map(
 			Array.from({ length: 30 }, (_, index) => [
