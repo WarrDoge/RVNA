@@ -610,6 +610,10 @@ export async function removeUserPassword(actor: CurrentUser, id: string) {
 			})
 			.where(eq(users.id, current.id));
 		await tx.delete(sessions).where(eq(sessions.userId, current.id));
+		const revoked = await tx
+			.delete(apiTokens)
+			.where(eq(apiTokens.userId, current.id))
+			.returning({ id: apiTokens.id });
 
 		await audit(tx, actor, {
 			action: "user.password.remove",
@@ -618,7 +622,7 @@ export async function removeUserPassword(actor: CurrentUser, id: string) {
 			summary: `Removed the password of ${current.username}`,
 			changes: {
 				from: { hasPassword: true },
-				to: { hasPassword: false },
+				to: { hasPassword: false, apiTokensRevoked: revoked.length },
 			},
 		});
 	});

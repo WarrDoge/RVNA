@@ -516,6 +516,11 @@ test("removing a password refuses a user without SSO and logs out an SSO user", 
 		userId: linkedId,
 		expiresAt: new Date(Date.now() + 60_000),
 	});
+	await db.insert(apiTokens).values({
+		userId: linkedId,
+		name: `judy token ${run}`,
+		tokenHash: sha256(`rvna_${run}_judy`),
+	});
 
 	const removed = await injectAs(
 		app,
@@ -534,6 +539,13 @@ test("removing a password refuses a user without SSO and logs out an SSO user", 
 		.from(sessions)
 		.where(eq(sessions.userId, linkedId));
 	expect(remaining).toEqual([]);
+	expect(
+		await db.select().from(apiTokens).where(eq(apiTokens.userId, linkedId)),
+	).toEqual([]);
+	const removeAudit = (await auditRows(linkedId)).find(
+		(entry) => entry.action === "user.password.remove",
+	);
+	expect(removeAudit?.changes).toMatchObject({ to: { apiTokensRevoked: 1 } });
 
 	const again = await injectAs(
 		app,
