@@ -127,12 +127,13 @@ export async function fetchOpenAccess(
 			return response.serviceDeskOpenAccess;
 		}
 		console.log(
-			`service desk ${projectKey}: request security has no serviceDeskOpenAccess field, open access stays on`,
+			`service desk ${projectKey}: request security has no serviceDeskOpenAccess field, open access not imported`,
 		);
 	} catch (error) {
-		const status = (error as { status?: number }).status ?? "error";
+		const status = (error as { status?: number }).status;
+		if (status !== 404) throw error;
 		console.log(
-			`service desk ${projectKey}: request security unavailable (${status}), open access stays on`,
+			`service desk ${projectKey}: request security is not available (404), open access not imported`,
 		);
 	}
 	return null;

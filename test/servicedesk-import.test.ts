@@ -388,6 +388,18 @@ describe("service desk open access from Jira", () => {
 		).toBe(true);
 	});
 
+	test("an authorization failure is reported instead of leaving access open", async () => {
+		await expect(
+			fetchOpenAccess(
+				client(() => {
+					throw Object.assign(new Error("forbidden"), { status: 403 });
+				}),
+				"OPS",
+				{ privateApis: true },
+			),
+		).rejects.toMatchObject({ status: 403 });
+	});
+
 	test("an unavailable endpoint or a missing field leaves it unknown", async () => {
 		expect(
 			await fetchOpenAccess(
