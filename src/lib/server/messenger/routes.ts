@@ -32,14 +32,23 @@ export const messengerSettingsSchema = z.object({
 	secretsKeyConfigured: z.boolean(),
 });
 
-function isHttpUrl(value: string) {
+function isLoopbackHost(hostname: string) {
+	if (hostname === "localhost" || hostname === "[::1]") return true;
+	const match = hostname.match(/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+	return Boolean(
+		match && match.slice(1).every((part) => Number(part) <= 255),
+	);
+}
+
+function isHomeserverUrl(value: string) {
 	if (value === "") return true;
 	try {
 		const url = new URL(value);
+		const secure =
+			url.protocol === "https:" ||
+			(url.protocol === "http:" && isLoopbackHost(url.hostname));
 		return (
-			(url.protocol === "http:" || url.protocol === "https:") &&
-			url.username === "" &&
-			url.password === ""
+			secure && url.username === "" && url.password === ""
 		);
 	} catch {
 		return false;
@@ -51,8 +60,8 @@ const httpUrl = z
 	.trim()
 	.max(2000)
 	.refine(
-		isHttpUrl,
-		"Must be an HTTP or HTTPS URL without a user name or password",
+		isHomeserverUrl,
+		"Must be an HTTPS URL (HTTP is allowed only for a loopback host) without a user name or password",
 	);
 
 export const messengerSettingsBody = z.object({

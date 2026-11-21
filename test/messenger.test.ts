@@ -340,6 +340,8 @@ describe("administrator connection", () => {
 		for (const homeserverUrl of [
 			"ftp://matrix.test",
 			"javascript:alert(1)",
+			"http://matrix.example",
+			"http://10.0.0.5:8008",
 			"https://user:secret@matrix.test",
 			"matrix.test",
 		]) {

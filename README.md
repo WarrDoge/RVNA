@@ -1328,7 +1328,8 @@ left to live webhook deliveries.
 One Matrix bot connects the team's chat to RVNA. An administrator configures it at
 `/plugins/servlet/messenger`, next to the GitLab integration: the homeserver URL, the bot's access
 token (stored encrypted under `SECRETS_KEY` and never returned), the service desk and request type
-chat requests use, and whether the worker is enabled. "Test connection" calls `whoami` and shows the
+chat requests use, and whether the worker is enabled. The homeserver URL must use HTTPS; plain HTTP
+is accepted only for a loopback address, where the token cannot leave the machine. "Test connection" calls `whoami` and shows the
 bot's Matrix id. Changes are written to the audit log without the token.
 
 Messenger is off after an install. No homeserver address and no token come from the environment or
