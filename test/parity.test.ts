@@ -869,13 +869,17 @@ describe("parity checks", () => {
 			token: "token",
 			fetchImpl: jiraFetch,
 		});
-		await fetchJiraLive(jiraClient, {
+		const live = await fetchJiraLive(jiraClient, {
 			privateApis: true,
 			serviceDesks: false,
 			agile: false,
 			boardsOnly: true,
 			filters: false,
 		});
+		expect(live.workflowResolutionSkipped).toBe(false);
+		expect(live.workflowResolutionTransitions.get("Parity Workflow")).toEqual([
+			"parity-transition",
+		]);
 		expect(calls.length).toBeGreaterThan(0);
 		expect(new Set(calls)).toEqual(new Set(["GET"]));
 

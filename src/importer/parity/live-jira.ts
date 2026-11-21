@@ -323,8 +323,9 @@ async function fetchFilters(
 
 async function fetchWorkflowResolutionTransitions(
 	client: JiraClient,
+	options: PrivateApiOptions,
 ): Promise<Map<string, string[]>> {
-	const workflows = await fetchWorkflows(client);
+	const workflows = await fetchWorkflows(client, options);
 	return new Map(
 		workflows.map((workflow) => [
 			workflow.name,
@@ -386,7 +387,7 @@ export async function fetchJiraLive(
 		await Promise.all([
 			skipPrivateApi(options, "workflow layouts")
 				? Promise.resolve(new Map<string, string[]>())
-				: fetchWorkflowResolutionTransitions(client),
+				: fetchWorkflowResolutionTransitions(client, options),
 			options.serviceDesks
 				? fetchServiceDesks(client, projectKeys, options)
 				: Promise.resolve(null),
