@@ -134,15 +134,15 @@ export async function childPageLinks(
 	} = {},
 ): Promise<PageLink[]> {
 	const depth = Math.min(Math.max(options.depth ?? 1, 1), 10);
+	const direction = options.reverse ? sql`desc` : sql`asc`;
 	const order =
 		options.sort === "title"
-			? sql`lower(p.title)`
+			? sql`lower(p.title) ${direction}`
 			: options.sort === "creation"
-				? sql`p.created nulls last`
+				? sql`p.created ${direction} nulls last`
 				: options.sort === "modified"
-					? sql`p.updated desc nulls last`
-					: sql`p.position, lower(p.title)`;
-	const direction = options.reverse ? sql`desc` : sql`asc`;
+					? sql`p.updated ${direction} nulls last`
+					: sql`p.position ${direction}, lower(p.title) ${direction}`;
 
 	const rows = await db.execute(sql`
 		with recursive descendants as (
@@ -162,7 +162,7 @@ export async function childPageLinks(
 		join spaces s on s.id = p.space_id
 		left join users u on u.id = p.last_modifier_id
 		where p.status = 'current' and ${visibleRaw(access)}
-		order by d.level, ${order} ${direction}
+		order by d.level, ${order}
 		limit ${options.limit ?? 500}
 	`);
 	return (rows.rows as PageLinkRow[]).map(toPageLink);

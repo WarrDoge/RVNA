@@ -14,6 +14,7 @@ import {
 	users,
 } from "../src/lib/server/schema.ts";
 import { pages, spaces } from "../src/lib/server/schema-wiki.ts";
+import { childPageLinks } from "../src/lib/server/wiki/data.ts";
 import { macroNames } from "../src/lib/server/wiki/macros.ts";
 import { loadWikiAccess } from "../src/lib/server/wiki/permissions.ts";
 import { renderWikiBody } from "../src/lib/server/wiki/render.ts";
@@ -187,6 +188,51 @@ test("renders headings, tables and code with the Confluence typography hooks", a
 	expect(html).toContain('<h1 id="top">Top</h1>');
 	expect(html).toContain('<h2 id="second">Second</h2>');
 	expect(html).toContain("<th>Key</th>");
+});
+
+test("child page order follows the requested sort and direction", async () => {
+	const parent = await createPage("Sort parent", "<p>parent</p>");
+	for (const [index, title] of ["Alpha", "Bravo", "Charlie"].entries()) {
+		const child = await createPage(title, "<p>child</p>", {
+			parentId: parent.id,
+			position: index,
+			updated: new Date(Date.UTC(2026, 0, index + 10)),
+		});
+		await db
+			.update(pages)
+			.set({ created: new Date(Date.UTC(2026, 0, index + 1)) })
+			.where(eq(pages.id, child.id));
+	}
+	const access = await loadWikiAccess(user);
+	const titles = async (options: Parameters<typeof childPageLinks>[2] = {}) =>
+		(await childPageLinks(access, parent.id, options)).map((row) => row.title);
+
+	expect(await titles()).toEqual(["Alpha", "Bravo", "Charlie"]);
+	expect(await titles({ reverse: true })).toEqual([
+		"Charlie",
+		"Bravo",
+		"Alpha",
+	]);
+	expect(await titles({ sort: "creation" })).toEqual([
+		"Alpha",
+		"Bravo",
+		"Charlie",
+	]);
+	expect(await titles({ sort: "creation", reverse: true })).toEqual([
+		"Charlie",
+		"Bravo",
+		"Alpha",
+	]);
+	expect(await titles({ sort: "modified" })).toEqual([
+		"Alpha",
+		"Bravo",
+		"Charlie",
+	]);
+	expect(await titles({ sort: "modified", reverse: true })).toEqual([
+		"Charlie",
+		"Bravo",
+		"Alpha",
+	]);
 });
 
 const macroCases: {
