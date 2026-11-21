@@ -432,6 +432,27 @@ test("an administrator may share a filter with anything", async () => {
 	expect(response.json().sharedWith.groups).toEqual([`t-${run}-viewers`]);
 });
 
+test("a filter can be shared with several projects and several groups", async () => {
+	const second = await pool.query<{ id: string }>(
+		"insert into groups (name, local) values ($1, false) returning id",
+		[`t-${run}-viewers-two`],
+	);
+	const secondGroupId = second.rows[0].id;
+	const created = await request("POST", "/api/filters", adminSession, {
+		name: `Many shares ${run}`,
+		jql: "project = DEMO",
+		sharedProjectIds: [visibleProjectId, hiddenProjectId],
+		sharedGroupIds: [groupId, secondGroupId],
+	});
+	expect(created.statusCode).toBe(201);
+	expect([...created.json().sharedWith.projectIds].sort()).toEqual(
+		[visibleProjectId, hiddenProjectId].sort(),
+	);
+	expect([...created.json().sharedWith.groups].sort()).toEqual(
+		[`t-${run}-viewers`, `t-${run}-viewers-two`].sort(),
+	);
+});
+
 test("a viewer does not receive the share list", async () => {
 	const created = await request("POST", "/api/filters", adminSession, {
 		name: `Viewer share ${run}`,

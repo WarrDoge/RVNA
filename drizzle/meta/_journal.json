@@ -183,6 +183,13 @@
 			"when": 1794900000000,
 			"tag": "0025_rename_rvna",
 			"breakpoints": true
+		},
+		{
+			"idx": 26,
+			"version": "7",
+			"when": 1795281452498,
+			"tag": "0026_plain_kate_bishop",
+			"breakpoints": true
 		}
 	]
 }

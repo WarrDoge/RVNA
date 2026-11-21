@@ -84,11 +84,13 @@ export const filterShares = pgTable(
 	},
 	(table) => [
 		index("filter_shares_filter_idx").on(table.filterId),
-		unique("filter_shares_filter_project_unique")
-			.on(table.filterId, table.projectId)
-			.nullsNotDistinct(),
-		unique("filter_shares_filter_group_unique")
-			.on(table.filterId, table.groupId)
-			.nullsNotDistinct(),
+		unique("filter_shares_filter_project_unique").on(
+			table.filterId,
+			table.projectId,
+		),
+		unique("filter_shares_filter_group_unique").on(
+			table.filterId,
+			table.groupId,
+		),
 	],
 );
