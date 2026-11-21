@@ -144,16 +144,22 @@ async function loadSprint(boardId: string, sprintId: string) {
 async function loadBoardIssueRows(board: BoardRow, user: SearchUser) {
 	const conditions: SQL[] = [];
 	const catalog = await loadCatalog();
+	const visible = await viewerProjectIds(user);
 	for (const jql of [board.filterJql, board.subFilterJql]) {
 		if (!jql?.trim()) continue;
 		const compiled = await compileJql(parseJql(jql), {
 			user,
 			catalog,
-			visibleProjectIds: await viewerProjectIds(user),
+			visibleProjectIds: visible,
 		});
 		if (compiled.where) conditions.push(compiled.where);
 	}
-	const where = conditions.length > 0 ? and(...conditions) : undefined;
+	if (conditions.length === 0) {
+		conditions.push(
+			sql`issues.project_id = any(${sql.param(visible)}::uuid[])`,
+		);
+	}
+	const where = and(...conditions);
 	const rows = await withStatementTimeout((tx) =>
 		tx
 			.select({

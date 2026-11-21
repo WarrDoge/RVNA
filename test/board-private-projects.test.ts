@@ -616,3 +616,26 @@ test("the board swimlane form does not reveal a project the viewer cannot browse
 	);
 	expect(rows.rows.map((row) => row.jql)).toContain(`project = ${visibleKey}`);
 });
+
+test("an empty board filter still hides projects the actor cannot browse", async () => {
+	await client.query("update boards set filter_jql = '' where id = $1", [
+		visibleBoardId,
+	]);
+	try {
+		const report = await injectAs(
+			app,
+			owner.session,
+			"GET",
+			`/api/boards/${visibleBoardRapidViewId}/reports/sprint-report?sprintId=${activeSprintId}`,
+		);
+		expect(report.statusCode).toBe(200);
+		expect(report.body).toContain(visibleSprintIssueKey);
+		expect(report.body).not.toContain(hiddenSprintIssueKey);
+		expect(report.body).not.toContain(`Hidden sprint issue ${run}`);
+	} finally {
+		await client.query(
+			"update boards set filter_jql = $1 where id = $2",
+			["created >= 2020-01-01 ORDER BY key ASC", visibleBoardId],
+		);
+	}
+});
