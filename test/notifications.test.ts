@@ -2,11 +2,16 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
+import { setMailTransport } from "../src/lib/server/mail.ts";
+import { recordIssueEvent } from "../src/lib/server/notifications.ts";
 import {
 	emailBatches,
 	issueTypes,
 	notifications,
+	permissionGrants,
+	permissionSchemes,
 	projectIssueTypes,
+	projectRoleActors,
 	projects,
 	projectWorkflows,
 	statuses,
@@ -743,4 +748,73 @@ test("watchers can be listed, added and removed", async () => {
 		{ userId: randomUUID() },
 	);
 	expect(unknown.statusCode).toBe(400);
+});
+
+test("a recipient who lost project access gets neither a row nor an email", async () => {
+	const issue = await createIssue("reporter", { assignee: ids.assignee });
+	await watch(issue.key, ids.watcher);
+	const schemeSource = `${tag}:lost-access:${randomUUID().slice(0, 8)}`;
+	const [scheme] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: schemeSource,
+			name: `Lost access ${run}`,
+			projectIds: [projectId],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	await db.insert(permissionGrants).values({
+		sourceId: `${schemeSource}:browse`,
+		schemeId: scheme.id,
+		permissionKey: "BROWSE_PROJECTS",
+		holderType: "projectRole",
+		holderParameter: "member",
+		raw: {},
+	});
+	const watcherName = `t-${run}-watcher`;
+	await db
+		.delete(projectRoleActors)
+		.where(
+			and(
+				eq(projectRoleActors.projectId, projectId),
+				eq(projectRoleActors.actorParameter, watcherName),
+			),
+		);
+	setMailTransport({ sendMail: async () => ({}) });
+	try {
+		await recordIssueEvent({
+			issue: {
+				id: issue.id,
+				key: issue.key,
+				summary: issue.summary,
+				reporterId: ids.reporter,
+				assigneeId: ids.assignee,
+			},
+			actor: { id: ids.actor, displayName: "Test actor" },
+			kind: "commented",
+			commentHtml: "<p>Only the project may see this</p>",
+			mentionedUserIds: [ids.watcher],
+		});
+
+		expect(await rowsFor(ids.watcher, issue.key)).toEqual([]);
+		expect(await rowsFor(ids.reporter, issue.key)).not.toEqual([]);
+		const emails = await db
+			.select({ userId: emailBatches.userId })
+			.from(emailBatches)
+			.where(eq(emailBatches.issueId, issue.id));
+		expect(emails.map((row) => row.userId)).not.toContain(ids.watcher);
+		expect(emails.map((row) => row.userId)).toContain(ids.reporter);
+	} finally {
+		setMailTransport(null);
+		await grantDefaultProjectRole(projectId, [watcherName]);
+		await db
+			.delete(permissionGrants)
+			.where(eq(permissionGrants.schemeId, scheme.id));
+		await db
+			.delete(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id));
+		await db.delete(emailBatches).where(eq(emailBatches.issueId, issue.id));
+		await db.delete(notifications).where(eq(notifications.issueId, issue.id));
+		await db.delete(watchers).where(eq(watchers.issueId, issue.id));
+	}
 });

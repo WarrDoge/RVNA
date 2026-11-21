@@ -10,7 +10,7 @@ import { HttpError } from "./http.ts";
 import { queueEmailEvents } from "./mail.ts";
 import { enqueueMessengerNotice } from "./messenger/notices.ts";
 import { notificationAction } from "./notification-text.ts";
-import { visibleProjectIds } from "./permissions.ts";
+import { viewerProjectIds, visibleProjectIds } from "./permissions.ts";
 import {
 	type BatchEvent,
 	type EventChanges,
@@ -183,14 +183,15 @@ async function visibleRecipients(
 	input: IssueEventInput,
 	recipients: Recipient[],
 ): Promise<Recipient[]> {
-	if (!input.internal) return recipients;
 	const [issue] = await db
 		.select({ projectId: issues.projectId })
 		.from(issues)
 		.where(eq(issues.id, input.issue.id))
 		.limit(1);
-	const desk = issue ? await deskByProjectId(issue.projectId) : null;
-	if (!desk) return [];
+	if (!issue) return [];
+	const desk = input.internal ? await deskByProjectId(issue.projectId) : null;
+	if (input.internal && !desk) return [];
+
 	const kept: Recipient[] = [];
 	for (const recipient of recipients) {
 		const viewer = {
@@ -199,7 +200,9 @@ async function visibleRecipients(
 			isAdmin: recipient.isAdmin,
 			groups: await effectiveGroups(recipient.id),
 		};
-		if (await isAgent(viewer, desk)) kept.push(recipient);
+		if (desk && !(await isAgent(viewer, desk))) continue;
+		if (!(await viewerProjectIds(viewer)).includes(issue.projectId)) continue;
+		kept.push(recipient);
 	}
 	return kept;
 }
