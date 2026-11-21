@@ -12,18 +12,28 @@ import { sanitizeWikiBody } from "../src/lib/server/wiki/storage.ts";
 const userId = "3f8a1f0e-9d3f-4a5b-8a1e-2b6c7d8e9f00";
 const otherId = "7c2b4d5e-1a3f-4b6c-9d8e-0f1a2b3c4d5e";
 const unresolvedId = "00000000-0000-4000-8000-000000000000";
+const markupId = "5d4c3b2a-1f0e-4d3c-8b2a-9f8e7d6c5b4a";
+const markupName = `Mallory <img src=x onerror=alert(1)> & "quoted"`;
 
 beforeAll(async () => {
 	await runMigrations();
-	await db.insert(users).values({
-		id: userId,
-		username: "avery",
-		displayName: "Avery Stone",
-	});
+	await db.insert(users).values([
+		{
+			id: userId,
+			username: "avery",
+			displayName: "Avery Stone",
+		},
+		{
+			id: markupId,
+			username: "mallory",
+			displayName: markupName,
+		},
+	]);
 });
 
 afterAll(async () => {
 	await db.delete(users).where(eq(users.id, userId));
+	await db.delete(users).where(eq(users.id, markupId));
 	await pool.end();
 });
 
@@ -36,6 +46,20 @@ test("the sanitizer keeps exactly the mention anchor", async () => {
 	expect(await sanitizeBodyHtml(html)).toBe(
 		`<p>Hello <a class="user-hover" data-user-id="${userId}" href="/secure/ViewProfile.jspa?name=avery">@Avery Stone</a></p>`,
 	);
+});
+
+test("a display name with markup is escaped once in the mention label", async () => {
+	const escaped = `@Mallory &lt;img src=x onerror=alert(1)&gt; &amp; "quoted"`;
+	const expected = `<p><a class="user-hover" data-user-id="${markupId}" href="/secure/ViewProfile.jspa?name=mallory">${escaped}</a></p>`;
+
+	expect(await sanitizeBodyHtml(`<p>${mention(markupId, "ignored")}</p>`)).toBe(
+		expected,
+	);
+	expect(
+		await sanitizeBodyHtml(
+			`<p><a class="user-hover" data-user-id="${markupId}"></a></p>`,
+		),
+	).toBe(expected);
 });
 
 test("a mention chip never keeps the author's href", async () => {
