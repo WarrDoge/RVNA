@@ -167,6 +167,9 @@ export async function moveIssues(
 	condition: SQL | undefined,
 	to: StatusRef,
 ): Promise<number> {
+	if (!condition) {
+		throw new Error("moveIssues needs a condition");
+	}
 	const rows = await tx
 		.select({
 			id: issues.id,
