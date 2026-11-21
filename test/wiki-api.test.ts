@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -903,6 +903,46 @@ describe("attachments", () => {
 		);
 		expect(tooMany.status).toBe(413);
 		expect(tooMany.details).toMatchObject({ code: "FST_FILES_LIMIT" });
+	});
+
+	test("a failed upload batch leaves no attachment row without its file", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "rvna-upload-fail-"));
+		const fileName = `partial-${run}.txt`;
+		const goodPath = join(directory, "good.txt");
+		await writeFile(goodPath, "good");
+		const aliceActor = await actorNamed("alice", [
+			readerGroup,
+			"confluence-users",
+		]);
+
+		await expect(
+			uploadPageAttachments(aliceActor, home.id, {
+				fields: {},
+				files: [
+					{
+						field: "file",
+						path: goodPath,
+						fileName,
+						mimeType: "text/plain",
+						size: 4,
+					},
+					{
+						field: "file",
+						path: join(directory, "missing.txt"),
+						fileName: "missing.txt",
+						mimeType: "text/plain",
+						size: 1,
+					},
+				],
+			}),
+		).rejects.toThrow();
+
+		const rows = await db
+			.select()
+			.from(pageAttachments)
+			.where(eq(pageAttachments.fileName, fileName));
+		expect(rows).toHaveLength(0);
+		await rm(directory, { recursive: true, force: true });
 	});
 
 	test("an attachment id that is not a UUID is a 404, not a validation error", async () => {

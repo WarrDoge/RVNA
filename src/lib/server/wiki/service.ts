@@ -803,43 +803,45 @@ export async function uploadPageAttachments(
 		if (upload.files.length > MAX_UPLOAD_FILES) {
 			throw tooManyFiles(attachmentUploadLimits().tooManyFilesMessage);
 		}
-		for (const file of upload.files) {
-			const uploadId = randomUUID();
-			const sha256 = await hashFile(file.path);
-			await mkdir(join(root, sha256), { recursive: true });
-			await rename(file.path, join(root, sha256, uploadId));
-			file.path = join(root, sha256, uploadId);
+		await db.transaction(async (tx) => {
+			for (const file of upload.files) {
+				const uploadId = randomUUID();
+				const sha256 = await hashFile(file.path);
+				await mkdir(join(root, sha256), { recursive: true });
+				await rename(file.path, join(root, sha256, uploadId));
+				file.path = join(root, sha256, uploadId);
 
-			const fileName = safeFileName(file.fileName);
-			const [latest] = await db
-				.select({ version: pageAttachments.version })
-				.from(pageAttachments)
-				.where(
-					and(
-						eq(pageAttachments.pageId, page.id),
-						eq(pageAttachments.fileName, fileName),
-					),
-				)
-				.orderBy(desc(pageAttachments.version))
-				.limit(1);
+				const fileName = safeFileName(file.fileName);
+				const [latest] = await tx
+					.select({ version: pageAttachments.version })
+					.from(pageAttachments)
+					.where(
+						and(
+							eq(pageAttachments.pageId, page.id),
+							eq(pageAttachments.fileName, fileName),
+						),
+					)
+					.orderBy(desc(pageAttachments.version))
+					.limit(1);
 
-			const [row] = await db
-				.insert(pageAttachments)
-				.values({
-					sourceId: `local:${uploadId}`,
-					pageId: page.id,
-					fileName,
-					mimeType: file.mimeType,
-					size: file.size,
-					version: (latest?.version ?? 0) + 1,
-					authorId: actor.id,
-					created: new Date(),
-					storagePath: join(sha256, uploadId),
-					sha256,
-				})
-				.returning();
-			created.push(row);
-		}
+				const [row] = await tx
+					.insert(pageAttachments)
+					.values({
+						sourceId: `local:${uploadId}`,
+						pageId: page.id,
+						fileName,
+						mimeType: file.mimeType,
+						size: file.size,
+						version: (latest?.version ?? 0) + 1,
+						authorId: actor.id,
+						created: new Date(),
+						storagePath: join(sha256, uploadId),
+						sha256,
+					})
+					.returning();
+				created.push(row);
+			}
+		});
 	} catch (error) {
 		// Files the helper left in its temporary directory are not ours to keep.
 		for (const file of upload.files) {
