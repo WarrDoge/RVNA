@@ -170,13 +170,14 @@ export async function canViewRequest(
 	desk: Desk,
 	issue: {
 		id: string;
+		projectId: string;
 		requestTypeId: string | null;
 		reporterId: string | null;
 		creatorId: string | null;
 	},
 ): Promise<boolean> {
 	// An ordinary issue in the desk's project is not a portal request.
-	if (!issue.requestTypeId) return false;
+	if (issue.projectId !== desk.projectId || !issue.requestTypeId) return false;
 	if (await isAgent(user, desk)) return true;
 	if (issue.reporterId === user.id || issue.creatorId === user.id) return true;
 	return isParticipant(user.id, issue.id);

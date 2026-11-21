@@ -40,6 +40,7 @@ import {
 } from "../src/routes/servicedesk/customer/portal/[id]/create/[requestTypeId]/+page.server.ts";
 import { load as loadPortalGroup } from "../src/routes/servicedesk/customer/portal/[id]/group/[groupId]/+page.server.ts";
 import { load as loadMyRequests } from "../src/routes/servicedesk/customer/user/requests/+page.server.ts";
+import { canViewRequest } from "../src/lib/server/servicedesk/access.ts";
 import {
 	adminGroup,
 	buildServer,
@@ -2150,4 +2151,27 @@ describe("portal access when the desk is closed", () => {
 		expect(await listed(outsiderSession)).toBe(true);
 		expect((await createRequest(outsiderSession)).statusCode).toBe(201);
 	});
+});
+
+test("canViewRequest refuses a desk that does not own the issue", async () => {
+	const admin = await userFor(adminSession);
+	const otherDesk = {
+		id: randomUUID(),
+		projectId: randomUUID(),
+		projectKey: "OTHER",
+		projectName: "Other desk",
+		portalName: "Other portal",
+		description: null,
+		announcement: null,
+		openAccess: false,
+		leadId: null,
+	};
+	const issue = {
+		id: randomUUID(),
+		projectId,
+		requestTypeId,
+		reporterId: null,
+		creatorId: null,
+	};
+	expect(await canViewRequest(admin, otherDesk, issue)).toBe(false);
 });
