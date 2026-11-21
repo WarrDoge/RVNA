@@ -286,15 +286,19 @@ export async function pageContributors(
 }
 
 export async function latestAttachments(
+	access: WikiAccess,
 	pageId: string,
 ): Promise<AttachmentRow[]> {
 	const rows = await db.execute(sql`
 		select distinct on (a.file_name)
 			a.id, a.page_id, a.file_name, a.mime_type, a.size, a.version,
-			a.author_id, u.display_name as author, a.created, a.comment, a.sha256
+			a.author_id, u.display_name as author, u.username as author_username,
+			${userAvatarSql(sql`a.author_id`)} as author_avatar_url,
+			a.created, a.comment, a.sha256
 		from page_attachments a
+		join pages p on p.id = a.page_id
 		left join users u on u.id = a.author_id
-		where a.page_id = ${pageId}
+		where a.page_id = ${pageId} and ${visibleRaw(access)}
 		order by a.file_name, a.version desc
 	`);
 	return (rows.rows as Record<string, unknown>[]).map((row) => ({
@@ -306,8 +310,10 @@ export async function latestAttachments(
 		version: Number(row.version),
 		authorId: row.author_id === null ? null : String(row.author_id),
 		author: row.author === null ? null : String(row.author),
-		authorUsername: null,
-		authorAvatarUrl: null,
+		authorUsername:
+			row.author_username === null ? null : String(row.author_username),
+		authorAvatarUrl:
+			row.author_avatar_url === null ? null : String(row.author_avatar_url),
 		created:
 			row.created === null
 				? null
@@ -318,6 +324,7 @@ export async function latestAttachments(
 }
 
 export async function pageAttachmentVersions(
+	access: WikiAccess,
 	pageId: string,
 ): Promise<AttachmentRow[]> {
 	const rows = await db
@@ -337,8 +344,9 @@ export async function pageAttachmentVersions(
 			sha256: pageAttachments.sha256,
 		})
 		.from(pageAttachments)
+		.innerJoin(pages, eq(pages.id, pageAttachments.pageId))
 		.leftJoin(users, eq(users.id, pageAttachments.authorId))
-		.where(eq(pageAttachments.pageId, pageId))
+		.where(and(eq(pageAttachments.pageId, pageId), readablePages(access)))
 		.orderBy(pageAttachments.fileName, desc(pageAttachments.version));
 	return rows.map((row) => ({
 		...row,

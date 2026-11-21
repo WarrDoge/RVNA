@@ -22,7 +22,12 @@ import {
 	users,
 } from "../src/lib/server/schema.ts";
 import { pages, spaces } from "../src/lib/server/schema-wiki.ts";
-import { pageContributors, visiblePages } from "../src/lib/server/wiki/data.ts";
+import {
+	latestAttachments,
+	pageAttachmentVersions,
+	pageContributors,
+	visiblePages,
+} from "../src/lib/server/wiki/data.ts";
 import {
 	type MacroContext,
 	renderMacro,
@@ -606,6 +611,33 @@ describe("reader visibility", () => {
 				)
 			).length,
 		).toBe(1);
+	});
+
+	test("attachments of a page the reader cannot see are not returned", async () => {
+		await attachment({
+			pageId: hiddenPage.id,
+			fileName: `hidden-${run}.txt`,
+			mimeType: "text/plain",
+			storagePath: `security-${run}/hidden.txt`,
+			content: "secret",
+		});
+		const nobodyAccess = await loadWikiAccess(nobody);
+		expect(await latestAttachments(nobodyAccess, hiddenPage.id)).toEqual([]);
+		expect(await pageAttachmentVersions(nobodyAccess, hiddenPage.id)).toEqual(
+			[],
+		);
+
+		const adminAccess = await loadWikiAccess({ ...editor, isAdmin: true });
+		const latest = await latestAttachments(adminAccess, hiddenPage.id);
+		const versions = await pageAttachmentVersions(adminAccess, hiddenPage.id);
+		expect(latest).toHaveLength(1);
+		expect(versions).toHaveLength(1);
+		for (const row of [...latest, ...versions]) {
+			expect(row).toMatchObject({
+				authorUsername: editor.username,
+				authorAvatarUrl: `/api/avatars/users/${editor.id}`,
+			});
+		}
 	});
 
 	test("a restricted home page and raw description are not serialised", async () => {

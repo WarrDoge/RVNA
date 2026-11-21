@@ -109,7 +109,7 @@ async function storageContext(
 	page: RenderablePage,
 	scope: RenderScope,
 ): Promise<StorageContext> {
-	const attachments = await latestAttachments(page.id);
+	const attachments = await latestAttachments(scope.access, page.id);
 	const byName = new Map<string, AttachmentRef>(
 		attachments.map((attachment) => [
 			attachment.fileName,

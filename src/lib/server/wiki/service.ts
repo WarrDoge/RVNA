@@ -425,7 +425,7 @@ export async function getPage(
 			),
 			pageAncestors(page),
 			pageLabelsFor(page.id),
-			pageAttachmentVersions(page.id),
+			pageAttachmentVersions(access, page.id),
 			pageCommentRows(page.id),
 			childPages(page.id),
 		]);
@@ -738,8 +738,8 @@ export async function resolveComment(
 }
 
 export async function listPageAttachments(actor: CurrentUser, id: string) {
-	const { page } = await readablePage(actor, id);
-	const rows = await pageAttachmentVersions(page.id);
+	const { access, page } = await readablePage(actor, id);
+	const rows = await pageAttachmentVersions(access, page.id);
 	const grouped = new Map<string, typeof rows>();
 	for (const row of rows) {
 		const list = grouped.get(row.fileName) ?? [];
