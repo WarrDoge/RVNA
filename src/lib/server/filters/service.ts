@@ -216,50 +216,57 @@ async function replaceShares(
 	groupIds: string[] | undefined,
 	visible: ShareVisibility,
 ) {
-	if (projectIds !== undefined) {
-		await db
-			.delete(filterShares)
-			.where(
-				and(
-					eq(filterShares.filterId, filterId),
-					isNotNull(filterShares.projectId),
-					visible
-						? visible.projectIds.length > 0
-							? inArray(filterShares.projectId, visible.projectIds)
-							: sql`false`
-						: undefined,
-				),
-			);
-		const rows = [...new Set(projectIds)].map((projectId) => ({
-			filterId,
-			projectId,
-		}));
-		if (rows.length > 0) {
-			await db.insert(filterShares).values(rows).onConflictDoNothing();
+	// Two editors saving at once would otherwise merge their lists: the delete and
+	// the insert of each must not interleave.
+	await db.transaction(async (tx) => {
+		await tx.execute(
+			sql`select 1 from filters where id = ${filterId} for update`,
+		);
+		if (projectIds !== undefined) {
+			await tx
+				.delete(filterShares)
+				.where(
+					and(
+						eq(filterShares.filterId, filterId),
+						isNotNull(filterShares.projectId),
+						visible
+							? visible.projectIds.length > 0
+								? inArray(filterShares.projectId, visible.projectIds)
+								: sql`false`
+							: undefined,
+					),
+				);
+			const rows = [...new Set(projectIds)].map((projectId) => ({
+				filterId,
+				projectId,
+			}));
+			if (rows.length > 0) {
+				await tx.insert(filterShares).values(rows).onConflictDoNothing();
+			}
 		}
-	}
-	if (groupIds !== undefined) {
-		await db
-			.delete(filterShares)
-			.where(
-				and(
-					eq(filterShares.filterId, filterId),
-					isNotNull(filterShares.groupId),
-					visible
-						? visible.groupIds.length > 0
-							? inArray(filterShares.groupId, visible.groupIds)
-							: sql`false`
-						: undefined,
-				),
-			);
-		const rows = [...new Set(groupIds)].map((groupId) => ({
-			filterId,
-			groupId,
-		}));
-		if (rows.length > 0) {
-			await db.insert(filterShares).values(rows).onConflictDoNothing();
+		if (groupIds !== undefined) {
+			await tx
+				.delete(filterShares)
+				.where(
+					and(
+						eq(filterShares.filterId, filterId),
+						isNotNull(filterShares.groupId),
+						visible
+							? visible.groupIds.length > 0
+								? inArray(filterShares.groupId, visible.groupIds)
+								: sql`false`
+							: undefined,
+					),
+				);
+			const rows = [...new Set(groupIds)].map((groupId) => ({
+				filterId,
+				groupId,
+			}));
+			if (rows.length > 0) {
+				await tx.insert(filterShares).values(rows).onConflictDoNothing();
+			}
 		}
-	}
+	});
 }
 
 async function loadShareIds(filterId: string) {

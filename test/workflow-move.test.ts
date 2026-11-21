@@ -91,7 +91,7 @@ test("a move without a condition is refused instead of moving every issue", asyn
 	} catch (error) {
 		message = error instanceof Error ? error.message : String(error);
 	}
-	expect(message).not.toBe("MASS_MUTATION");
+	expect(message).toBe("moveIssues needs a condition");
 	const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
 	expect(row.statusId).toBe(fromStatusId);
 });
