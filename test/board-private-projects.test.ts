@@ -633,9 +633,9 @@ test("an empty board filter still hides projects the actor cannot browse", async
 		expect(report.body).not.toContain(hiddenSprintIssueKey);
 		expect(report.body).not.toContain(`Hidden sprint issue ${run}`);
 	} finally {
-		await client.query(
-			"update boards set filter_jql = $1 where id = $2",
-			["created >= 2020-01-01 ORDER BY key ASC", visibleBoardId],
-		);
+		await client.query("update boards set filter_jql = $1 where id = $2", [
+			"created >= 2020-01-01 ORDER BY key ASC",
+			visibleBoardId,
+		]);
 	}
 });

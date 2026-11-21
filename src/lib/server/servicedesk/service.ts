@@ -270,11 +270,7 @@ export async function deskQueue(
 }
 
 export async function deskIssueSla(actor: CurrentUser, key: string) {
-	const issue = await requireIssuePermissionFor(
-		actor,
-		key,
-		"BROWSE_PROJECTS",
-	);
+	const issue = await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS");
 	const desk = await deskByProjectId(issue.project.id);
 	if (!desk) throw new HttpError(404, "Issue not found");
 	if (!(await isAgent(actor, desk))) {

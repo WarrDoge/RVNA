@@ -29,6 +29,7 @@ import {
 	workflows,
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
+import { canViewRequest } from "../src/lib/server/servicedesk/access.ts";
 import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page.server.ts";
 import { load as loadQueue } from "../src/routes/projects/[key]/queues/custom/[queueId]/+page.server.ts";
 import { load as loadPortalLayout } from "../src/routes/servicedesk/customer/+layout.server.ts";
@@ -40,7 +41,6 @@ import {
 } from "../src/routes/servicedesk/customer/portal/[id]/create/[requestTypeId]/+page.server.ts";
 import { load as loadPortalGroup } from "../src/routes/servicedesk/customer/portal/[id]/group/[groupId]/+page.server.ts";
 import { load as loadMyRequests } from "../src/routes/servicedesk/customer/user/requests/+page.server.ts";
-import { canViewRequest } from "../src/lib/server/servicedesk/access.ts";
 import {
 	adminGroup,
 	buildServer,
