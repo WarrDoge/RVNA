@@ -794,6 +794,45 @@ describe("sync worker", () => {
 		);
 	});
 
+	test("an attachment notice is sent only to someone who may see the request", async () => {
+		const before = fake.sent.length;
+		fake.pushTimeline(roomId, [
+			{
+				type: "m.room.message",
+				event_id: `$noaccess-file-${run}`,
+				sender: `@bob-${run}:other.test`,
+				content: {
+					msgtype: "m.file",
+					body: "not-mine.txt",
+					"m.relates_to": { rel_type: "m.thread", event_id: ticketRoot },
+				},
+			},
+		]);
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+		expect(
+			fake.sent
+				.slice(before)
+				.some((item) =>
+					String(item.content.body ?? "").includes("Attach files"),
+				),
+		).toBe(false);
+
+		fake.pushTimeline(roomId, [
+			{
+				type: "m.room.message",
+				event_id: `$requester-file-${run}`,
+				sender: `@t-${run}-alice:matrix.test`,
+				content: {
+					msgtype: "m.file",
+					body: "mine.txt",
+					"m.relates_to": { rel_type: "m.thread", event_id: ticketRoot },
+				},
+			},
+		]);
+		const notice = await waitForSend((text) => text.includes("Attach files"));
+		expect(notice).toContain(ticketKey);
+	});
+
 	test("a revoked token stops the worker instead of retrying", async () => {
 		startMessengerWorker();
 		await fake.waitFor(() => isMessengerWorkerRunning(), 10_000);

@@ -245,12 +245,13 @@ async function handleAttachment(
 	settings: MessengerSettings,
 	roomId: string,
 	thread: typeof messengerThreads.$inferSelect,
+	user: CurrentUser | null,
 ) {
-	if (thread.attachmentNotified) return;
+	if (thread.attachmentNotified || !user) return;
 	const issue = await loadRequest(thread.issueId);
 	if (!issue) return;
 	const desk = await deskForIssue(issue.projectId);
-	if (!desk) return;
+	if (!desk || !(await canViewRequest(user, desk, issue))) return;
 	await matrixSendText(
 		settings,
 		roomId,
@@ -491,7 +492,7 @@ export async function handleMatrixMessage(
 		const user = await userForMatrixId(settings, event.sender);
 
 		if (content.msgtype !== "m.text") {
-			if (thread) await handleAttachment(settings, roomId, thread);
+			if (thread) await handleAttachment(settings, roomId, thread, user);
 			return true;
 		}
 		if (body.trimStart().startsWith("!")) {
