@@ -11,7 +11,7 @@ export const hashParameters = {
 	tagLength: 32,
 };
 export const MIN_PASSWORD_LENGTH = 12;
-const MAX_PASSWORD_LENGTH = 256;
+export const MAX_PASSWORD_LENGTH = 256;
 
 const commonPasswords = new Set(
 	[
@@ -61,10 +61,11 @@ export function validatePassword(
 	password: string,
 	username: string,
 ): string | null {
-	if ([...password].length < MIN_PASSWORD_LENGTH) {
+	const length = [...password].length;
+	if (length < MIN_PASSWORD_LENGTH) {
 		return `The password must be at least ${MIN_PASSWORD_LENGTH} characters long`;
 	}
-	if (password.length > MAX_PASSWORD_LENGTH) {
+	if (length > MAX_PASSWORD_LENGTH) {
 		return `The password must be at most ${MAX_PASSWORD_LENGTH} characters long`;
 	}
 	const lower = password.toLowerCase();
@@ -140,6 +141,11 @@ function derive(password: string, parameters: Parameters, salt: Buffer) {
 
 /** Argon2id with a random 16-byte salt; the parameters travel inside the returned string. */
 export async function hashPassword(password: string) {
+	if ([...password].length > MAX_PASSWORD_LENGTH) {
+		throw new Error(
+			`The password must be at most ${MAX_PASSWORD_LENGTH} characters long`,
+		);
+	}
 	const salt = randomBytes(16);
 	return encode(
 		hashParameters,

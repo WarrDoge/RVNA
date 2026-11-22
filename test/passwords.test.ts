@@ -72,3 +72,26 @@ test("a stored hash with out-of-range argon2 parameters is unparseable", async (
 		).toBe(true);
 	}
 });
+
+test("both password limits count code points", async () => {
+	const { MAX_PASSWORD_LENGTH, validatePassword } = await import(
+		"../src/lib/server/passwords.ts"
+	);
+	const atLimit = "😀".repeat(MAX_PASSWORD_LENGTH);
+	expect(atLimit.length).toBeGreaterThan(MAX_PASSWORD_LENGTH);
+	expect(validatePassword(atLimit, "alice")).toBeNull();
+	expect(validatePassword(`${atLimit}😀`, "alice")).toBe(
+		`The password must be at most ${MAX_PASSWORD_LENGTH} characters long`,
+	);
+});
+
+test("hashPassword refuses a password over the limit", async () => {
+	const { hashPassword, MAX_PASSWORD_LENGTH } = await import(
+		"../src/lib/server/passwords.ts"
+	);
+	await expect(
+		hashPassword("x".repeat(MAX_PASSWORD_LENGTH + 1)),
+	).rejects.toThrow(
+		`The password must be at most ${MAX_PASSWORD_LENGTH} characters long`,
+	);
+});
