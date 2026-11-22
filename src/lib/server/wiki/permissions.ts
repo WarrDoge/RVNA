@@ -1,12 +1,7 @@
-import { eq, inArray } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import { type CurrentUser, hasGroup } from "../auth.ts";
 import { db } from "../db.ts";
-import {
-	pageRestrictions,
-	pages,
-	spacePermissions,
-	spaces,
-} from "../schema.ts";
+import { spacePermissions, spaces } from "../schema.ts";
 
 export interface WikiAccess {
 	userId: string;
@@ -15,12 +10,6 @@ export interface WikiAccess {
 	readableSpaceIds: Set<string>;
 	/** Pages the user may not read, including pages hidden by an ancestor. */
 	hiddenPageIds: Set<string>;
-}
-
-interface RestrictionRow {
-	pageId: string;
-	userId: string | null;
-	groupName: string | null;
 }
 
 function matchesUser(
@@ -43,19 +32,20 @@ function matchesUser(
  * administrators and space administrators see everything.
  */
 export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
-	const spaceRows = await db.select({ id: spaces.id }).from(spaces);
+	const [spaceRows, permissionRows] = await Promise.all([
+		db.select({ id: spaces.id }).from(spaces),
+		db
+			.select({
+				spaceId: spacePermissions.spaceId,
+				permission: spacePermissions.permission,
+				userId: spacePermissions.userId,
+				groupName: spacePermissions.groupName,
+				anonymous: spacePermissions.anonymous,
+			})
+			.from(spacePermissions)
+			.where(inArray(spacePermissions.permission, ["read", "administer"])),
+	]);
 	const readableSpaceIds = new Set(spaceRows.map((row) => row.id));
-
-	const permissionRows = await db
-		.select({
-			spaceId: spacePermissions.spaceId,
-			permission: spacePermissions.permission,
-			userId: spacePermissions.userId,
-			groupName: spacePermissions.groupName,
-			anonymous: spacePermissions.anonymous,
-		})
-		.from(spacePermissions)
-		.where(inArray(spacePermissions.permission, ["read", "administer"]));
 
 	const readRowsBySpace = new Map<string, typeof permissionRows>();
 	const administeredSpaceIds = new Set<string>();
@@ -83,57 +73,48 @@ export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
 			if (!allowed) readableSpaceIds.delete(spaceId);
 		}
 
-		const restrictions = (await db
-			.select({
-				pageId: pageRestrictions.pageId,
-				userId: pageRestrictions.userId,
-				groupName: pageRestrictions.groupName,
-			})
-			.from(pageRestrictions)
-			.where(eq(pageRestrictions.operation, "read"))) as RestrictionRow[];
-
-		const restrictedPages = new Map<string, RestrictionRow[]>();
-		for (const row of restrictions) {
-			const list = restrictedPages.get(row.pageId) ?? [];
-			list.push(row);
-			restrictedPages.set(row.pageId, list);
-		}
-
-		if (restrictedPages.size > 0) {
-			const pageRows = await db
-				.select({
-					id: pages.id,
-					parentId: pages.parentId,
-					spaceId: pages.spaceId,
-				})
-				.from(pages);
-			const children = new Map<string | null, string[]>();
-			const spaceOfPage = new Map<string, string>();
-			for (const row of pageRows) {
-				const list = children.get(row.parentId) ?? [];
-				list.push(row.id);
-				children.set(row.parentId, list);
-				spaceOfPage.set(row.id, row.spaceId);
-			}
-
-			const blocked: string[] = [];
-			for (const [pageId, rows] of restrictedPages) {
-				if (
-					!rows.some((row) => matchesUser(user, row)) &&
-					!administeredSpaceIds.has(spaceOfPage.get(pageId) ?? "")
-				) {
-					blocked.push(pageId);
-				}
-			}
-
-			const queue = [...blocked];
-			while (queue.length > 0) {
-				const pageId = queue.shift() as string;
-				if (hiddenPageIds.has(pageId)) continue;
-				if (administeredSpaceIds.has(spaceOfPage.get(pageId) ?? "")) continue;
-				hiddenPageIds.add(pageId);
-				queue.push(...(children.get(pageId) ?? []));
-			}
+		// Blocked pages and their descendants, resolved in the database so a
+		// large page tree is never read into memory.
+		const administered = [...administeredSpaceIds];
+		const groups = user.groups.map((name) => name.toLowerCase());
+		const hiddenRows = await db.execute(sql`
+			with recursive blocked as (
+				select pr.page_id
+				from page_restrictions pr
+				left join pages p on p.id = pr.page_id
+				where pr.operation = 'read'
+					and not exists (
+						select 1
+						from page_restrictions own
+						where own.page_id = pr.page_id
+							and own.operation = 'read'
+							and (
+								(own.user_id is not null and own.user_id = ${user.id})
+								or (
+									own.user_id is null
+									and own.group_name is not null
+									and own.group_name <> ''
+									and lower(own.group_name) = any(${sql.param(groups)}::text[])
+								)
+							)
+					)
+					and (p.space_id is null or p.space_id <> all(${sql.param(administered)}::uuid[]))
+			),
+			hidden as (
+				select p.id, p.parent_id
+				from pages p
+				join blocked b on b.page_id = p.id
+				where p.space_id <> all(${sql.param(administered)}::uuid[])
+				union
+				select p.id, p.parent_id
+				from pages p
+				join hidden h on p.parent_id = h.id
+				where p.space_id <> all(${sql.param(administered)}::uuid[])
+			)
+			select id from hidden
+		`);
+		for (const row of hiddenRows.rows as { id: string }[]) {
+			hiddenPageIds.add(row.id);
 		}
 	}
 
