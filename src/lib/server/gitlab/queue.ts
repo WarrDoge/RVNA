@@ -30,10 +30,15 @@ async function start() {
 export async function startGitlabQueue() {
 	if (boss) return boss;
 	if (!starting) {
-		starting = start().then((instance) => {
-			boss = instance;
-			return instance;
-		});
+		starting = start()
+			.then((instance) => {
+				boss = instance;
+				return instance;
+			})
+			.catch((error) => {
+				starting = null;
+				throw error;
+			});
 	}
 	return starting;
 }
