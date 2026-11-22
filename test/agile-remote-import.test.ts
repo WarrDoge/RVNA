@@ -233,9 +233,22 @@ const sprintReport: JiraSprintReport = {
 class FakeClient {
 	readonly calls: string[] = [];
 	private readonly sprints: JiraSprint[];
+	private readonly sprintIssues: Map<number, JiraAgileIssue[]>;
 
-	constructor(sprints: JiraSprint[] = [jiraSprint]) {
+	constructor(
+		sprints: JiraSprint[] = [jiraSprint],
+		sprintIssues: Map<number, JiraAgileIssue[]> = new Map([
+			[
+				sprintId,
+				[
+					issue(issueKeys[0], "0|a", statusIds[2]),
+					issue(issueKeys[1], "0|b", statusIds[0]),
+				],
+			],
+		]),
+	) {
 		this.sprints = sprints;
+		this.sprintIssues = sprintIssues;
 	}
 
 	async getJson(path: string): Promise<unknown> {
@@ -267,14 +280,9 @@ class FakeClient {
 				isLast: true,
 			};
 		}
-		if (path === `/rest/agile/1.0/sprint/${sprintId}/issue`) {
-			return {
-				issues: [
-					issue(issueKeys[0], "0|a", statusIds[2]),
-					issue(issueKeys[1], "0|b", statusIds[0]),
-				],
-				isLast: true,
-			};
+		if (path.startsWith("/rest/agile/1.0/sprint/") && path.endsWith("/issue")) {
+			const id = Number(path.split("/")[5]);
+			return { issues: this.sprintIssues.get(id) ?? [], isLast: true };
 		}
 		if (path === "/rest/greenhopper/1.0/rapid/charts/sprintreport") {
 			return sprintReport;
@@ -745,5 +753,71 @@ describe("importJiraAgile", () => {
 		});
 		expect(result.boards).toBe(1);
 		expect(result.issueSprints).toBe(2);
+	});
+
+	test("swapping the open sprint does not depend on the order of the rows", async () => {
+		const secondSprintId = sprintId + 1;
+		const sprintA = {
+			...jiraSprint,
+			id: sprintId,
+			state: "active" as const,
+			name: "Sprint A",
+		};
+		const sprintB = {
+			...jiraSprint,
+			id: secondSprintId,
+			state: "closed" as const,
+			name: "Sprint B",
+		};
+		await importJiraAgile(
+			new FakeClient(
+				[sprintA, sprintB],
+				new Map([
+					[sprintId, [issue(issueKeys[0], "0|a", statusIds[2])]],
+					[secondSprintId, [issue(issueKeys[0], "0|a", statusIds[2])]],
+				]),
+			) as unknown as JiraClient,
+			db,
+			{ privateApis: true },
+		);
+
+		const result = await importJiraAgile(
+			new FakeClient(
+				[
+					{ ...sprintB, state: "active" },
+					{ ...sprintA, state: "closed" },
+				],
+				new Map([
+					[secondSprintId, [issue(issueKeys[0], "0|a", statusIds[2])]],
+					[sprintId, [issue(issueKeys[0], "0|a", statusIds[2])]],
+				]),
+			) as unknown as JiraClient,
+			db,
+			{ privateApis: true },
+		);
+		expect(result.issueSprints).toBe(2);
+
+		const sprintRows = await db
+			.select({ id: sprints.id, sourceId: sprints.sourceId })
+			.from(sprints)
+			.where(
+				inArray(sprints.sourceId, [String(sprintId), String(secondSprintId)]),
+			);
+		const sprintAId = sprintRows.find(
+			(row) => row.sourceId === String(sprintId),
+		)?.id;
+		const sprintBId = sprintRows.find(
+			(row) => row.sourceId === String(secondSprintId),
+		)?.id;
+		const memberships = await db
+			.select()
+			.from(issueSprints)
+			.where(eq(issueSprints.issueId, issueIds[0]));
+		expect(memberships.find((row) => row.sprintId === sprintAId)?.isOpen).toBe(
+			false,
+		);
+		expect(memberships.find((row) => row.sprintId === sprintBId)?.isOpen).toBe(
+			true,
+		);
 	});
 });

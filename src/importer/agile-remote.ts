@@ -1270,6 +1270,8 @@ export async function importJiraAgile(
 		sprintId: string;
 		isOpen: boolean;
 	}[] = [];
+	const closes: typeof inserts = [];
+	const opens: typeof inserts = [];
 	let membershipUnchanged = 0;
 	let membershipUpdated = 0;
 	for (const row of membership.values()) {
@@ -1277,16 +1279,21 @@ export async function importJiraAgile(
 		if (!existing) {
 			inserts.push(row);
 		} else if (existing.isOpen !== row.isOpen) {
-			await database
-				.update(issueSprints)
-				.set({ isOpen: row.isOpen })
-				.where(
-					sql`${issueSprints.issueId} = ${existing.issueId} and ${issueSprints.sprintId} = ${existing.sprintId}`,
-				);
-			membershipUpdated += 1;
+			(row.isOpen ? opens : closes).push(row);
 		} else {
 			membershipUnchanged += 1;
 		}
+	}
+	// The one-open-sprint-per-issue index cannot see both rows of a swap at
+	// once, so clear the old open rows before opening the new ones.
+	for (const row of [...closes, ...opens]) {
+		await database
+			.update(issueSprints)
+			.set({ isOpen: row.isOpen })
+			.where(
+				sql`${issueSprints.issueId} = ${row.issueId} and ${issueSprints.sprintId} = ${row.sprintId}`,
+			);
+		membershipUpdated += 1;
 	}
 	if (inserts.length > 0) {
 		await database.insert(issueSprints).values(inserts);
