@@ -1372,8 +1372,9 @@ Pages and versions imported from Confluence have no document until you convert t
 npm run wiki:convert
 ```
 
-It fills `body_doc` for every page and version that has storage format, and prints the number
-converted plus the names (never the content) of any element or macro it does not know.
+It fills `body_doc` for every page and version that has storage format but no document yet, and
+prints the number converted plus the names (never the content) of any element or macro it does
+not know.
 
 ## Container
 

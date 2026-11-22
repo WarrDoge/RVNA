@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import { storageToDoc } from "../../shared/wiki/index.ts";
 import { resolveDocRefs } from "../../shared/wiki/refs.ts";
 import { db, pool, runMigrations } from "../db.ts";
@@ -80,7 +80,7 @@ async function main() {
 	const pageRows = await db
 		.select({ id: pages.id, storage: pages.bodyStorage })
 		.from(pages)
-		.where(sql`${pages.bodyStorage} is not null`);
+		.where(and(isNotNull(pages.bodyStorage), isNull(pages.bodyDoc)));
 	for (const row of pageRows) {
 		try {
 			const doc = convert(row.storage ?? "", row.id);
@@ -94,7 +94,9 @@ async function main() {
 	const versionIds = await db
 		.select({ id: pageVersions.id })
 		.from(pageVersions)
-		.where(sql`${pageVersions.bodyStorage} is not null`);
+		.where(
+			and(isNotNull(pageVersions.bodyStorage), isNull(pageVersions.bodyDoc)),
+		);
 	for (const { id } of versionIds) {
 		const [row] = await db
 			.select({
