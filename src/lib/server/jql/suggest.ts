@@ -8,7 +8,6 @@ import {
 	visibleUsernames,
 } from "../permissions.ts";
 import { type JqlCatalog, loadCatalog } from "./catalog.ts";
-import { withStatementTimeout } from "./timeout.ts";
 
 export const DEFAULT_SUGGEST_LIMIT = 20;
 
@@ -72,24 +71,31 @@ async function suggestValues(
 	limit: number,
 	viewer: PermissionUser,
 ): Promise<string[]> {
-	const catalog = await loadCatalog();
-	const visible = await visibleProjectIds(viewer);
-	const visibleSet = new Set(visible);
-	const usernames = await visibleUsernames(viewer);
 	const builtin = builtinFieldId(fieldName);
-	const customId = /^cf\[(\d+)\]$/.exec(fieldName.trim());
-	const custom = customId
-		? catalog.customFields.find(
-				(item) => item.sourceId === `customfield_${customId[1]}`,
-			)
-		: catalog.customFields.find(
-				(item) => item.name.toLowerCase() === fieldName.trim().toLowerCase(),
-			);
+	let catalog: JqlCatalog | null = null;
+	const getCatalog = async () => {
+		catalog ??= await loadCatalog();
+		return catalog;
+	};
 
-	if (!builtin && !custom) return [];
-
-	if (!builtin && custom) {
-		return customValues(catalog, custom.sourceId, prefix, limit, usernames);
+	if (!builtin) {
+		const loaded = await getCatalog();
+		const customId = /^cf\[(\d+)\]$/.exec(fieldName.trim());
+		const custom = customId
+			? loaded.customFields.find(
+					(item) => item.sourceId === `customfield_${customId[1]}`,
+				)
+			: loaded.customFields.find(
+					(item) => item.name.toLowerCase() === fieldName.trim().toLowerCase(),
+				);
+		if (!custom) return [];
+		return customValues(
+			loaded,
+			custom.sourceId,
+			prefix,
+			limit,
+			await visibleUsernames(viewer),
+		);
 	}
 
 	const values = (items: { name: string }[]) =>
@@ -100,27 +106,30 @@ async function suggestValues(
 		).slice(0, limit);
 
 	switch (builtin) {
-		case "project":
+		case "statusCategory":
+			return ["To Do", "In Progress", "Done"].filter((value) =>
+				startsWith(value, prefix),
+			);
+		case "project": {
+			const loaded = await getCatalog();
+			const visibleSet = new Set(await visibleProjectIds(viewer));
 			return unique(
-				catalog.projects
+				loaded.projects
 					.filter((project) => visibleSet.has(project.id))
 					.flatMap((project) => [project.key, project.name]),
 			)
 				.filter((value) => startsWith(value, prefix))
 				.slice(0, limit);
+		}
 		case "issuetype":
-			return values(catalog.issueTypes);
+			return values((await getCatalog()).issueTypes);
 		case "status":
-			return values(catalog.statuses);
-		case "statusCategory":
-			return ["To Do", "In Progress", "Done"].filter((value) =>
-				startsWith(value, prefix),
-			);
+			return values((await getCatalog()).statuses);
 		case "priority":
-			return values(catalog.priorities);
+			return values((await getCatalog()).priorities);
 		case "resolution":
 			return unique([
-				...catalog.resolutions.map((item) => item.name),
+				...(await getCatalog()).resolutions.map((item) => item.name),
 				"Unresolved",
 			])
 				.filter((value) => startsWith(value, prefix))
@@ -128,8 +137,9 @@ async function suggestValues(
 		case "assignee":
 		case "reporter":
 		case "creator":
-		case "watcher":
-			return catalog.users
+		case "watcher": {
+			const usernames = await visibleUsernames(viewer);
+			return (await getCatalog()).users
 				.filter(
 					(user) =>
 						usernames.has(user.username) &&
@@ -138,7 +148,9 @@ async function suggestValues(
 				)
 				.map((user) => user.username)
 				.slice(0, limit);
+		}
 		case "labels": {
+			const visible = await visibleProjectIds(viewer);
 			if (visible.length === 0) return [];
 			const rows = await db.execute(sql`
 				select distinct il.label
@@ -151,23 +163,32 @@ async function suggestValues(
 				.filter((value) => startsWith(value, prefix))
 				.slice(0, limit);
 		}
-		case "component":
+		case "component": {
+			const loaded = await getCatalog();
+			const visibleSet = new Set(await visibleProjectIds(viewer));
 			return values(
-				catalog.components.filter((item) => visibleSet.has(item.projectId)),
+				loaded.components.filter((item) => visibleSet.has(item.projectId)),
 			);
+		}
 		case "fixVersion":
-		case "affectedVersion":
+		case "affectedVersion": {
+			const loaded = await getCatalog();
+			const visibleSet = new Set(await visibleProjectIds(viewer));
 			return values(
-				catalog.versions.filter((item) => visibleSet.has(item.projectId)),
+				loaded.versions.filter((item) => visibleSet.has(item.projectId)),
 			);
-		case "sprint":
+		}
+		case "sprint": {
+			const loaded = await getCatalog();
+			const visibleSet = new Set(await visibleProjectIds(viewer));
 			return values(
-				catalog.sprints.filter((item) => visibleSet.has(item.projectId)),
+				loaded.sprints.filter((item) => visibleSet.has(item.projectId)),
 			);
+		}
 		case "epicLink":
 		case "parent":
 		case "key":
-			return issueKeys(prefix, limit, visible);
+			return issueKeys(prefix, limit, await visibleProjectIds(viewer));
 		default:
 			return [];
 	}

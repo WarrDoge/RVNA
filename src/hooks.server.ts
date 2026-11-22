@@ -11,6 +11,7 @@ import { skipsSessionGuard } from "#lib/server/public-routes.ts";
 import {
 	dateContext,
 	runWithDateContext,
+	runWithRequestCache,
 } from "#lib/server/request-context.ts";
 import { start, stop } from "#lib/server/runtime.ts";
 
@@ -71,7 +72,9 @@ function dateContextFor(event: Parameters<Handle>[0]["event"]): DateContext {
 
 const dateContextHandle: Handle = ({ event, resolve }) => {
 	const context = dateContextFor(event);
-	return runWithDateContext(context, () => resolve(event));
+	return runWithRequestCache(() =>
+		runWithDateContext(context, () => resolve(event)),
+	);
 };
 
 /** Page responses also carry the Content-Security-Policy of `vite.config.ts`. */

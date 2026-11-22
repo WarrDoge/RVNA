@@ -1,8 +1,10 @@
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { userForSession } from "../src/lib/server/auth.ts";
-import { pool, runMigrations } from "../src/lib/server/db.ts";
+import { db, pool, runMigrations } from "../src/lib/server/db.ts";
+import { loadCatalog } from "../src/lib/server/jql/catalog.ts";
 import * as suggestModule from "../src/lib/server/jql/suggest.ts";
+import { runWithRequestCache } from "../src/lib/server/request-context.ts";
 import {
 	createProjectFixture,
 	dropProjectFixture,
@@ -123,4 +125,46 @@ test("suggest clamps a zero limit inside the function", async () => {
 		limit: 0,
 	});
 	expect(result.values.length).toBeGreaterThan(0);
+});
+
+test("a field that needs no catalog does not read the catalog tables", async () => {
+	const actor = await userForSession(session);
+	if (!actor) throw new Error("The test session has no user");
+	const database = db as unknown as { execute: typeof db.execute };
+	const original = database.execute;
+	let calls = 0;
+	database.execute = ((query: Parameters<typeof db.execute>[0]) => {
+		calls += 1;
+		return original(query);
+	}) as typeof db.execute;
+	try {
+		const result = await suggestModule.suggest(actor, {
+			field: "statusCategory",
+			prefix: "To",
+			limit: 20,
+		});
+		expect(result.values).toEqual(["To Do"]);
+	} finally {
+		database.execute = original;
+	}
+	expect(calls).toBe(0);
+});
+
+test("the catalog is read once per request", async () => {
+	const database = db as unknown as { execute: typeof db.execute };
+	const original = database.execute;
+	let calls = 0;
+	database.execute = ((query: Parameters<typeof db.execute>[0]) => {
+		calls += 1;
+		return original(query);
+	}) as typeof db.execute;
+	try {
+		await runWithRequestCache(async () => {
+			await loadCatalog();
+			await loadCatalog();
+		});
+	} finally {
+		database.execute = original;
+	}
+	expect(calls).toBe(14);
 });

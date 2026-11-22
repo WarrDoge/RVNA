@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "../db.ts";
+import { requestCache } from "../request-context.ts";
 
 export interface JqlCatalog {
 	projects: { id: string; key: string; name: string }[];
@@ -40,7 +41,13 @@ async function rows(query: ReturnType<typeof sql>): Promise<Row[]> {
 	return result.rows as Row[];
 }
 
-export async function loadCatalog(): Promise<JqlCatalog> {
+const catalogKey = {};
+
+export function loadCatalog(): Promise<JqlCatalog> {
+	return requestCache(catalogKey, loadCatalogUncached);
+}
+
+async function loadCatalogUncached(): Promise<JqlCatalog> {
 	const [
 		projectRows,
 		issueTypeRows,
