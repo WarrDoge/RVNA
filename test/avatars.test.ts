@@ -95,6 +95,24 @@ test("the generated SVG cannot run script", async () => {
 	}
 });
 
+test("a display name that starts with an emoji keeps the whole character", async () => {
+	await client.query("update users set display_name = $1 where id = $2", [
+		"😀 Example",
+		userId,
+	]);
+	try {
+		const response = await get(`/api/avatars/users/${userId}`);
+		expect(response.statusCode).toBe(200);
+		expect(response.body).toContain("😀E");
+		expect(response.body).not.toContain("\uFFFD");
+	} finally {
+		await client.query("update users set display_name = $1 where id = $2", [
+			"Avatar User",
+			userId,
+		]);
+	}
+});
+
 test("a project avatar is the first letter on a rounded square", async () => {
 	const response = await get(`/api/avatars/projects/${fixture.projectId}`);
 	expect(response.statusCode).toBe(200);

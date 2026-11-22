@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { stat, unlink } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { type AnyColumn, eq, type SQL, sql } from "drizzle-orm";
 import { storeAvatarFile } from "../shared/avatar-storage.ts";
@@ -9,6 +9,7 @@ import { env } from "./env.ts";
 import { HttpError } from "./http.ts";
 import { can } from "./permissions.ts";
 import { issueTypes, priorities, projects, users } from "./schema.ts";
+import { spaces } from "./schema-wiki.ts";
 
 export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 
@@ -29,18 +30,6 @@ export function userAvatarUrl(id: string) {
 	return `/api/avatars/users/${id}`;
 }
 
-export function projectAvatarUrl(id: string) {
-	return `/api/avatars/projects/${id}`;
-}
-
-export function issueTypeAvatarUrl(id: string) {
-	return `/api/avatars/issuetypes/${id}`;
-}
-
-export function priorityAvatarUrl(id: string) {
-	return `/api/avatars/priorities/${id}`;
-}
-
 /** Avatar URLs are built here, so no API response carries a stored external one. */
 export function userAvatarSql(id: AnyColumn | SQL) {
 	return sql<
@@ -52,15 +41,6 @@ export function projectAvatarSql(id: AnyColumn | SQL) {
 	return sql<
 		string | null
 	>`case when ${id} is null then null else '/api/avatars/projects/' || ${id}::text end`;
-}
-
-export function issueTypeAvatarSql(
-	id: AnyColumn | SQL,
-	iconFile: AnyColumn | SQL,
-) {
-	return sql<
-		string | null
-	>`case when ${iconFile} is null then null else '/api/avatars/issuetypes/' || ${id}::text end`;
 }
 
 /** The URL the issue type icon component renders: a stored avatar or the chosen icon. */
@@ -95,11 +75,13 @@ export function initialsFor(displayName: string, username: string) {
 	const initials = displayName
 		.split(/\s+/)
 		.filter(Boolean)
-		.map((part) => part[0])
-		.join("")
-		.slice(0, 2)
-		.toUpperCase();
-	return initials || username.slice(0, 2).toUpperCase() || "?";
+		.map((part) => [...part][0] ?? "")
+		.join("");
+	return (
+		[...initials].slice(0, 2).join("").toUpperCase() ||
+		[...username].slice(0, 2).join("").toUpperCase() ||
+		"?"
+	);
 }
 
 export function firstLetter(name: string) {
@@ -169,6 +151,42 @@ async function storedAvatar(file: string) {
 	const image = imageTypeForFile(path);
 	if (!image) return null;
 	return { path, contentType: image.contentType, svg: image.type === "svg" };
+}
+
+/** Stored files are shared by sha256, so only remove one that nothing else points at. */
+async function deleteAvatarFileIfUnused(file: string | null) {
+	if (!file) return;
+	const path = storedPath(file);
+	if (!path) return;
+	const used = await Promise.all([
+		db
+			.select({ id: users.id })
+			.from(users)
+			.where(eq(users.avatarFile, file))
+			.limit(1),
+		db
+			.select({ id: projects.id })
+			.from(projects)
+			.where(eq(projects.avatarFile, file))
+			.limit(1),
+		db
+			.select({ id: issueTypes.id })
+			.from(issueTypes)
+			.where(eq(issueTypes.iconFile, file))
+			.limit(1),
+		db
+			.select({ id: priorities.id })
+			.from(priorities)
+			.where(eq(priorities.iconFile, file))
+			.limit(1),
+		db
+			.select({ id: spaces.id })
+			.from(spaces)
+			.where(eq(spaces.iconFile, file))
+			.limit(1),
+	]);
+	if (used.some((rows) => rows.length > 0)) return;
+	await unlink(path).catch(() => undefined);
 }
 
 export async function userAvatar(
@@ -275,7 +293,11 @@ export async function uploadAvatar(
 	read: () => Promise<AvatarUpload>,
 ): Promise<{ avatarUrl: string }> {
 	const [target] = await db
-		.select({ id: users.id, username: users.username })
+		.select({
+			id: users.id,
+			username: users.username,
+			avatarFile: users.avatarFile,
+		})
 		.from(users)
 		.where(eq(users.username, username))
 		.limit(1);
@@ -310,6 +332,7 @@ export async function uploadAvatar(
 			updatedAt: new Date(),
 		})
 		.where(eq(users.id, target.id));
+	await deleteAvatarFileIfUnused(target.avatarFile);
 
 	return {
 		avatarUrl: `${userAvatarUrl(target.id)}?v=${stored.sha256.slice(0, 12)}`,

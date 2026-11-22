@@ -283,6 +283,79 @@ test("only the owner or an administrator may change an avatar", async () => {
 	expect(allowed.statusCode).toBe(200);
 });
 
+test("replacing an avatar deletes the file the old one used", async () => {
+	const avatarsDir = process.env.AVATARS_DIR as string;
+	const first = await upload(
+		owner.username,
+		owner.session,
+		"first.png",
+		"image/png",
+		Buffer.concat([png, Buffer.from("first replacement")]),
+	);
+	expect(first.statusCode).toBe(200);
+	const firstRows = await client.query<{ avatar_file: string }>(
+		"select avatar_file from users where id = $1",
+		[owner.id],
+	);
+	const firstFile = firstRows.rows[0]?.avatar_file as string;
+
+	const second = await upload(
+		owner.username,
+		owner.session,
+		"second.png",
+		"image/png",
+		Buffer.concat([png, Buffer.from("second replacement")]),
+	);
+	expect(second.statusCode).toBe(200);
+	const secondRows = await client.query<{ avatar_file: string }>(
+		"select avatar_file from users where id = $1",
+		[owner.id],
+	);
+	const secondFile = secondRows.rows[0]?.avatar_file as string;
+	expect(secondFile).not.toBe(firstFile);
+	await expect(stat(join(avatarsDir, firstFile))).rejects.toMatchObject({
+		code: "ENOENT",
+	});
+	expect((await stat(join(avatarsDir, secondFile))).isFile()).toBe(true);
+});
+
+test("replacing an avatar keeps a file another record still uses", async () => {
+	const avatarsDir = process.env.AVATARS_DIR as string;
+	const shared = await upload(
+		owner.username,
+		owner.session,
+		"shared.png",
+		"image/png",
+		Buffer.concat([png, Buffer.from("shared replacement")]),
+	);
+	expect(shared.statusCode).toBe(200);
+	const sharedRows = await client.query<{ avatar_file: string }>(
+		"select avatar_file from users where id = $1",
+		[owner.id],
+	);
+	const sharedFile = sharedRows.rows[0]?.avatar_file as string;
+	await client.query("update users set avatar_file = $1 where id = $2", [
+		sharedFile,
+		other.id,
+	]);
+	try {
+		const next = await upload(
+			owner.username,
+			owner.session,
+			"next.png",
+			"image/png",
+			Buffer.concat([png, Buffer.from("next replacement")]),
+		);
+		expect(next.statusCode).toBe(200);
+		expect((await stat(join(avatarsDir, sharedFile))).isFile()).toBe(true);
+	} finally {
+		await client.query("update users set avatar_file = null where id = $1", [
+			other.id,
+		]);
+		await unlink(join(avatarsDir, sharedFile)).catch(() => undefined);
+	}
+});
+
 test("uploadAvatar enforces the size limit even when its reader forgets", async () => {
 	const actor = await userForSession(owner.session);
 	if (!actor) throw new Error("The test session has no user");
