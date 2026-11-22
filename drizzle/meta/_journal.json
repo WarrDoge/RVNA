@@ -1,209 +1,209 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1794406348822,
-      "tag": "0000_pg_trgm",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1794407463667,
-      "tag": "0001_hot_purple_man",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1794411789493,
-      "tag": "0002_lazy_blue_marvel",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1794420327483,
-      "tag": "0003_servicedesk",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1794422522120,
-      "tag": "0004_wiki",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1794423062465,
-      "tag": "0005_navigator",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1794423308522,
-      "tag": "0006_notifications",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1794423729505,
-      "tag": "0007_agile",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1794424171956,
-      "tag": "0008_gitlab",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1794425221096,
-      "tag": "0009_admin",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1794428623517,
-      "tag": "0010_avatars",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1794429335251,
-      "tag": "0011_dashboards",
-      "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1794430092017,
-      "tag": "0012_wiki",
-      "breakpoints": true
-    },
-    {
-      "idx": 13,
-      "version": "7",
-      "when": 1794430734237,
-      "tag": "0013_reports",
-      "breakpoints": true
-    },
-    {
-      "idx": 14,
-      "version": "7",
-      "when": 1794431649294,
-      "tag": "0014_backfill_search_sources",
-      "breakpoints": true
-    },
-    {
-      "idx": 15,
-      "version": "7",
-      "when": 1794434818984,
-      "tag": "0015_permissions",
-      "breakpoints": true
-    },
-    {
-      "idx": 16,
-      "version": "7",
-      "when": 1794438495518,
-      "tag": "0016_fine_raider",
-      "breakpoints": true
-    },
-    {
-      "idx": 17,
-      "version": "7",
-      "when": 1794441220887,
-      "tag": "0017_service_desk_open_access",
-      "breakpoints": true
-    },
-    {
-      "idx": 18,
-      "version": "7",
-      "when": 1794445458566,
-      "tag": "0018_private_imported_filters_dashboards",
-      "breakpoints": true
-    },
-    {
-      "idx": 19,
-      "version": "7",
-      "when": 1794447070091,
-      "tag": "0019_share_system_dashboard",
-      "breakpoints": true
-    },
-    {
-      "idx": 20,
-      "version": "7",
-      "when": 1794559593139,
-      "tag": "0020_wiki_social_sources",
-      "breakpoints": true
-    },
-    {
-      "idx": 21,
-      "version": "7",
-      "when": 1794559700000,
-      "tag": "0021_modify_reporter_local_schemes",
-      "breakpoints": true
-    },
-    {
-      "idx": 22,
-      "version": "7",
-      "when": 1794566807004,
-      "tag": "0022_messenger",
-      "breakpoints": true
-    },
-    {
-      "idx": 23,
-      "version": "7",
-      "when": 1794571412024,
-      "tag": "0023_local_changes",
-      "breakpoints": true
-    },
-    {
-      "idx": 24,
-      "version": "7",
-      "when": 1794572000000,
-      "tag": "0024_local_changes_backfill",
-      "breakpoints": true
-    },
-    {
-      "idx": 25,
-      "version": "7",
-      "when": 1794900000000,
-      "tag": "0025_rename_rvna",
-      "breakpoints": true
-    },
-    {
-      "idx": 26,
-      "version": "7",
-      "when": 1795281452498,
-      "tag": "0026_plain_kate_bishop",
-      "breakpoints": true
-    },
-    {
-      "idx": 27,
-      "version": "7",
-      "when": 1795347443328,
-      "tag": "0027_fantastic_lady_vermin",
-      "breakpoints": true
-    },
-    {
-      "idx": 28,
-      "version": "7",
-      "when": 1795347724026,
-      "tag": "0028_open_amphibian",
-      "breakpoints": true
-    }
-  ]
+	"version": "7",
+	"dialect": "postgresql",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "7",
+			"when": 1794406348822,
+			"tag": "0000_pg_trgm",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "7",
+			"when": 1794407463667,
+			"tag": "0001_hot_purple_man",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "7",
+			"when": 1794411789493,
+			"tag": "0002_lazy_blue_marvel",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "7",
+			"when": 1794420327483,
+			"tag": "0003_servicedesk",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "7",
+			"when": 1794422522120,
+			"tag": "0004_wiki",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1794423062465,
+			"tag": "0005_navigator",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "7",
+			"when": 1794423308522,
+			"tag": "0006_notifications",
+			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "7",
+			"when": 1794423729505,
+			"tag": "0007_agile",
+			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "7",
+			"when": 1794424171956,
+			"tag": "0008_gitlab",
+			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "7",
+			"when": 1794425221096,
+			"tag": "0009_admin",
+			"breakpoints": true
+		},
+		{
+			"idx": 10,
+			"version": "7",
+			"when": 1794428623517,
+			"tag": "0010_avatars",
+			"breakpoints": true
+		},
+		{
+			"idx": 11,
+			"version": "7",
+			"when": 1794429335251,
+			"tag": "0011_dashboards",
+			"breakpoints": true
+		},
+		{
+			"idx": 12,
+			"version": "7",
+			"when": 1794430092017,
+			"tag": "0012_wiki",
+			"breakpoints": true
+		},
+		{
+			"idx": 13,
+			"version": "7",
+			"when": 1794430734237,
+			"tag": "0013_reports",
+			"breakpoints": true
+		},
+		{
+			"idx": 14,
+			"version": "7",
+			"when": 1794431649294,
+			"tag": "0014_backfill_search_sources",
+			"breakpoints": true
+		},
+		{
+			"idx": 15,
+			"version": "7",
+			"when": 1794434818984,
+			"tag": "0015_permissions",
+			"breakpoints": true
+		},
+		{
+			"idx": 16,
+			"version": "7",
+			"when": 1794438495518,
+			"tag": "0016_fine_raider",
+			"breakpoints": true
+		},
+		{
+			"idx": 17,
+			"version": "7",
+			"when": 1794441220887,
+			"tag": "0017_service_desk_open_access",
+			"breakpoints": true
+		},
+		{
+			"idx": 18,
+			"version": "7",
+			"when": 1794445458566,
+			"tag": "0018_private_imported_filters_dashboards",
+			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "7",
+			"when": 1794447070091,
+			"tag": "0019_share_system_dashboard",
+			"breakpoints": true
+		},
+		{
+			"idx": 20,
+			"version": "7",
+			"when": 1794559593139,
+			"tag": "0020_wiki_social_sources",
+			"breakpoints": true
+		},
+		{
+			"idx": 21,
+			"version": "7",
+			"when": 1794559700000,
+			"tag": "0021_modify_reporter_local_schemes",
+			"breakpoints": true
+		},
+		{
+			"idx": 22,
+			"version": "7",
+			"when": 1794566807004,
+			"tag": "0022_messenger",
+			"breakpoints": true
+		},
+		{
+			"idx": 23,
+			"version": "7",
+			"when": 1794571412024,
+			"tag": "0023_local_changes",
+			"breakpoints": true
+		},
+		{
+			"idx": 24,
+			"version": "7",
+			"when": 1794572000000,
+			"tag": "0024_local_changes_backfill",
+			"breakpoints": true
+		},
+		{
+			"idx": 25,
+			"version": "7",
+			"when": 1794900000000,
+			"tag": "0025_rename_rvna",
+			"breakpoints": true
+		},
+		{
+			"idx": 26,
+			"version": "7",
+			"when": 1795281452498,
+			"tag": "0026_plain_kate_bishop",
+			"breakpoints": true
+		},
+		{
+			"idx": 27,
+			"version": "7",
+			"when": 1795347443328,
+			"tag": "0027_fantastic_lady_vermin",
+			"breakpoints": true
+		},
+		{
+			"idx": 28,
+			"version": "7",
+			"when": 1795347724026,
+			"tag": "0028_open_amphibian",
+			"breakpoints": true
+		}
+	]
 }
