@@ -2358,21 +2358,32 @@ export async function completeSprint(
 		}
 		targetSprintId = target.id;
 	}
-	const issueRows = await db
-		.select({
-			id: issues.id,
-			done: sql<boolean>`${statuses.category} = 'done'`,
-		})
-		.from(issueSprints)
-		.innerJoin(issues, eq(issues.id, issueSprints.issueId))
-		.innerJoin(statuses, eq(statuses.id, issues.statusId))
-		.where(
-			and(eq(issueSprints.sprintId, sprint.id), eq(issueSprints.isOpen, true)),
-		);
-	const completed = issueRows.filter((row) => row.done).length;
-	const incompleteRows = issueRows.filter((row) => !row.done);
-
-	await db.transaction(async (tx) => {
+	const counts = await db.transaction(async (tx) => {
+		await lockBoard(tx, board.id);
+		const [current] = await tx
+			.select()
+			.from(sprints)
+			.where(eq(sprints.id, id))
+			.limit(1);
+		if (!current) throw new HttpError(404, "Sprint not found");
+		if (current.state !== "active") {
+			throw new HttpError(400, "Only an active sprint can be completed");
+		}
+		const issueRows = await tx
+			.select({
+				id: issues.id,
+				done: sql<boolean>`${statuses.category} = 'done'`,
+			})
+			.from(issueSprints)
+			.innerJoin(issues, eq(issues.id, issueSprints.issueId))
+			.innerJoin(statuses, eq(statuses.id, issues.statusId))
+			.where(
+				and(
+					eq(issueSprints.sprintId, current.id),
+					eq(issueSprints.isOpen, true),
+				),
+			);
+		const incompleteRows = issueRows.filter((row) => !row.done);
 		await tx
 			.update(sprints)
 			.set({
@@ -2380,11 +2391,11 @@ export async function completeSprint(
 				completeDate: new Date(),
 				updatedAt: new Date(),
 			})
-			.where(eq(sprints.id, sprint.id));
+			.where(eq(sprints.id, current.id));
 		await tx
 			.update(issueSprints)
 			.set({ isOpen: false })
-			.where(eq(issueSprints.sprintId, sprint.id));
+			.where(eq(issueSprints.sprintId, current.id));
 		if (targetSprintId && incompleteRows.length > 0) {
 			await tx
 				.insert(issueSprints)
@@ -2400,6 +2411,10 @@ export async function completeSprint(
 					set: { isOpen: true },
 				});
 		}
+		return {
+			completed: issueRows.filter((row) => row.done).length,
+			incomplete: incompleteRows.length,
+		};
 	});
 	const [closed] = await db
 		.select()
@@ -2408,8 +2423,8 @@ export async function completeSprint(
 		.limit(1);
 	return {
 		sprint: sprintPayload(closed),
-		completed,
-		incomplete: incompleteRows.length,
+		completed: counts.completed,
+		incomplete: counts.incomplete,
 		movedToSprintId: targetSprintId,
 	};
 }
@@ -2429,7 +2444,19 @@ export async function deleteSprint(actor: CurrentUser, id: string) {
 	if (sprint.state !== "future") {
 		throw new HttpError(400, "Only a future sprint can be deleted");
 	}
-	await db.delete(sprints).where(eq(sprints.id, sprint.id));
+	await db.transaction(async (tx) => {
+		await lockBoard(tx, board.id);
+		const [current] = await tx
+			.select()
+			.from(sprints)
+			.where(eq(sprints.id, id))
+			.limit(1);
+		if (!current) throw new HttpError(404, "Sprint not found");
+		if (current.state !== "future") {
+			throw new HttpError(400, "Only a future sprint can be deleted");
+		}
+		await tx.delete(sprints).where(eq(sprints.id, current.id));
+	});
 }
 
 export async function moveSprint(

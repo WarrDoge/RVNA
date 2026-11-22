@@ -139,6 +139,20 @@ async function move(
 	return inject("POST", `/api/boards/${rapidViewId}/move`, session, body);
 }
 
+/** Waits until the database reports at least `count` sessions blocked on a board or sprint lock. */
+async function waitForLockWaiters(count: number) {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const result = await pool.query<{ n: number }>(
+			`select count(*)::int as n from pg_stat_activity
+			 where datname = current_database() and wait_event_type = 'Lock'`,
+		);
+		if ((result.rows[0]?.n ?? 0) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	throw new Error(`timed out waiting for ${count} lock waiters`);
+}
+
 async function boardData(query = "", rapidViewId = scrumBoard.rapidViewId) {
 	const response = await inject(
 		"GET",
@@ -826,6 +840,83 @@ describe("sprints", () => {
 			ownerSession,
 		);
 		expect(deleted.statusCode).toBe(204);
+	});
+
+	test("issues moved into a sprint during completion are counted and moved", {
+		timeout: 15000,
+	}, async () => {
+		const late = await createIssue(ownerSession, "Late sprint issue", "0|late");
+		const first = await createSprint("Race close first");
+		const second = await createSprint("Race close second");
+		await startSprint(first.id);
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select id from boards where id = $1 for update", [
+				scrumBoard.id,
+			]);
+			await locker.query("select id from sprints where id = $1 for update", [
+				first.id,
+			]);
+			const completing = inject(
+				"POST",
+				`/api/sprints/${first.id}/complete`,
+				ownerSession,
+				{ moveToSprintId: second.id },
+			);
+			await waitForLockWaiters(1);
+			await locker.query(
+				"insert into issue_sprints (issue_id, sprint_id, is_open) values ($1, $2, true)",
+				[late.id, first.id],
+			);
+			await locker.query("commit");
+			const response = await completing;
+			expect(response.statusCode).toBe(200);
+			const target = await db
+				.select({ isOpen: issueSprints.isOpen })
+				.from(issueSprints)
+				.where(
+					and(
+						eq(issueSprints.issueId, late.id),
+						eq(issueSprints.sprintId, second.id),
+					),
+				);
+			expect(target).toEqual([{ isOpen: true }]);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	});
+
+	test("deleting a future sprint twice at once reports the second as missing", {
+		timeout: 15000,
+	}, async () => {
+		const sprint = await createSprint("Race delete sprint");
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select id from boards where id = $1 for update", [
+				scrumBoard.id,
+			]);
+			await locker.query("select id from sprints where id = $1 for update", [
+				sprint.id,
+			]);
+			const first = inject("DELETE", `/api/sprints/${sprint.id}`, ownerSession);
+			const second = inject(
+				"DELETE",
+				`/api/sprints/${sprint.id}`,
+				ownerSession,
+			);
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const responses = await Promise.all([first, second]);
+			expect(responses.map((response) => response.statusCode).sort()).toEqual([
+				204, 404,
+			]);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
 	});
 
 	test("concurrent sprint creates get distinct sequences", async () => {
