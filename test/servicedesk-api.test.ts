@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { eq, inArray } from "drizzle-orm";
+import { Pool } from "pg";
+
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { type CurrentUser, userForSession } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
@@ -22,6 +24,7 @@ import {
 	resolutions,
 	serviceDesks,
 	slaCalendars,
+	slaCycles,
 	slaGoals,
 	slaMetrics,
 	statuses,
@@ -30,6 +33,8 @@ import {
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
 import { canViewRequest } from "../src/lib/server/servicedesk/access.ts";
+import { applyCreateAutomation } from "../src/lib/server/servicedesk/automation.ts";
+import { issueSla } from "../src/lib/server/servicedesk/sla.ts";
 import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page.server.ts";
 import { load as loadQueue } from "../src/routes/projects/[key]/queues/custom/[queueId]/+page.server.ts";
 import { load as loadPortalLayout } from "../src/routes/servicedesk/customer/+layout.server.ts";
@@ -2174,4 +2179,283 @@ test("canViewRequest refuses a desk that does not own the issue", async () => {
 		creatorId: null,
 	};
 	expect(await canViewRequest(admin, otherDesk, issue)).toBe(false);
+});
+
+describe("review regressions", () => {
+	test("the sprint lookup runs once per field and filters in SQL", async () => {
+		const [rule] = await db
+			.select()
+			.from(automationRules)
+			.where(eq(automationRules.deskId, deskId))
+			.limit(1);
+		if (!rule) throw new Error("fixture rule missing");
+		const [duplicate] = await db
+			.insert(automationRules)
+			.values({
+				sourceId: `${tag}:rule:duplicate`,
+				deskId,
+				name: `${tag} Rule duplicate`,
+				enabled: true,
+				trigger: rule.trigger,
+				conditions: rule.conditions,
+				actions: rule.actions,
+				raw: {},
+			})
+			.returning();
+
+		const querySpy = vi.spyOn(Pool.prototype, "query");
+		const outcome = await applyCreateAutomation(seededIssueId);
+		const queries = querySpy.mock.calls.map((call) =>
+			typeof call[0] === "string"
+				? call[0]
+				: ((call[0] as { text?: string }).text ?? ""),
+		);
+		querySpy.mockRestore();
+		const issueQueries = queries.filter((text) =>
+			text.includes('from "issues"'),
+		);
+
+		expect(outcome.applied.length).toBeGreaterThanOrEqual(2);
+		expect(issueQueries).toHaveLength(2);
+		expect(
+			issueQueries.some((text) => text.includes("jsonb_array_elements_text")),
+		).toBe(true);
+
+		await db
+			.delete(automationRules)
+			.where(eq(automationRules.id, duplicate.id));
+	});
+
+	test("a CURRENT reference for a non-sprint field is skipped", async () => {
+		const fieldId = `${tag}:customfield:not-sprint`;
+		const [rule] = await db
+			.insert(automationRules)
+			.values({
+				sourceId: `${tag}:rule:not-sprint`,
+				deskId,
+				name: `${tag} Not a sprint`,
+				enabled: true,
+				trigger: {
+					type: "jira.issue.event.trigger:created",
+					value: { eventKey: "jira:issue_created" },
+				},
+				conditions: [],
+				actions: [
+					{
+						type: "jira.issue.edit",
+						value: {
+							operations: [
+								{
+									type: "SET",
+									fieldId,
+									fieldType:
+										"com.atlassian.jira.plugin.system.customfieldtypes:userpicker",
+									value: { type: "REFERENCE", value: "CURRENT" },
+								},
+							],
+						},
+					},
+				],
+				raw: {},
+			})
+			.returning();
+
+		const outcome = await applyCreateAutomation(seededIssueId);
+		expect(outcome.skipped).toContain(`${rule.name}: ${fieldId}`);
+		const [issue] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, seededIssueId));
+		expect((issue.custom as Record<string, unknown>)[fieldId]).toBeUndefined();
+
+		await db.delete(automationRules).where(eq(automationRules.id, rule.id));
+	});
+
+	test("the portal validates number, url and user custom fields", async () => {
+		const [source] = await db
+			.select({ issueTypeId: requestTypes.issueTypeId })
+			.from(requestTypes)
+			.where(eq(requestTypes.id, requestTypeId));
+		if (!source) throw new Error("fixture request type missing");
+		const [requestType] = await db
+			.insert(requestTypes)
+			.values({
+				sourceId: `${tag}:rt:validation`,
+				deskId,
+				issueTypeId: source.issueTypeId,
+				name: `${tag} Validation`,
+				sequence: 10,
+			})
+			.returning();
+		const [numberField] = await db
+			.insert(fields)
+			.values({
+				sourceId: `${tag}:customfield:number`,
+				name: "Count",
+				type: "number",
+				customKey: "com.atlassian.jira.plugin.system.customfieldtypes:float",
+			})
+			.returning();
+		const [urlField] = await db
+			.insert(fields)
+			.values({
+				sourceId: `${tag}:customfield:url`,
+				name: "Link",
+				type: "string",
+				customKey: "com.atlassian.jira.plugin.system.customfieldtypes:url",
+			})
+			.returning();
+		const [userField] = await db
+			.insert(fields)
+			.values({
+				sourceId: `${tag}:customfield:user`,
+				name: "Owner",
+				type: "user",
+				customKey:
+					"com.atlassian.jira.plugin.system.customfieldtypes:userpicker",
+			})
+			.returning();
+		await db.insert(requestTypeFields).values([
+			{
+				requestTypeId: requestType.id,
+				fieldId: "summary",
+				label: "Summary",
+				required: true,
+				sequence: 0,
+			},
+			{
+				requestTypeId: requestType.id,
+				fieldId: numberField.sourceId,
+				label: "Count",
+				sequence: 1,
+			},
+			{
+				requestTypeId: requestType.id,
+				fieldId: urlField.sourceId,
+				label: "Link",
+				sequence: 2,
+			},
+			{
+				requestTypeId: requestType.id,
+				fieldId: userField.sourceId,
+				label: "Owner",
+				sequence: 3,
+			},
+		]);
+
+		try {
+			const badNumber = await inject(
+				"POST",
+				`/api/servicedesk/portals/${deskId}/requests`,
+				customerSession,
+				{
+					requestTypeId: requestType.id,
+					summary: "Bad number",
+					fields: { [numberField.sourceId]: "abc" },
+				},
+			);
+			expect(badNumber.statusCode).toBe(400);
+
+			const badUrl = await inject(
+				"POST",
+				`/api/servicedesk/portals/${deskId}/requests`,
+				customerSession,
+				{
+					requestTypeId: requestType.id,
+					summary: "Bad url",
+					fields: { [urlField.sourceId]: "javascript:alert(1)" },
+				},
+			);
+			expect(badUrl.statusCode).toBe(400);
+
+			const created = await inject(
+				"POST",
+				`/api/servicedesk/portals/${deskId}/requests`,
+				customerSession,
+				{
+					requestTypeId: requestType.id,
+					summary: "Valid user",
+					fields: { [userField.sourceId]: customerId },
+				},
+			);
+			expect(created.statusCode).toBe(201);
+			const row = await issueRow(created.json().key);
+			expect(row.custom[userField.sourceId]).toEqual({
+				id: customerId,
+				name: `t-${run}-customer`,
+				displayName: "Portal Customer",
+			});
+		} finally {
+			await db
+				.delete(requestTypeFields)
+				.where(eq(requestTypeFields.requestTypeId, requestType.id));
+			await db
+				.delete(fields)
+				.where(inArray(fields.id, [numberField.id, urlField.id, userField.id]));
+			await db.delete(requestTypes).where(eq(requestTypes.id, requestType.id));
+		}
+	});
+
+	test("a cycle resolves the goal and calendar it was computed with", async () => {
+		const created = await createRequest(customerSession, {
+			summary: "SLA goal identity",
+		});
+		const key = created.json().key;
+		const [issue] = await db
+			.select({ id: issues.id })
+			.from(issues)
+			.where(eq(issues.key, key));
+		if (!issue) throw new Error("created issue missing");
+
+		const [secondCalendar] = await db
+			.insert(slaCalendars)
+			.values({
+				sourceId: `${tag}:calendar:second`,
+				name: `${tag} Second calendar`,
+				timezone: "Europe/Berlin",
+				workingHours: week,
+				holidays: [],
+			})
+			.returning();
+		const [secondGoal] = await db
+			.insert(slaGoals)
+			.values({
+				sourceId: `${tag}:goal:second`,
+				metricId: resolutionMetricId,
+				jql: "",
+				goalMinutes: 60,
+				calendarId: secondCalendar.id,
+				sequence: 1,
+			})
+			.returning();
+
+		try {
+			await db.delete(slaCycles).where(eq(slaCycles.issueId, issue.id));
+			await db.insert(slaCycles).values({
+				issueId: issue.id,
+				metricId: resolutionMetricId,
+				cycleNumber: 1,
+				startedAt: new Date("2026-01-05T09:00:00Z"),
+				stoppedAt: new Date("2026-01-05T10:00:00Z"),
+				pausedIntervals: [],
+				goalId: secondGoal.id,
+				goalMinutes: 60,
+				elapsedMinutes: 60,
+				breached: false,
+				computedAt: new Date("2026-01-05T10:00:00Z"),
+			});
+
+			const metrics = await issueSla(
+				issue.id,
+				new Date("2026-01-05T11:00:00Z"),
+			);
+			const metric = metrics.find((item) => item.id === resolutionMetricId);
+			expect(metric?.calendar?.name).toBe(`${tag} Second calendar`);
+		} finally {
+			await db.delete(slaGoals).where(eq(slaGoals.id, secondGoal.id));
+			await db
+				.delete(slaCalendars)
+				.where(eq(slaCalendars.id, secondCalendar.id));
+		}
+	});
 });

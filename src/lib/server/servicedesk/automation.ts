@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { db } from "../db.ts";
 import { automationRules, issues, serviceDesks } from "../schema.ts";
 
@@ -55,7 +55,22 @@ async function currentSprint(
 	const rows = await db
 		.select({ custom: issues.custom })
 		.from(issues)
-		.where(eq(issues.projectId, projectId));
+		.where(
+			and(
+				eq(issues.projectId, projectId),
+				sql`exists (
+					select 1
+					from jsonb_array_elements_text(
+						case
+							when jsonb_typeof(${issues.custom} -> ${fieldId}) = 'array'
+								then ${issues.custom} -> ${fieldId}
+							else jsonb_build_array(${issues.custom} -> ${fieldId})
+						end
+					) as sprint(value)
+					where sprint.value like '%state=ACTIVE%'
+				)`,
+			),
+		);
 
 	const active: SprintDescriptor[] = [];
 	for (const row of rows) {
@@ -124,6 +139,7 @@ export async function applyCreateAutomation(
 		.orderBy(asc(automationRules.name));
 
 	const custom = { ...(issue.custom as Record<string, unknown>) };
+	const sprints = new Map<string, Promise<SprintDescriptor | null>>();
 	let changed = false;
 
 	for (const rule of rules) {
@@ -151,12 +167,18 @@ export async function applyCreateAutomation(
 				if (
 					operation.type !== "SET" ||
 					reference?.type !== "REFERENCE" ||
-					reference.value !== "CURRENT"
+					reference.value !== "CURRENT" ||
+					operation.fieldType !== "com.pyxis.greenhopper.jira:gh-sprint"
 				) {
 					outcome.skipped.push(`${rule.name}: ${fieldId}`);
 					continue;
 				}
-				const sprint = await currentSprint(issue.projectId, fieldId);
+				let sprintLookup = sprints.get(fieldId);
+				if (!sprintLookup) {
+					sprintLookup = currentSprint(issue.projectId, fieldId);
+					sprints.set(fieldId, sprintLookup);
+				}
+				const sprint = await sprintLookup;
 				if (!sprint) {
 					outcome.skipped.push(`${rule.name}: ${fieldId} has no sprint`);
 					continue;
