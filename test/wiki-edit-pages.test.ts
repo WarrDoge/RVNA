@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { pool } from "../src/lib/server/db.ts";
+import { titleClash } from "../src/lib/server/wiki-edit/helpers.ts";
 import {
 	type Client,
 	doc,
@@ -463,6 +464,22 @@ describe("drafts of unpublished pages", () => {
 });
 
 describe("labels", () => {
+	test("a unique violation outside the title index is not a title clash", async () => {
+		const page = await wiki.page(author, space.key, "Constraint page");
+		await pool.query(
+			"insert into page_labels (source_id, page_id, label) values ($1, $2, 'duplicate')",
+			[`fat:test-${randomUUID()}`, page.id],
+		);
+		await expect(
+			titleClash("Constraint page", () =>
+				pool.query(
+					"insert into page_labels (source_id, page_id, label) values ($1, $2, 'duplicate')",
+					[`fat:test-${randomUUID()}`, page.id],
+				),
+			),
+		).rejects.toMatchObject({ code: "23505" });
+	});
+
 	test("set replaces the label list", async () => {
 		const page = await wiki.page(author, space.key, "Labelled", {
 			labels: ["one", "two"],

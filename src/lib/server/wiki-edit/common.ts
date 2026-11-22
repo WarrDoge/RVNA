@@ -42,6 +42,17 @@ export function pgCode(error: unknown): string | undefined {
 	return undefined;
 }
 
+export function pgConstraint(error: unknown): string | undefined {
+	for (
+		let cause = error as { constraint?: string; cause?: unknown } | undefined;
+		cause;
+	) {
+		if (typeof cause.constraint === "string") return cause.constraint;
+		cause = cause.cause as typeof cause;
+	}
+	return undefined;
+}
+
 /** A page id, or the source id the Confluence URLs carry. */
 export const pageIdParams = z.object({ id: z.string().trim().min(1).max(255) });
 /** The default JSON body limit is 1 MiB; routes that carry a whole document raise it to this. */

@@ -9,6 +9,7 @@ import {
 	newSourceId,
 	type PageRow,
 	pgCode,
+	pgConstraint,
 	type SpaceRow,
 } from "./common.ts";
 
@@ -40,7 +41,10 @@ export async function titleClash<T>(title: string, run: () => Promise<T>) {
 	try {
 		return await run();
 	} catch (error) {
-		if (pgCode(error) === "23505") {
+		if (
+			pgCode(error) === "23505" &&
+			pgConstraint(error) === "pages_space_title_current_unique"
+		) {
 			fail(409, `A page titled "${title}" already exists in this space`);
 		}
 		throw error;
