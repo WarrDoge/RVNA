@@ -84,6 +84,16 @@ test("the wiki sanitizer drops the href of a mention chip", () => {
 	expect(clean).toContain('class="user-mention"');
 });
 
+test("an input in a body is forced to a task checkbox", async () => {
+	const cleaned = await sanitizeBodyHtml(
+		`<p><input type="password" name="secret" value="x"><input type="text"></p>`,
+	);
+	expect(cleaned).not.toContain("password");
+	expect(cleaned).not.toContain("name=");
+	expect(cleaned).not.toContain("value=");
+	expect(cleaned).toContain('type="checkbox"');
+});
+
 test("a forged data-user-id on other tags is dropped", async () => {
 	const cleaned = await sanitizeBodyHtml(
 		`<div data-user-id="${userId}"><span data-user-id="${userId}">a</span><strong data-user-id="${userId}">b</strong></div>`,

@@ -61,7 +61,11 @@ export function withSafeRel(attributes: Record<string, string>) {
 
 type MentionUser = { displayName: string; username: string };
 
-function cleanBodyHtml(html: string, users?: Map<string, MentionUser>) {
+function cleanBodyHtml(
+	html: string,
+	users?: Map<string, MentionUser>,
+	mentioned?: Set<string>,
+) {
 	return sanitizeHtml(html, {
 		allowedTags,
 		allowedAttributes,
@@ -73,6 +77,7 @@ function cleanBodyHtml(html: string, users?: Map<string, MentionUser>) {
 				const classes = (attributes.class ?? "").split(/\s+/);
 				const userId = attributes["data-user-id"];
 				if (classes.includes(mentionClass) && userId) {
+					if (mentioned && uuidPattern.test(userId)) mentioned.add(userId);
 					const user = users?.get(userId);
 					const attribs = { ...attributes };
 					delete attribs.href;
@@ -85,6 +90,10 @@ function cleanBodyHtml(html: string, users?: Map<string, MentionUser>) {
 				}
 				return { tagName, attribs: withSafeRel(attributes) };
 			},
+			input: (tagName: string, attributes: Record<string, string>) => ({
+				tagName,
+				attribs: { ...attributes, type: "checkbox" },
+			}),
 		},
 	}).trim();
 }
@@ -94,13 +103,12 @@ export async function sanitizeBodyHtml(
 ): Promise<string | null> {
 	if (!html) return null;
 
-	const clean = cleanBodyHtml(html);
+	const ids = new Set<string>();
+	const clean = cleanBodyHtml(html, undefined, ids);
 	if (clean === "") return null;
+	if (ids.size === 0) return clean;
 
-	const ids = mentionIds(clean);
-	if (ids.length === 0) return clean;
-
-	const users = await loadMentionUsers(ids);
+	const users = await loadMentionUsers([...ids]);
 	if (users.size === 0) return clean;
 
 	const rewritten = cleanBodyHtml(html, users);
@@ -111,27 +119,6 @@ export const mentionClass = "user-hover";
 
 const uuidPattern =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function mentionIds(clean: string): string[] {
-	const ids = new Set<string>();
-	sanitizeHtml(clean, {
-		allowedTags,
-		allowedAttributes,
-		onOpenTag(name, attributes) {
-			if (name !== "a") return;
-			const classes = (attributes.class ?? "").split(/\s+/);
-			const userId = attributes["data-user-id"];
-			if (
-				classes.includes(mentionClass) &&
-				userId &&
-				uuidPattern.test(userId)
-			) {
-				ids.add(userId);
-			}
-		},
-	});
-	return [...ids];
-}
 
 async function loadMentionUsers(ids: string[]) {
 	const rows = await db
@@ -163,14 +150,24 @@ export function escapeHtml(value: string) {
 export function extractMentionedUserIds(
 	html: string | null | undefined,
 ): string[] {
-	const clean = cleanBodyHtml(html ?? "");
+	const ids = new Set<string>();
+	const clean = cleanBodyHtml(html ?? "", undefined, ids);
 	if (!clean) return [];
-	return mentionIds(clean);
+	return [...ids];
 }
+
+const blockBoundary =
+	/<\/(?:p|div|li|h[1-6]|blockquote|pre|tr|td|th|table|ul|ol|dl|dt|dd|section|article|header|footer|aside|nav|figure|figcaption|form|fieldset|address|details|summary|caption)\s*>/gi;
+const lineBreak = /<br\b[^>]*>/gi;
+const horizontalRule = /<hr\b[^>]*>/gi;
 
 export function htmlToText(html: string | null | undefined): string {
 	if (!html) return "";
-	return sanitizeHtml(html, { allowedTags: [], allowedAttributes: {} })
+	const withBreaks = html
+		.replace(lineBreak, "\n")
+		.replace(horizontalRule, "\n")
+		.replace(blockBoundary, "\n");
+	return sanitizeHtml(withBreaks, { allowedTags: [], allowedAttributes: {} })
 		.replaceAll("&lt;", "<")
 		.replaceAll("&gt;", ">")
 		.replaceAll("&quot;", '"')
