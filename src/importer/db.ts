@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
@@ -22,7 +22,9 @@ export async function runMigrations() {
 	try {
 		await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK]);
 		await migrate(drizzle(client), {
-			migrationsFolder: resolve("drizzle"),
+			migrationsFolder: fileURLToPath(
+				new URL("../../drizzle", import.meta.url),
+			),
 		});
 	} catch (error) {
 		failed = true;
