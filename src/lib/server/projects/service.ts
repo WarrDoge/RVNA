@@ -12,6 +12,7 @@ import {
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { can, projectPermissions, visibleProjectIds } from "../permissions.ts";
+import { ARCHIVED_PROJECT_MESSAGE } from "../project-keys.ts";
 import {
 	components,
 	issues,
@@ -100,6 +101,15 @@ async function validLead(id: string) {
 		.where(and(eq(users.id, id), eq(users.active, true)))
 		.limit(1);
 	return lead !== undefined;
+}
+
+async function requireWritableProject(projectId: string) {
+	const [project] = await db
+		.select({ archived: projects.archived })
+		.from(projects)
+		.where(eq(projects.id, projectId))
+		.limit(1);
+	if (project?.archived) throw new HttpError(403, ARCHIVED_PROJECT_MESSAGE);
 }
 
 const leadColumns = {
@@ -538,6 +548,7 @@ export async function updateComponent(
 	actor: CurrentUser,
 	id: string,
 	body: z.output<typeof updateComponentBody>,
+	expectedProjectId?: string,
 ) {
 	const [existing] = await db
 		.select({ projectId: components.projectId })
@@ -550,6 +561,10 @@ export async function updateComponent(
 		existing.projectId,
 		"ADMINISTER_PROJECTS",
 	);
+	await requireWritableProject(existing.projectId);
+	if (expectedProjectId && existing.projectId !== expectedProjectId) {
+		throw new HttpError(404, "Component not found");
+	}
 
 	const { name, description, leadId } = body;
 	if (leadId && !(await validLead(leadId))) {
@@ -661,6 +676,7 @@ export async function updateVersion(
 	actor: CurrentUser,
 	id: string,
 	body: z.output<typeof updateVersionBody>,
+	expectedProjectId?: string,
 ) {
 	const [existing] = await db
 		.select({ projectId: versions.projectId })
@@ -673,6 +689,10 @@ export async function updateVersion(
 		existing.projectId,
 		"ADMINISTER_PROJECTS",
 	);
+	await requireWritableProject(existing.projectId);
+	if (expectedProjectId && existing.projectId !== expectedProjectId) {
+		throw new HttpError(404, "Version not found");
+	}
 
 	const { name, description, startDate, releaseDate, released, archived } =
 		body;

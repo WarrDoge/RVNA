@@ -97,8 +97,11 @@ export const actions = {
 				name,
 				description: optionalText(form, "description"),
 			};
-			if (id === "") await createComponent(actor, event.params.key, body);
-			else await updateComponent(actor, id, body);
+			if (id === "") {
+				await createComponent(actor, event.params.key, body);
+			} else {
+				await updateComponent(actor, id, body, project.id);
+			}
 			return { saved: true };
 		}
 
@@ -115,8 +118,11 @@ export const actions = {
 				released: checked(form, "released"),
 			};
 			const id = text(form, "versionId");
-			if (id === "") await createVersion(actor, event.params.key, body);
-			else await updateVersion(actor, id, body);
+			if (id === "") {
+				await createVersion(actor, event.params.key, body);
+			} else {
+				await updateVersion(actor, id, body, project.id);
+			}
 			return { saved: true };
 		}
 
