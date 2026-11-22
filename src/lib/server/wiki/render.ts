@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import type { SearchUser } from "../jql/compile.ts";
@@ -70,6 +70,9 @@ function tocList(headings: Heading[], min: number, max: number) {
 export function finalizeHtml(source: string): string {
 	const headings: Heading[] = [];
 	const used = new Set<string>();
+	for (const match of source.matchAll(/(?:^|\s)id="([^"]*)"/g)) {
+		used.add(match[1] as string);
+	}
 
 	let html = source.replace(
 		/<h([1-6])([^>]*)>([\s\S]*?)<\/h\1>/g,
@@ -106,11 +109,89 @@ export function finalizeHtml(source: string): string {
 	return html;
 }
 
+function storageAttribute(tag: string, name: string): string | null {
+	const quoted = tag.match(new RegExp(`\\b${name}\\s*=\\s*"([^"]*)"`));
+	if (quoted) return decodeEntities(quoted[1] as string);
+	const single = tag.match(new RegExp(`\\b${name}\\s*=\\s*'([^']*)'`));
+	return single ? decodeEntities(single[1] as string) : null;
+}
+
+/** Titles of same-space pages the body links to, the only ones the title map resolves. */
+function sameSpaceLinkTitles(source: string, spaceKey: string): string[] {
+	const ownKey = spaceKey.toLowerCase();
+	const titles = new Set<string>();
+	for (const match of source.matchAll(/<ri:page\b[^>]*>/g)) {
+		const tag = match[0];
+		const title = storageAttribute(tag, "ri:content-title");
+		if (title === null) continue;
+		const key = storageAttribute(tag, "ri:space-key");
+		if (key !== null && key !== "" && key.toLowerCase() !== ownKey) continue;
+		titles.add(title);
+	}
+	return [...titles];
+}
+
 async function storageContext(
 	page: RenderablePage,
 	scope: RenderScope,
 ): Promise<StorageContext> {
-	const attachments = await latestAttachments(scope.access, page.id);
+	const body = page.bodyStorage ?? "";
+	const linkedSpaceKeys = [
+		...new Set(
+			[...body.matchAll(/\bri:space-key="([^"]*)"/g)].map((match) =>
+				decodeEntities(match[1] as string).toLowerCase(),
+			),
+		),
+	].filter((key) => key !== scope.space.key.toLowerCase());
+	const linkedTitles = sameSpaceLinkTitles(body, scope.space.key);
+
+	const attachmentsPromise = latestAttachments(scope.access, page.id);
+	const titledPromise: Promise<{ title: string; sourceId: string }[]> =
+		linkedTitles.length === 0
+			? Promise.resolve([])
+			: db
+					.select({ title: pages.title, sourceId: pages.sourceId })
+					.from(pages)
+					.where(
+						and(
+							visiblePages(scope.access),
+							eq(pages.spaceId, page.spaceId),
+							sql`${pages.title} = any(${sql.param(linkedTitles)}::text[])`,
+						),
+					);
+	const linkedPromise: Promise<
+		{ key: string; title: string; sourceId: string }[]
+	> =
+		linkedSpaceKeys.length === 0
+			? Promise.resolve([])
+			: db
+					.select({
+						key: spaces.key,
+						title: pages.title,
+						sourceId: pages.sourceId,
+					})
+					.from(pages)
+					.innerJoin(spaces, eq(spaces.id, pages.spaceId))
+					.where(
+						and(
+							visiblePages(scope.access),
+							sql`lower(${spaces.key}) = any(${sql.param(linkedSpaceKeys)}::text[])`,
+						),
+					);
+	const markersPromise = db
+		.select({ reference: pageComments.inlineMarkerRef })
+		.from(pageComments)
+		.where(
+			and(eq(pageComments.pageId, page.id), eq(pageComments.inline, true)),
+		);
+
+	const [attachments, titled, linked, markers] = await Promise.all([
+		attachmentsPromise,
+		titledPromise,
+		linkedPromise,
+		markersPromise,
+	]);
+
 	const byName = new Map<string, AttachmentRef>(
 		attachments.map((attachment) => [
 			attachment.fileName,
@@ -123,49 +204,12 @@ async function storageContext(
 			},
 		]),
 	);
-
-	const titled = await db
-		.select({ title: pages.title, sourceId: pages.sourceId })
-		.from(pages)
-		.where(and(visiblePages(scope.access), eq(pages.spaceId, page.spaceId)));
 	const pageSourceIdByTitle = new Map(
 		titled.map((row) => [row.title, row.sourceId]),
 	);
-
-	const linkedSpaceKeys = [
-		...new Set(
-			[...(page.bodyStorage ?? "").matchAll(/\bri:space-key="([^"]*)"/g)].map(
-				(match) => decodeEntities(match[1] as string).toLowerCase(),
-			),
-		),
-	].filter((key) => key !== scope.space.key.toLowerCase());
-	const linked =
-		linkedSpaceKeys.length === 0
-			? []
-			: await db
-					.select({
-						key: spaces.key,
-						title: pages.title,
-						sourceId: pages.sourceId,
-					})
-					.from(pages)
-					.innerJoin(spaces, eq(spaces.id, pages.spaceId))
-					.where(
-						and(
-							visiblePages(scope.access),
-							inArray(sql`lower(${spaces.key})`, linkedSpaceKeys),
-						),
-					);
 	const otherSpacePages = new Map(
 		linked.map((row) => [otherSpacePageKey(row.key, row.title), row.sourceId]),
 	);
-
-	const markers = await db
-		.select({ reference: pageComments.inlineMarkerRef })
-		.from(pageComments)
-		.where(
-			and(eq(pageComments.pageId, page.id), eq(pageComments.inline, true)),
-		);
 	const inlineMarkers = new Set(
 		markers
 			.map((row) => row.reference)
