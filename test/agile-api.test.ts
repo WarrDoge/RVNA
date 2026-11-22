@@ -611,6 +611,21 @@ describe("board data and moves", () => {
 			`${projectKey}-1`,
 			`${projectKey}-2`,
 		]);
+
+		const bounded = await move(ownerSession, {
+			issues: [`${projectKey}-2`],
+			sprintId: sprint1Id,
+			before: `${projectKey}-1`,
+			after: `${projectKey}-3`,
+		});
+		expect(bounded.statusCode).toBe(200);
+		const boundedData = await boardData();
+		expect(keys(boundedData)).toEqual([
+			`${projectKey}-3`,
+			`${projectKey}-2`,
+			`${projectKey}-4`,
+			`${projectKey}-1`,
+		]);
 	});
 
 	test("a column-only move puts the issue into the active sprint", async () => {
@@ -937,6 +952,28 @@ describe("sprints", () => {
 			(response) => (response.json() as { sequence: number }).sequence,
 		);
 		expect(new Set(sequences).size).toBe(10);
+	});
+
+	test("rejects an end date before the stored start date", async () => {
+		const start = new Date().toISOString();
+		const end = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+		const sprint = await createSprint("Stored start sprint");
+		const dated = await inject(
+			"PATCH",
+			`/api/sprints/${sprint.id}`,
+			ownerSession,
+			{
+				startDate: start,
+			},
+		);
+		expect(dated.statusCode).toBe(200);
+		const endOnly = await inject(
+			"PATCH",
+			`/api/sprints/${sprint.id}`,
+			ownerSession,
+			{ endDate: end },
+		);
+		expect(endOnly.statusCode).toBe(400);
 	});
 
 	test("moving to an unknown or closed sprint is a 400", async () => {

@@ -2161,6 +2161,14 @@ export async function createSprint(
 	return sprintPayload(created);
 }
 
+function nextSprintDate(
+	value: string | null | undefined,
+	current: Date | null,
+) {
+	if (value === undefined) return current;
+	return value === null ? null : new Date(value);
+}
+
 function sprintDateChanged(
 	value: string | null | undefined,
 	current: Date | null,
@@ -2213,6 +2221,11 @@ export async function updateSprint(
 	}
 	if (sprint.state === "closed") {
 		throw new HttpError(400, "A closed sprint cannot be edited");
+	}
+	const nextStartDate = nextSprintDate(body.startDate, sprint.startDate);
+	const nextEndDate = nextSprintDate(body.endDate, sprint.endDate);
+	if (nextStartDate && nextEndDate && nextEndDate <= nextStartDate) {
+		throw new HttpError(400, "The end date must be after the start date");
 	}
 	const [updated] = await db
 		.update(sprints)
