@@ -83,6 +83,58 @@ describe("smart commit parsing", () => {
 		]);
 	});
 
+	test("a hash-prefixed issue key is not a transition", () => {
+		const transitionOptions = {
+			projectKeys: projects,
+			commandNames: ["DEMO", "Done"],
+		};
+		expect(
+			parseSmartCommitMessage("DEMO-1 #DEMO-1", transitionOptions),
+		).toEqual([]);
+		expect(
+			parseSmartCommitMessage("DEMO-1 #Done-extra", transitionOptions),
+		).toEqual([]);
+		expect(parseSmartCommitMessage("DEMO-1 #Done", transitionOptions)).toEqual([
+			{
+				keys: ["DEMO-1"],
+				commands: [{ kind: "transition", name: "Done" }],
+			},
+		]);
+	});
+
+	test("an invalid time marker stays in the comment", () => {
+		expect(
+			parseSmartCommitMessage("DEMO-1 #comment fixed in #time soon", options),
+		).toEqual([
+			{
+				keys: ["DEMO-1"],
+				commands: [{ kind: "comment", text: "fixed in #time soon" }],
+			},
+		]);
+		expect(
+			parseSmartCommitMessage("DEMO-1 #comment see #time", options),
+		).toEqual([
+			{
+				keys: ["DEMO-1"],
+				commands: [{ kind: "comment", text: "see #time" }],
+			},
+		]);
+		expect(
+			parseSmartCommitMessage(
+				"DEMO-1 #comment fixed in #time soon #Finish",
+				options,
+			),
+		).toEqual([
+			{
+				keys: ["DEMO-1"],
+				commands: [
+					{ kind: "comment", text: "fixed in #time soon" },
+					{ kind: "transition", name: "Finish" },
+				],
+			},
+		]);
+	});
+
 	test("a hash inside a comment stays in the comment", () => {
 		const lines = parseSmartCommitMessage(
 			"DEMO-1 #comment fixed in #123, see #nothing",

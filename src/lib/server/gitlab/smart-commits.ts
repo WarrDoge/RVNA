@@ -68,7 +68,7 @@ function findMarker(
 		}
 		const match = names.find((name) => {
 			if (!rest.toLowerCase().startsWith(name.toLowerCase())) return false;
-			return isBoundary(rest, name.length);
+			return isBoundary(rest, name.length) && rest[name.length] !== "-";
 		});
 		if (match) {
 			return {
@@ -91,19 +91,32 @@ function commandsIn(line: string, names: string[]): SmartCommitCommand[] {
 		marker = findMarker(line, marker.end, names);
 	}
 
-	const commands: SmartCommitCommand[] = [];
-	for (const [index, current] of markers.entries()) {
+	const entries = markers.map((marker, index) => {
 		const next = markers[index + 1];
-		const text = line.slice(current.end, next?.at ?? line.length).trim();
-		if (current.kind === "comment") {
-			if (text !== "") commands.push({ kind: "comment", text });
-		} else if (current.kind === "time") {
+		return {
+			marker,
+			text: line.slice(marker.end, next?.at ?? line.length).trim(),
+		};
+	});
+	const valid = entries.filter(({ marker, text }) => {
+		if (marker.kind === "time") return parseTimeSpent(text) !== null;
+		if (marker.kind === "comment") return text !== "";
+		return true;
+	});
+
+	const commands: SmartCommitCommand[] = [];
+	for (const [index, { marker, text }] of valid.entries()) {
+		const next = valid[index + 1]?.marker;
+		if (marker.kind === "comment") {
+			const comment = line.slice(marker.end, next?.at ?? line.length).trim();
+			if (comment !== "") commands.push({ kind: "comment", text: comment });
+		} else if (marker.kind === "time") {
 			const seconds = parseTimeSpent(text);
 			if (seconds !== null) {
 				commands.push({ kind: "time", seconds, text });
 			}
 		} else {
-			commands.push({ kind: "transition", name: current.name });
+			commands.push({ kind: "transition", name: marker.name });
 		}
 	}
 	return commands;
