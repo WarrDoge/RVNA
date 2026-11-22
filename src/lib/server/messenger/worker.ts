@@ -257,36 +257,46 @@ async function run(signal: AbortSignal, markRunning: (value: boolean) => void) {
 	}
 }
 
-export function createMessengerWorker() {
+export function createMessengerWorker(
+	runSession: (
+		signal: AbortSignal,
+		markRunning: (value: boolean) => void,
+	) => Promise<void> = run,
+) {
 	let running = false;
 	let loop: Promise<void> | null = null;
 	let controller: AbortController | null = null;
+	let generation = 0;
 
 	function start() {
 		if (loop) return;
+		const current = ++generation;
 		const abort = new AbortController();
 		controller = abort;
 		running = false;
-		loop = run(abort.signal, (value) => {
-			running = value;
+		loop = runSession(abort.signal, (value) => {
+			if (current === generation) running = value;
 		})
 			.catch((error) => {
 				const message = error instanceof Error ? error.message : String(error);
 				console.error("messenger worker:", message);
 			})
 			.finally(() => {
+				if (current !== generation) return;
 				running = false;
 				loop = null;
 			});
 	}
 
 	async function stop() {
-		controller?.abort();
-		controller = null;
 		const pending = loop;
+		const abort = controller;
+		const current = ++generation;
+		controller = null;
 		loop = null;
+		abort?.abort();
 		if (pending) await pending;
-		running = false;
+		if (current === generation) running = false;
 	}
 
 	return {
