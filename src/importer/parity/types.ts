@@ -138,11 +138,8 @@ export interface WikiAttachmentData {
 	sha256: string;
 }
 
-export interface WikiAttachmentSample {
-	sourceId: string;
+export interface WikiAttachmentSample extends WikiAttachmentData {
 	pageSourceId: string;
-	size: number;
-	sha256: string;
 }
 
 export interface WikiLivePageData extends WikiPageData {
