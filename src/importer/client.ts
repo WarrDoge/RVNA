@@ -41,12 +41,15 @@ class Semaphore {
 			return;
 		}
 		await new Promise<void>((resolve) => this.waiting.push(resolve));
-		this.active++;
 	}
 
 	release() {
+		const waiter = this.waiting.shift();
+		if (waiter) {
+			waiter();
+			return;
+		}
 		this.active--;
-		this.waiting.shift()?.();
 	}
 }
 

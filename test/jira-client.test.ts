@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { pathSegment } from "../src/importer/client.ts";
+import { GetOnlyClient, pathSegment } from "../src/importer/client.ts";
 import { JiraClient } from "../src/importer/jira.ts";
 
 test("an id from the remote server cannot leave the attachments directory", () => {
@@ -77,5 +77,37 @@ describe("JiraClient", () => {
 			ok: true,
 		});
 		expect(authorization).toBe("Bearer fixture-token");
+	});
+});
+
+describe("importer request concurrency", () => {
+	test("never runs more requests than the configured limit", async () => {
+		let firstAttempts = 0;
+		let running = 0;
+		let peak = 0;
+		const client = new GetOnlyClient({
+			baseUrl: "https://jira.example.test",
+			token: "fixture-token",
+			concurrency: 1,
+			maxAttempts: 2,
+			baseDelayMs: 1,
+			fetchImpl: (async (input: string | URL | Request) => {
+				const path = new URL(String(input)).pathname;
+				if (path === "/first" && firstAttempts++ === 0) {
+					throw new Error("network error");
+				}
+				running++;
+				peak = Math.max(peak, running);
+				await new Promise((resolve) => setTimeout(resolve, 1));
+				running--;
+				return new Response("{}", { status: 200 });
+			}) as typeof fetch,
+		});
+
+		const firstRequest = client.getJson("/first");
+		const secondRequest = client.getJson("/second");
+
+		await Promise.all([firstRequest, secondRequest]);
+		expect(peak).toBe(1);
 	});
 });
