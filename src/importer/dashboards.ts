@@ -55,6 +55,41 @@ export interface DashboardDataset {
 
 const FILTER_ID = /(?:entityId|filterId)"?\s*(?:value|href)?="?(\d+)/g;
 const FILTER_LINK = /[?&]filter(?:Id)?=(\d+)/g;
+const DASHBOARD_PAGE_SIZE = 100;
+const MAX_DASHBOARD_PAGES = 1000;
+
+interface DashboardSummary {
+	id: string;
+	name?: string;
+}
+
+async function listDashboards(
+	client: GetOnlyClient,
+	params: Record<string, string | number | boolean | undefined> = {},
+) {
+	const dashboards: DashboardSummary[] = [];
+	let startAt = 0;
+	for (let page = 0; page < MAX_DASHBOARD_PAGES; page++) {
+		const response = await client.getJson<{
+			dashboards?: DashboardSummary[];
+			total?: number;
+		}>("/rest/api/2/dashboard", {
+			...params,
+			startAt,
+			maxResults: DASHBOARD_PAGE_SIZE,
+		});
+		const batch = response.dashboards ?? [];
+		dashboards.push(...batch);
+		if (batch.length === 0) break;
+		if (response.total !== undefined) {
+			if (dashboards.length >= response.total) break;
+		} else if (batch.length < DASHBOARD_PAGE_SIZE) {
+			break;
+		}
+		startAt += batch.length;
+	}
+	return dashboards;
+}
 
 function preference(gadget: JiraDashboardGadget, name: string) {
 	const value = gadget.userPrefs?.fields?.find((field) => field.name === name);
@@ -116,12 +151,10 @@ export async function fetchDashboardDataset(
 	);
 	const owner = myself.name ?? myself.displayName ?? "admin";
 
-	const listed = await client.getJson<{
-		dashboards: { id: string; name: string }[];
-	}>("/rest/api/2/dashboard", { maxResults: 100 });
+	const listed = await listDashboards(client);
 
 	const dashboards: JiraDashboard[] = [];
-	for (const summary of listed.dashboards) {
+	for (const summary of listed) {
 		const dashboard = await client.getJson<{
 			id: string;
 			title: string;
@@ -130,7 +163,7 @@ export async function fetchDashboardDataset(
 		}>(`/rest/dashboards/1.0/${summary.id}`);
 		dashboards.push({
 			id: String(dashboard.id ?? summary.id),
-			title: dashboard.title ?? summary.name,
+			title: dashboard.title ?? summary.name ?? "",
 			layout: dashboard.layout ?? "AA",
 			gadgets: (dashboard.gadgets ?? []).map((gadget) => ({
 				id: String(gadget.id),
@@ -148,11 +181,8 @@ export async function fetchDashboardDataset(
 	const favouriteFilters = favourites.map((filter) => String(filter.id));
 
 	const favouriteDashboards = (
-		await client.getJson<{ dashboards: { id: string }[] }>(
-			"/rest/api/2/dashboard",
-			{ filter: "favourite", maxResults: 100 },
-		)
-	).dashboards.map((dashboard) => String(dashboard.id));
+		await listDashboards(client, { filter: "favourite" })
+	).map((dashboard) => String(dashboard.id));
 
 	const referenced = new Set<string>();
 	for (const dashboard of dashboards) {

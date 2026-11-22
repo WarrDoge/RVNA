@@ -759,3 +759,56 @@ describe("the System Dashboard", () => {
 		expect(outsiderId).toBeTruthy();
 	});
 });
+
+test("the dataset fetch pages through more than one page of dashboards", async () => {
+	const all = [
+		{ id: "1", name: "One" },
+		{ id: "2", name: "Two" },
+		{ id: "3", name: "Three" },
+	];
+	const favourites = [
+		{ id: "1", name: "One" },
+		{ id: "3", name: "Three" },
+	];
+	const client = {
+		async getJson(
+			path: string,
+			params?: Record<string, string | number | boolean | undefined>,
+		) {
+			if (path === "/rest/api/2/myself") return { name: "importer" };
+			if (path === "/rest/api/2/dashboard") {
+				const source = params?.filter === "favourite" ? favourites : all;
+				const start = Number(params?.startAt ?? 0);
+				const size = params?.filter === "favourite" ? 1 : 2;
+				return {
+					dashboards: source.slice(start, start + size),
+					total: source.length,
+				};
+			}
+			if (path.startsWith("/rest/dashboards/1.0/")) {
+				const id = path.split("/").at(-1);
+				return { id, title: `Dashboard ${id}`, layout: "AA", gadgets: [] };
+			}
+			if (path === "/rest/api/2/filter/favourite") return [];
+			throw Object.assign(new Error("404"), { status: 404 });
+		},
+		async request() {
+			return {
+				async text() {
+					return "";
+				},
+			};
+		},
+	};
+
+	const dataset = await fetchDashboardDataset(
+		client as unknown as Parameters<typeof fetchDashboardDataset>[0],
+		{ privateApis: true },
+	);
+	expect(dataset.dashboards.map((dashboard) => dashboard.id)).toEqual([
+		"1",
+		"2",
+		"3",
+	]);
+	expect(dataset.favouriteDashboards).toEqual(["1", "3"]);
+});
