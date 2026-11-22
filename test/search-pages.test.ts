@@ -66,3 +66,11 @@ test("page search uses the wiki's permission-filtered search", async () => {
 	expect(visible.total).toBe(1);
 	expect(visible.pages[0]?.title).toBe(`Zebra search ${run}`);
 });
+
+test("a blank query returns no pages", async () => {
+	const admin = await makeUser(run, "search-pages-blank", { admin: true });
+	expect(await searchPages(actor(admin, true), "   ", 5)).toEqual({
+		total: 0,
+		pages: [],
+	});
+});

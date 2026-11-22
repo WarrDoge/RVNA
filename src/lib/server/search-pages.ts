@@ -1,13 +1,11 @@
 import type { CurrentUser } from "./auth.ts";
+import type { WikiSearchHit } from "./wiki/search.ts";
 import { searchPages as searchWikiPages } from "./wiki/service.ts";
 
-export interface PageHit {
-	id: string;
-	title: string;
-	spaceKey: string;
-	spaceName: string;
-	updated: string | null;
-}
+export type PageHit = Pick<
+	WikiSearchHit,
+	"id" | "title" | "spaceKey" | "spaceName" | "updated"
+>;
 
 export interface PageHits {
 	total: number;
@@ -20,15 +18,16 @@ export async function searchPages(
 	query: string,
 	limit: number,
 ): Promise<PageHits> {
+	if (query.trim() === "") return { total: 0, pages: [] };
 	const result = await searchWikiPages(actor, { query, limit, offset: 0 });
 	return {
 		total: result.total,
-		pages: result.hits.map((hit) => ({
-			id: hit.id,
-			title: hit.title,
-			spaceKey: hit.spaceKey,
-			spaceName: hit.spaceName,
-			updated: hit.updated,
+		pages: result.hits.map(({ id, title, spaceKey, spaceName, updated }) => ({
+			id,
+			title,
+			spaceKey,
+			spaceName,
+			updated,
 		})),
 	};
 }
