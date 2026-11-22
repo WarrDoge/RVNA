@@ -52,6 +52,14 @@ describe("issue key extraction", () => {
 
 	test("normalises leading zeros and case", () => {
 		expect(extractIssueKeys("demo-0343", projects)).toEqual(["DEMO-343"]);
+		expect(extractIssueKeys("DEMO-999999999999999999999", projects)).toEqual([
+			"DEMO-999999999999999999999",
+		]);
+	});
+
+	test("ignores blank project keys", () => {
+		expect(extractIssueKeys("fix -123", [""])).toEqual([]);
+		expect(extractIssueKeys("fix -123", ["  "])).toEqual([]);
 	});
 });
 
@@ -191,5 +199,12 @@ describe("branch names", () => {
 			"DEMO-343-fix-the-login-redirect",
 		);
 		expect(summarySlug("???")).toBe("task");
+	});
+
+	test("keeps non-Latin summaries and folds accents", () => {
+		expect(summarySlug("Café résumé")).toBe("cafe-resume");
+		expect(summarySlug("修复登录")).toBe("修复登录");
+		expect(summarySlug("Вход в систему")).toBe("вход-в-систему");
+		expect(branchNameFor("demo-1", "修复登录")).toBe("DEMO-1-修复登录");
 	});
 });

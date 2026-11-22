@@ -1,6 +1,5 @@
-import { inArray } from "drizzle-orm";
 import { db } from "../db.ts";
-import { issues, projects } from "../schema.ts";
+import { projects } from "../schema.ts";
 
 export interface IssueRef {
 	id: string;
@@ -23,7 +22,13 @@ export function extractIssueKeys(
 	text: string,
 	projectKeys: Iterable<string>,
 ): string[] {
-	const keys = [...new Set([...projectKeys].map((key) => key.toUpperCase()))];
+	const keys = [
+		...new Set(
+			[...projectKeys]
+				.map((key) => key.toUpperCase())
+				.filter((key) => key.trim() !== ""),
+		),
+	];
 	if (keys.length === 0 || text === "") return [];
 
 	const pattern = new RegExp(
@@ -36,7 +41,7 @@ export function extractIssueKeys(
 
 	const found: string[] = [];
 	for (const match of text.matchAll(pattern)) {
-		const key = `${match[1].toUpperCase()}-${Number(match[2])}`;
+		const key = `${match[1].toUpperCase()}-${match[2].replace(/^0+(?=\d)/, "")}`;
 		if (!found.includes(key)) found.push(key);
 	}
 	return found;
@@ -47,23 +52,12 @@ export async function loadProjectKeys(): Promise<string[]> {
 	return rows.map((row) => row.key);
 }
 
-export async function findIssuesByKeys(keys: string[]): Promise<IssueRef[]> {
-	if (keys.length === 0) return [];
-	return db
-		.select({
-			id: issues.id,
-			key: issues.key,
-			projectId: issues.projectId,
-			summary: issues.summary,
-		})
-		.from(issues)
-		.where(inArray(issues.key, keys));
-}
-
 export function summarySlug(summary: string, maxLength = 40) {
 	const slug = summary
+		.normalize("NFKD")
+		.replace(/\p{M}/gu, "")
 		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/[^\p{L}\p{N}]+/gu, "-")
 		.replace(/^-+|-+$/g, "")
 		.slice(0, maxLength)
 		.replace(/-+$/g, "");
