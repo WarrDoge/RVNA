@@ -18,7 +18,6 @@ import type {
 	OldUrlResult,
 	ParityReport,
 	RunParityOptions,
-	WikiDatabaseSnapshot,
 	WikiLiveSnapshot,
 } from "./types.ts";
 import { buildOldUrlPaths, requestOldUrls } from "./urls.ts";
@@ -68,21 +67,23 @@ function reportOk(checks: CheckResult[], oldUrls: OldUrlResult[]) {
 export async function runParity(
 	options: RunParityOptions,
 ): Promise<ParityReport> {
+	if (Boolean(options.appUrl) !== Boolean(options.appToken)) {
+		throw new Error("--app-url and --app-token must be provided together");
+	}
 	const started = performance.now();
 	const jiraCounter = { count: 0 };
 	const confluenceCounter = { count: 0 };
 	const tables = await loadTableSet(options.pool);
-	const jiraDb: JiraDatabaseSnapshot | null =
+	const [jiraDb, wikiDb] = await Promise.all([
 		options.scope === "confluence"
 			? null
-			: await loadJiraSnapshot(options.pool, tables);
-	const wikiDb: WikiDatabaseSnapshot | null =
-		options.scope === "jira"
-			? null
-			: await loadWikiSnapshot(options.pool, tables);
+			: loadJiraSnapshot(options.pool, tables),
+		options.scope === "jira" ? null : loadWikiSnapshot(options.pool, tables),
+	]);
 
-	let liveJira: JiraLiveSnapshot | null = null;
-	if (jiraDb) {
+	async function fetchLiveJira(
+		database: JiraDatabaseSnapshot,
+	): Promise<JiraLiveSnapshot> {
 		if (!options.jira) {
 			throw new Error("JIRA_URL and JIRA_PAT are required for the jira scope");
 		}
@@ -91,18 +92,17 @@ export async function runParity(
 			token: options.jira.token,
 			fetchImpl: countingFetch(jiraCounter, options.jira.fetchImpl ?? fetch),
 		});
-		liveJira = await fetchJiraLive(client, {
+		return fetchJiraLive(client, {
 			privateApis: options.privateApis,
-			serviceDesks: jiraDb.serviceDesks !== null,
-			agile: jiraDb.agile !== null,
-			boardsOnly: jiraDb.agile === null,
-			filters: jiraDb.filters !== null,
-			filterIds: jiraDb.filters?.map((filter) => filter.id),
+			serviceDesks: database.serviceDesks !== null,
+			agile: database.agile !== null,
+			boardsOnly: database.agile === null,
+			filters: database.filters !== null,
+			filterIds: database.filters?.map((filter) => filter.id),
 		});
 	}
 
-	let liveWiki: WikiLiveSnapshot | null = null;
-	if (wikiDb) {
+	async function fetchLiveWiki(): Promise<WikiLiveSnapshot> {
 		if (!options.confluence) {
 			throw new Error(
 				"CONFLUENCE_URL and CONFLUENCE_PAT are required for the confluence scope",
@@ -116,10 +116,15 @@ export async function runParity(
 				options.confluence.fetchImpl ?? fetch,
 			),
 		});
-		liveWiki = await fetchWikiLive(client, {
+		return fetchWikiLive(client, {
 			privateApis: options.privateApis,
 		});
 	}
+
+	const [liveJira, liveWiki] = await Promise.all([
+		jiraDb ? fetchLiveJira(jiraDb) : Promise.resolve(null),
+		wikiDb ? fetchLiveWiki() : Promise.resolve(null),
+	]);
 
 	const checks: CheckResult[] = [];
 	const notes: string[] = [];
@@ -164,10 +169,7 @@ export async function runParity(
 
 	let oldUrls = buildOldUrlPaths(jiraDb, wikiDb, liveJira?.agile ?? null);
 	let appRequests = 0;
-	if (options.appUrl) {
-		if (!options.appToken) {
-			throw new Error("--app-token is required with --app-url");
-		}
+	if (options.appUrl && options.appToken) {
 		const requested = await requestOldUrls(
 			oldUrls,
 			options.appUrl,
@@ -179,7 +181,7 @@ export async function runParity(
 	} else {
 		notes.push("old URLs were printed but not requested (no --app-url)");
 	}
-	if (jiraDb && oldUrls.every((url) => !url.path.includes("rapidView"))) {
+	if (jiraDb && (liveJira?.agile?.boards.length ?? 0) === 0) {
 		notes.push("no agile boards were available for old board URLs");
 	}
 
@@ -274,9 +276,6 @@ export interface ParityCommandOptions extends RunParityOptions {
 
 export async function runParityCommand(options: ParityCommandOptions) {
 	try {
-		if (Boolean(options.appUrl) !== Boolean(options.appToken)) {
-			throw new Error("--app-url and --app-token must be provided together");
-		}
 		const report = await runParity(options);
 		if (options.json) {
 			console.log(JSON.stringify(report, null, 2));
