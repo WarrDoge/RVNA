@@ -422,6 +422,19 @@ describe("space listing", () => {
 		}
 	});
 
+	test("a space summary counts only pages the caller can read", async () => {
+		const response = await get(`/api/wiki/spaces/${restrictedKey}`, carol);
+		expect(response.statusCode).toBe(200);
+		const expected = await pool.query<{ count: number }>(
+			`select count(*)::int as count from pages
+			 where space_id = $1 and status = 'current' and id not in ($2, $3)`,
+			[restrictedSpace.id, restrictedPage.id, restrictedChild.id],
+		);
+		expect((response.json() as { pageCount: number }).pageCount).toBe(
+			Number(expected.rows[0]?.count),
+		);
+	});
+
 	test("a space without permission rows is listed to administrators only", async () => {
 		const key = `WC${run.slice(0, 3).toUpperCase()}`;
 		await db.insert(spaces).values({
@@ -670,6 +683,112 @@ describe("page detail", () => {
 		const response = await get(`/api/wiki/pages/${grandChild.sourceId}`, alice);
 		const page = response.json() as { ancestors: { id: string }[] };
 		expect(page.ancestors.map((row) => row.id)).toEqual([home.id, childOne.id]);
+	});
+
+	test("leaves trashed and unreadable ancestors out of the breadcrumbs", async () => {
+		const trashed = await createPage({
+			spaceId: restrictedSpace.id,
+			sourceId: `wa-${run}-trashed-ancestor`,
+			title: "Trashed ancestor",
+		});
+		await db
+			.update(pages)
+			.set({ status: "trashed" })
+			.where(eq(pages.id, trashed.id));
+		const trashedChild = await createPage({
+			spaceId: restrictedSpace.id,
+			sourceId: `wa-${run}-trashed-child`,
+			title: "Trashed child",
+			parentId: trashed.id,
+		});
+		const trashedView = await get(
+			`/api/wiki/pages/${trashedChild.sourceId}`,
+			alice,
+		);
+		expect(trashedView.statusCode).toBe(200);
+		expect(
+			(trashedView.json() as { ancestors: { id: string }[] }).ancestors,
+		).toEqual([]);
+
+		const [closedSpace] = await db
+			.insert(spaces)
+			.values({
+				sourceId: `wd-space-${run}`,
+				key: `WD${run.slice(0, 3).toUpperCase()}`,
+				name: `Closed space ${run}`,
+				type: "global",
+			})
+			.returning();
+		const hiddenParent = await createPage({
+			spaceId: closedSpace.id,
+			sourceId: `wd-${run}-hidden-parent`,
+			title: "Hidden parent",
+		});
+		const crossSpace = await createPage({
+			spaceId: openSpace.id,
+			sourceId: `wb-${run}-cross-space-child`,
+			title: "Cross space child",
+			parentId: hiddenParent.id,
+		});
+		try {
+			const crossView = await get(
+				`/api/wiki/pages/${crossSpace.sourceId}`,
+				bob,
+			);
+			expect(crossView.statusCode).toBe(200);
+			expect(
+				(crossView.json() as { ancestors: { id: string }[] }).ancestors,
+			).toEqual([]);
+		} finally {
+			await db.delete(pages).where(eq(pages.id, crossSpace.id));
+			await db.delete(spaces).where(eq(spaces.id, closedSpace.id));
+		}
+	});
+
+	test("does not report children that the caller cannot read", async () => {
+		const branch = await createPage({
+			spaceId: restrictedSpace.id,
+			sourceId: `wa-${run}-hidden-branch`,
+			title: "Hidden branch",
+			parentId: home.id,
+			position: 10,
+		});
+		const leaf = await createPage({
+			spaceId: restrictedSpace.id,
+			sourceId: `wa-${run}-hidden-leaf`,
+			title: "Hidden leaf",
+			parentId: branch.id,
+		});
+		await db.insert(pageRestrictions).values({
+			sourceId: `wa-restriction-leaf-${run}`,
+			pageId: leaf.id,
+			operation: "read",
+			userId: null,
+			groupName: readerGroup,
+		});
+		try {
+			const forCarol = await get(`/api/wiki/pages/${home.sourceId}`, carol);
+			const branchForCarol = (
+				forCarol.json() as {
+					children: { id: string; hasChildren: boolean }[];
+				}
+			).children.find((row) => row.id === branch.id);
+			expect(branchForCarol?.hasChildren).toBe(false);
+
+			const forAlice = await get(`/api/wiki/pages/${home.sourceId}`, alice);
+			const branchForAlice = (
+				forAlice.json() as {
+					children: { id: string; hasChildren: boolean }[];
+				}
+			).children.find((row) => row.id === branch.id);
+			expect(branchForAlice?.hasChildren).toBe(true);
+		} finally {
+			await db
+				.delete(pageRestrictions)
+				.where(eq(pageRestrictions.pageId, leaf.id));
+			await db.delete(pages).where(eq(pages.id, leaf.id));
+			await db.delete(pages).where(eq(pages.id, branch.id));
+		}
 	});
 });
 

@@ -36,3 +36,20 @@ test("a trashed home page falls back to the parentless pages", async () => {
 	expect(ids).toContain(fallback.id);
 	expect(ids).not.toContain(trashed.id);
 });
+
+test("a home page from another space is not this space's root", async () => {
+	const other = await wiki.space("OT");
+	const foreign = await wiki.page(wiki.admin, other.key, "Foreign home");
+	const own = await wiki.page(wiki.admin, space.key, "Own root");
+	await pool.query("update pages set parent_id = null where id = $1", [own.id]);
+	await pool.query("update spaces set home_page_id = $1 where id = $2", [
+		foreign.id,
+		space.id,
+	]);
+	const row = await loadSpaceRow(space.key);
+	if (!row) throw new Error("space missing");
+	const roots = await spaceTreeRoots(row);
+	const ids = roots.map((root) => root.id);
+	expect(ids).not.toContain(foreign.id);
+	expect(ids).toContain(own.id);
+});

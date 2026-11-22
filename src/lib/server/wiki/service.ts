@@ -119,7 +119,7 @@ async function homePageOf(space: SpaceRow, access: WikiAccess) {
 			spaceId: pages.spaceId,
 		})
 		.from(pages)
-		.where(eq(pages.id, space.homePageId))
+		.where(and(eq(pages.id, space.homePageId), eq(pages.spaceId, space.id)))
 		.limit(1);
 	if (!row || !pageReadable(access, row)) return null;
 	return { id: row.id, sourceId: row.sourceId, title: row.title };
@@ -317,7 +317,11 @@ export async function listSpaces(
 	for (const row of rows) {
 		if (!access.readableSpaceIds.has(row.id)) continue;
 		result.push(
-			spaceSummary(row, await homePageOf(row, access), await pageCount(row.id)),
+			spaceSummary(
+				row,
+				await homePageOf(row, access),
+				await pageCount(row.id, access),
+			),
 		);
 	}
 	return result;
@@ -328,13 +332,13 @@ export async function getSpace(actor: CurrentUser, key: string) {
 	return spaceSummary(
 		space,
 		await homePageOf(space, access),
-		await pageCount(space.id),
+		await pageCount(space.id, access),
 	);
 }
 
 export async function getSpaceTree(actor: CurrentUser, key: string) {
 	const { space, access } = await readableSpace(actor, key);
-	const roots = await spaceTreeRoots(space);
+	const roots = await spaceTreeRoots(space, access.hiddenPageIds);
 	return roots
 		.filter(
 			(row) => !access.hiddenPageIds.has(row.id) && row.status === "current",
@@ -423,11 +427,11 @@ export async function getPage(
 				},
 				scope,
 			),
-			pageAncestors(page),
+			pageAncestors(access, page),
 			pageLabelsFor(page.id),
 			pageAttachmentVersions(access, page.id),
 			pageCommentRows(page.id),
-			childPages(page.id),
+			childPages(page.id, access.hiddenPageIds),
 		]);
 
 	const [creator] = page.creatorId
@@ -546,7 +550,7 @@ export async function getPage(
 
 export async function getPageChildren(actor: CurrentUser, id: string) {
 	const { access, page } = await readablePage(actor, id);
-	const rows = await childPages(page.id);
+	const rows = await childPages(page.id, access.hiddenPageIds);
 	return rows
 		.filter((row) => !access.hiddenPageIds.has(row.id))
 		.map((row) => ({
@@ -1112,7 +1116,11 @@ export async function wikiHome(actor: CurrentUser) {
 	for (const row of spaceRows) {
 		if (!access.readableSpaceIds.has(row.id)) continue;
 		spaceSummaries.push(
-			spaceSummary(row, await homePageOf(row, access), await pageCount(row.id)),
+			spaceSummary(
+				row,
+				await homePageOf(row, access),
+				await pageCount(row.id, access),
+			),
 		);
 	}
 
@@ -1263,8 +1271,8 @@ export async function getPageVersion(
 }
 
 export async function getPageAncestors(actor: CurrentUser, id: string) {
-	const { page } = await readablePage(actor, id);
-	return pageAncestors(page);
+	const { access, page } = await readablePage(actor, id);
+	return pageAncestors(access, page);
 }
 
 export async function getPageAttachmentByName(

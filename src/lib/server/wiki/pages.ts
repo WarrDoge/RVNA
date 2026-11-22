@@ -1,4 +1,13 @@
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	inArray,
+	isNull,
+	notInArray,
+	sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import { userAvatarSql } from "../avatars.ts";
 import { db } from "../db.ts";
@@ -11,7 +20,7 @@ import {
 	spaces,
 	users,
 } from "../schema.ts";
-import type { WikiAccess } from "./permissions.ts";
+import { pageReadable, type WikiAccess } from "./permissions.ts";
 
 export type PageRow = typeof pages.$inferSelect;
 export type SpaceRow = typeof spaces.$inferSelect;
@@ -123,7 +132,10 @@ export async function findPageByTitle(
 
 export type Ancestor = { id: string; sourceId: string; title: string };
 
-export async function pageAncestors(page: PageRow): Promise<Ancestor[]> {
+export async function pageAncestors(
+	access: WikiAccess,
+	page: PageRow,
+): Promise<Ancestor[]> {
 	const ancestors: Ancestor[] = [];
 	let current = page.parentId;
 	const seen = new Set<string>();
@@ -135,55 +147,98 @@ export async function pageAncestors(page: PageRow): Promise<Ancestor[]> {
 				sourceId: pages.sourceId,
 				title: pages.title,
 				parentId: pages.parentId,
+				spaceId: pages.spaceId,
+				status: pages.status,
 			})
 			.from(pages)
 			.where(eq(pages.id, current))
 			.limit(1);
 		if (!row) break;
-		ancestors.unshift({
-			id: row.id,
-			sourceId: row.sourceId,
-			title: row.title,
-		});
+		if (row.status === "current" && pageReadable(access, row)) {
+			ancestors.unshift({
+				id: row.id,
+				sourceId: row.sourceId,
+				title: row.title,
+			});
+		}
 		current = row.parentId;
 	}
 	return ancestors;
 }
 
-export async function hasChildren(pageId: string): Promise<boolean> {
-	const [row] = await db
-		.select({ id: pages.id })
+async function parentIdsWithVisibleChildren(
+	pageIds: string[],
+	hiddenPageIds: Set<string> = new Set(),
+): Promise<Set<string>> {
+	if (pageIds.length === 0) return new Set();
+	const filters = [
+		inArray(pages.parentId, pageIds),
+		eq(pages.status, "current"),
+	];
+	if (hiddenPageIds.size > 0) {
+		filters.push(notInArray(pages.id, [...hiddenPageIds]));
+	}
+	const rows = await db
+		.selectDistinct({ parentId: pages.parentId })
 		.from(pages)
-		.where(and(eq(pages.parentId, pageId), eq(pages.status, "current")))
-		.limit(1);
-	return row !== undefined;
+		.where(and(...filters));
+	return new Set(
+		rows
+			.map((row) => row.parentId)
+			.filter((parentId): parentId is string => parentId !== null),
+	);
 }
 
-export async function childPages(pageId: string) {
+export async function hasChildren(
+	pageId: string,
+	hiddenPageIds: Set<string> = new Set(),
+): Promise<boolean> {
+	const parents = await parentIdsWithVisibleChildren([pageId], hiddenPageIds);
+	return parents.has(pageId);
+}
+
+export async function childPages(
+	pageId: string,
+	hiddenPageIds: Set<string> = new Set(),
+) {
 	const rows = await db
 		.select(pageRefColumns)
 		.from(pages)
 		.where(and(eq(pages.parentId, pageId), eq(pages.status, "current")))
 		.orderBy(asc(pages.position), asc(sql`lower(${pages.title})`));
-	const withChildren = await Promise.all(
-		rows.map(async (row) => ({
-			...row,
-			hasChildren: await hasChildren(row.id),
-		})),
+	const withChildren = await parentIdsWithVisibleChildren(
+		rows.map((row) => row.id),
+		hiddenPageIds,
 	);
-	return withChildren;
+	return rows.map((row) => ({
+		...row,
+		hasChildren: withChildren.has(row.id),
+	}));
 }
 
 /** Root pages of a space: the home page, or the pages without a parent. */
-export async function spaceTreeRoots(space: SpaceRow) {
+export async function spaceTreeRoots(
+	space: SpaceRow,
+	hiddenPageIds: Set<string> = new Set(),
+) {
 	if (space.homePageId) {
 		const [home] = await db
 			.select(pageRefColumns)
 			.from(pages)
-			.where(and(eq(pages.id, space.homePageId), eq(pages.status, "current")))
+			.where(
+				and(
+					eq(pages.id, space.homePageId),
+					eq(pages.spaceId, space.id),
+					eq(pages.status, "current"),
+				),
+			)
 			.limit(1);
 		if (home) {
-			return [{ ...home, hasChildren: await hasChildren(home.id) }];
+			const withChildren = await parentIdsWithVisibleChildren(
+				[home.id],
+				hiddenPageIds,
+			);
+			return [{ ...home, hasChildren: withChildren.has(home.id) }];
 		}
 	}
 	const rows = await db
@@ -197,12 +252,14 @@ export async function spaceTreeRoots(space: SpaceRow) {
 			),
 		)
 		.orderBy(asc(pages.position), asc(sql`lower(${pages.title})`));
-	return Promise.all(
-		rows.map(async (row) => ({
-			...row,
-			hasChildren: await hasChildren(row.id),
-		})),
+	const withChildren = await parentIdsWithVisibleChildren(
+		rows.map((row) => row.id),
+		hiddenPageIds,
 	);
+	return rows.map((row) => ({
+		...row,
+		hasChildren: withChildren.has(row.id),
+	}));
 }
 
 export type VersionRow = typeof pageVersions.$inferSelect;
@@ -310,102 +367,14 @@ export async function commentById(id: string) {
 	return row ?? null;
 }
 
-/**
- * Next Confluence-style page id for a page created in this app: one above the
- * highest numeric imported id. Call inside the transaction that inserts the
- * page so concurrent creators serialize on the advisory lock.
- */
-export async function nextPageSourceId(
-	executor: Pick<typeof db, "execute"> = db,
-): Promise<string> {
-	await executor.execute(
-		sql`select pg_advisory_xact_lock(hashtext('wiki_page_source_id'))`,
-	);
-	const result = await executor.execute(sql`
-		select coalesce(max(source_id::bigint), 1000) + 1 as next
-		from pages
-		where source_id ~ '^[0-9]+$'
-	`);
-	const row = (result.rows as { next: string | number }[])[0];
-	return String(row?.next ?? 1001);
-}
-
-export async function pageCount(spaceId: string) {
+export async function pageCount(spaceId: string, access: WikiAccess) {
+	const filters = [eq(pages.spaceId, spaceId), eq(pages.status, "current")];
+	if (access.hiddenPageIds.size > 0) {
+		filters.push(notInArray(pages.id, [...access.hiddenPageIds]));
+	}
 	const [row] = await db
 		.select({ count: sql<number>`count(*)::int` })
 		.from(pages)
-		.where(and(eq(pages.spaceId, spaceId), eq(pages.status, "current")));
+		.where(and(...filters));
 	return row?.count ?? 0;
-}
-
-/** Pages created by, or watched by, the user across readable spaces. */
-export async function pagesForUser(
-	access: WikiAccess,
-	userId: string,
-	kind: "created" | "watched",
-	limit = 10,
-) {
-	if (kind === "created") {
-		const rows = await db.execute(sql`
-			select p.id, p.source_id, p.title, s.key as space_key, s.name as space_name,
-				p.updated, u.display_name as author
-			from pages p
-			join spaces s on s.id = p.space_id
-			left join users u on u.id = p.last_modifier_id
-			where p.creator_id = ${userId}
-				and p.status = 'current'
-				and ${spaceFilter(access)}
-			order by p.updated desc nulls last
-			limit ${limit}
-		`);
-		return rows.rows as {
-			id: string;
-			source_id: string;
-			title: string;
-			space_key: string;
-			space_name: string;
-			updated: Date | null;
-			author: string | null;
-		}[];
-	}
-
-	const rows = await db.execute(sql`
-		select p.id, p.source_id, p.title, s.key as space_key, s.name as space_name,
-			p.updated, u.display_name as author
-		from page_watchers w
-		join pages p on p.id = w.page_id
-		join spaces s on s.id = p.space_id
-		left join users u on u.id = p.last_modifier_id
-		where w.user_id = ${userId}
-			and p.status = 'current'
-			and ${spaceFilter(access)}
-		order by p.updated desc nulls last
-		limit ${limit}
-	`);
-	return rows.rows as {
-		id: string;
-		source_id: string;
-		title: string;
-		space_key: string;
-		space_name: string;
-		updated: Date | null;
-		author: string | null;
-	}[];
-}
-
-function spaceFilter(access: WikiAccess) {
-	const ids = [...access.readableSpaceIds];
-	const readable =
-		ids.length > 0
-			? sql`p.space_id in (${sql.join(
-					ids.map((id) => sql`${id}`),
-					sql`, `,
-				)})`
-			: sql`false`;
-	if (access.hiddenPageIds.size === 0) return readable;
-	const hidden = sql.join(
-		[...access.hiddenPageIds].map((id) => sql`${id}`),
-		sql`, `,
-	);
-	return sql`${readable} and p.id not in (${hidden})`;
 }
