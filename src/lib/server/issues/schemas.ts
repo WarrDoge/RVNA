@@ -5,6 +5,7 @@ import {
 	issueDetailSchema,
 	issueLinkSchema,
 	linkTypeSchema,
+	resolutionRefSchema,
 	userRefSchema,
 	worklogSchema,
 } from "../api-schemas.ts";
@@ -104,9 +105,7 @@ export const watchResponse = z.object({
 export const watchersResponse = z.object({
 	watchers: z.array(userRefSchema),
 });
-export const resolutionsResponse = z.array(
-	z.object({ id: z.uuid(), name: z.string() }),
-);
+export const resolutionsResponse = z.array(resolutionRefSchema);
 export const linkTypesResponse = z.array(linkTypeSchema);
 export const commentsResponse = z.array(commentSchema);
 export const historyResponse = z.array(historyEntrySchema);
