@@ -163,10 +163,7 @@ export class ConfluenceClient extends GetOnlyClient {
 	}
 
 	async listAttachmentVersions(attachmentId: string) {
-		return this.all<ConfluenceVersion>(
-			`/rest/experimental/content/${encodeURIComponent(attachmentId)}/version`,
-			{},
-		);
+		return this.listVersions(attachmentId);
 	}
 
 	async listSpacePermissions(spaceKey: string) {

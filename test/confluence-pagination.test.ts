@@ -83,4 +83,19 @@ describe("Confluence pagination", () => {
 
 		await expect(client.listSpaces("current")).resolves.toEqual([]);
 	});
+
+	test("attachment and content versions read the same endpoint", async () => {
+		const paths: string[] = [];
+		const client = clientFor((async (input: string | URL | Request) => {
+			paths.push(new URL(String(input)).pathname);
+			return Response.json({ results: [] });
+		}) as typeof fetch);
+
+		await expect(client.listAttachmentVersions("42")).resolves.toEqual([]);
+		await expect(client.listVersions("42")).resolves.toEqual([]);
+		expect(paths).toEqual([
+			"/rest/experimental/content/42/version",
+			"/rest/experimental/content/42/version",
+		]);
+	});
 });
