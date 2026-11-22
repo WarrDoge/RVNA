@@ -1229,6 +1229,18 @@ describe("parity checks", () => {
 		expect(new Set(methods)).toEqual(new Set(["GET"]));
 	});
 
+	test("a bad app URL is reported per old URL instead of rejecting", async () => {
+		const result = await requestOldUrls(
+			[{ path: "/browse/P-1", status: null, chain: [], ok: null }],
+			"not a URL",
+			"token",
+			(async () => new Response("ok")) as typeof fetch,
+		);
+		expect(result.urls[0]?.ok).toBe(false);
+		expect(result.urls[0]?.error).toBeTruthy();
+		expect(result.requests).toBe(0);
+	});
+
 	test("old URL requests keep the app token on the app origin only", async () => {
 		const seen: { url: string; authorization: string | null }[] = [];
 		const fetchImpl = (async (

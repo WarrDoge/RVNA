@@ -170,10 +170,10 @@ async function requestOne(
 	fetchImpl: typeof fetch,
 	counter: { count: number },
 ): Promise<OldUrlResult> {
-	const appOrigin = new URL(appUrl).origin;
-	let current = new URL(path, appUrl);
 	const chain: number[] = [];
 	try {
+		const appOrigin = new URL(appUrl).origin;
+		let current = new URL(path, appUrl);
 		for (let redirect = 0; redirect <= 10; redirect++) {
 			counter.count++;
 			const response = await fetchImpl(current, {
