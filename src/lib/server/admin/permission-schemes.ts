@@ -93,8 +93,8 @@ function sourceOf(sourceId: string): "imported" | "local" {
 	return isLocal(sourceId) ? "local" : "imported";
 }
 
-async function projectMap() {
-	const rows = await db
+async function projectMap(executor: Pick<typeof db, "select"> = db) {
+	const rows = await executor
 		.select({ id: projects.id, key: projects.key, name: projects.name })
 		.from(projects);
 	return new Map(rows.map((row) => [row.id, row]));
@@ -722,7 +722,7 @@ export async function deletePermissionScheme(actor: CurrentUser, id: string) {
 			]),
 		];
 		if (projectIds.length > 0) {
-			const byId = await projectMap();
+			const byId = await projectMap(tx);
 			const keys = projectsFor(projectIds, byId).map((project) => project.key);
 			const names =
 				keys.length > 0 ? keys.join(", ") : `${projectIds.length} project(s)`;

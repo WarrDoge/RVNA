@@ -45,6 +45,15 @@ let localGrantId: string;
 let groupId: string;
 let createdGlobalScheme = false;
 
+function swapSelect(next: typeof db.select) {
+	const target = db as unknown as { select: typeof db.select };
+	const previous = target.select;
+	target.select = next;
+	return () => {
+		target.select = previous;
+	};
+}
+
 function jiraClient(): PermissionImportClient {
 	return {
 		async getJson<T>(
@@ -981,6 +990,48 @@ test("removes a project from a scheme and the built-in default applies again", a
 	expect(audits.map((row) => row.action)).toContain(
 		"permission.scheme.unassign",
 	);
+});
+
+test("an assigned scheme reads its projects inside the deletion transaction", async () => {
+	const assigned = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		`/api/admin/permission-schemes/${copiedSchemeId}/projects`,
+		{ projectId: otherProject.projectId },
+	);
+	expect(assigned.statusCode).toBe(200);
+
+	const originalTransaction = db.transaction.bind(db);
+	const originalSelect = db.select.bind(db);
+	let inTransaction = false;
+	const restoreTransaction = swapTransaction(async (callback) => {
+		inTransaction = true;
+		try {
+			return await originalTransaction(callback);
+		} finally {
+			inTransaction = false;
+		}
+	});
+	const restoreSelect = swapSelect(((...args: Parameters<typeof db.select>) => {
+		if (inTransaction) {
+			throw new Error("read outside the deletion transaction");
+		}
+		return originalSelect(...args);
+	}) as typeof db.select);
+	try {
+		const blocked = await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/permission-schemes/${copiedSchemeId}`,
+		);
+		expect(blocked.statusCode).toBe(409);
+		expect(blocked.json().error).toContain("Remove the project");
+	} finally {
+		restoreSelect();
+		restoreTransaction();
+	}
 });
 
 test("deletes a scheme only after its projects are removed", async () => {
