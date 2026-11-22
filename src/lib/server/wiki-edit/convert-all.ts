@@ -3,9 +3,10 @@ import { storageToDoc } from "../../shared/wiki/index.ts";
 import { resolveDocRefs } from "../../shared/wiki/refs.ts";
 import { db, pool, runMigrations } from "../db.ts";
 import { pageAttachments, pages, pageVersions, spaces } from "../schema.ts";
+import { pageUrl } from "../wiki/data.ts";
+import { attachmentUrl } from "./content.ts";
 
-const unknown = new Map<string, number>();
-const report = { unknown };
+const report = { unknown: new Map<string, number>() };
 
 const spaceKeyById = new Map<string, string>();
 const pageIdByTitle = new Map<string, string>();
@@ -54,7 +55,7 @@ function convert(storage: string, pageId: string) {
 			const id = pageIdByTitle.get(
 				lookupKey(ref.spaceKey ?? here?.spaceKey ?? "", ref.title),
 			);
-			return id ? `/pages/viewpage.action?pageId=${id}` : null;
+			return id ? pageUrl(id) : null;
 		},
 		attachmentHref: (ref) => {
 			let owner: string | undefined = pageId;
@@ -65,7 +66,7 @@ function convert(storage: string, pageId: string) {
 			}
 			const id =
 				owner && attachmentIdByFile.get(lookupKey(owner, ref.fileName));
-			return id ? `/api/wiki/attachments/${id}` : null;
+			return id ? attachmentUrl(id) : null;
 		},
 	});
 }
@@ -86,34 +87,38 @@ async function main() {
 			const doc = convert(row.storage ?? "", row.id);
 			await db.update(pages).set({ bodyDoc: doc }).where(eq(pages.id, row.id));
 			pageCount++;
-		} catch {
+		} catch (error) {
+			console.error(
+				`page ${row.id}:`,
+				error instanceof Error ? error.message : error,
+			);
 			failed++;
 		}
 	}
 
-	const versionIds = await db
-		.select({ id: pageVersions.id })
+	const versionRows = await db
+		.select({
+			id: pageVersions.id,
+			pageId: pageVersions.pageId,
+			storage: pageVersions.bodyStorage,
+		})
 		.from(pageVersions)
 		.where(
 			and(isNotNull(pageVersions.bodyStorage), isNull(pageVersions.bodyDoc)),
 		);
-	for (const { id } of versionIds) {
-		const [row] = await db
-			.select({
-				pageId: pageVersions.pageId,
-				storage: pageVersions.bodyStorage,
-			})
-			.from(pageVersions)
-			.where(eq(pageVersions.id, id));
-		if (!row) continue;
+	for (const row of versionRows) {
 		try {
 			const doc = convert(row.storage ?? "", row.pageId);
 			await db
 				.update(pageVersions)
 				.set({ bodyDoc: doc })
-				.where(eq(pageVersions.id, id));
+				.where(eq(pageVersions.id, row.id));
 			versionCount++;
-		} catch {
+		} catch (error) {
+			console.error(
+				`version ${row.id} of page ${row.pageId}:`,
+				error instanceof Error ? error.message : error,
+			);
 			failed++;
 		}
 	}
@@ -121,11 +126,13 @@ async function main() {
 	console.log(
 		`converted ${pageCount} pages and ${versionCount} versions, ${failed} failed`,
 	);
-	if (unknown.size === 0) {
+	if (report.unknown.size === 0) {
 		console.log("unknown elements and macros: none");
 	} else {
 		console.log("unknown elements and macros (name: count):");
-		for (const [name, count] of [...unknown].sort((a, b) => b[1] - a[1])) {
+		for (const [name, count] of [...report.unknown].sort(
+			(a, b) => b[1] - a[1],
+		)) {
 			console.log(`  ${name}: ${count}`);
 		}
 	}
