@@ -36,7 +36,7 @@ export interface JiraStatus {
 	description?: string | null;
 	statusCategory?: {
 		key?: string;
-		colourName?: string;
+		colorName?: string;
 		name?: string;
 	};
 }
@@ -89,7 +89,7 @@ export interface JiraWorkflowLayoutStatus {
 	statusId?: string | null;
 	statusCategory?: {
 		key?: string;
-		colourName?: string;
+		colorName?: string;
 	};
 }
 

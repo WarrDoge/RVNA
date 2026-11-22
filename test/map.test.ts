@@ -396,6 +396,38 @@ describe("workflow layout", () => {
 		]);
 	});
 
+	test("reads Jira's colorName spelling when a status has no key", () => {
+		const mapped = mapWorkflowLayout({
+			statuses: [
+				{
+					id: "S<1>",
+					name: "Done",
+					statusId: "fixture-status-done",
+					statusCategory: { colorName: "green" },
+				},
+				{
+					id: "S<2>",
+					name: "In Progress",
+					statusId: "fixture-status-progress",
+					statusCategory: { colorName: "yellow" },
+				},
+				{
+					id: "S<3>",
+					name: "To Do",
+					statusId: "fixture-status-todo",
+					statusCategory: { colorName: "blue-gray" },
+				},
+			] as never,
+			transitions: [],
+		});
+
+		expect(mapped.statuses.map((status) => status.category)).toEqual([
+			"done",
+			"indeterminate",
+			"new",
+		]);
+	});
+
 	test("matches a workflow by status set and prefers the project key", () => {
 		const match = matchWorkflow(
 			"FIXT",

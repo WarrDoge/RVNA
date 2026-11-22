@@ -330,7 +330,7 @@ function categoryFor(status: JiraWorkflowLayoutStatus) {
 		case "new":
 			return "new" as const;
 	}
-	switch (status.statusCategory?.colourName) {
+	switch (status.statusCategory?.colorName) {
 		case "green":
 		case "success":
 			return "done" as const;
