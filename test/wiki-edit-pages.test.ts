@@ -546,6 +546,21 @@ describe("labels", () => {
 		).rejects.toMatchObject({ code: "23505" });
 	});
 
+	test("concurrent saves keep one row per label", async () => {
+		const page = await wiki.page(author, space.key, "Label race");
+		const replies = await Promise.all(
+			Array.from({ length: 8 }, () =>
+				author.put(`/api/wiki/pages/${page.id}/labels`, { labels: ["race"] }),
+			),
+		);
+		expect(replies.map((reply) => reply.status)).toEqual(
+			Array.from({ length: 8 }, () => 200),
+		);
+		expect(
+			await rows("select label from page_labels where page_id = $1", [page.id]),
+		).toEqual([{ label: "race" }]);
+	});
+
 	test("set replaces the label list", async () => {
 		const page = await wiki.page(author, space.key, "Labelled", {
 			labels: ["one", "two"],

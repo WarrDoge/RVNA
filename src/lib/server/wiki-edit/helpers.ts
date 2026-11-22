@@ -13,6 +13,9 @@ import {
 	type SpaceRow,
 } from "./common.ts";
 
+const titleTaken = (title: string): never =>
+	fail(409, `A page titled "${title}" already exists in this space`);
+
 export async function assertTitleFree(
 	ex: Executor,
 	spaceId: string,
@@ -31,9 +34,7 @@ export async function assertTitleFree(
 			),
 		)
 		.limit(1);
-	if (clash) {
-		fail(409, `A page titled "${title}" already exists in this space`);
-	}
+	if (clash) titleTaken(title);
 }
 
 /** Maps the unique-title violation of a racing write to 409. */
@@ -45,7 +46,7 @@ export async function titleClash<T>(title: string, run: () => Promise<T>) {
 			pgCode(error) === "23505" &&
 			pgConstraint(error) === "pages_space_title_current_unique"
 		) {
-			fail(409, `A page titled "${title}" already exists in this space`);
+			titleTaken(title);
 		}
 		throw error;
 	}
@@ -81,6 +82,7 @@ export async function siblingIds(
  * Serializes the writers that pick a position among one set of siblings (create,
  * copy and move). An advisory lock keyed by the parent, or the space root, avoids
  * row-locking pages that another move may be moving, which could deadlock.
+ * Must run inside a transaction: the lock is released when that transaction ends.
  */
 export async function lockSiblings(
 	ex: Executor,
@@ -150,11 +152,12 @@ export async function setLabels(
 	pageId: string,
 	labels: string[],
 ) {
+	const wanted = [...new Set(labels)];
 	const existing = await tx
 		.select({ label: pageLabels.label })
 		.from(pageLabels)
 		.where(eq(pageLabels.pageId, pageId));
-	const keep = new Set(labels);
+	const keep = new Set(wanted);
 	const have = new Set(existing.map((row) => row.label));
 	const remove = [...have].filter((label) => !keep.has(label));
 	if (remove.length > 0) {
@@ -164,11 +167,14 @@ export async function setLabels(
 				and(eq(pageLabels.pageId, pageId), inArray(pageLabels.label, remove)),
 			);
 	}
-	const add = labels.filter((label) => !have.has(label));
+	const add = wanted.filter((label) => !have.has(label));
 	if (add.length > 0) {
 		await tx
 			.insert(pageLabels)
-			.values(add.map((label) => ({ sourceId: newSourceId(), pageId, label })));
+			.values(add.map((label) => ({ sourceId: newSourceId(), pageId, label })))
+			.onConflictDoNothing({
+				target: [pageLabels.pageId, pageLabels.label],
+			});
 	}
 }
 
