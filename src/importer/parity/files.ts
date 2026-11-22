@@ -18,41 +18,39 @@ export interface AttachmentFileRows {
 	wiki: AttachmentFileRow[];
 }
 
+interface AttachmentRow {
+	source_id: string;
+	storage_path: string;
+	size: number;
+	sha256: string;
+}
+
+function toRow(row: AttachmentRow): AttachmentFileRow {
+	return {
+		sourceId: row.source_id,
+		storagePath: row.storage_path,
+		size: row.size,
+		sha256: row.sha256,
+	};
+}
+
 export async function loadAttachmentFiles(
 	pool: pg.Pool,
 	tables: TableSet,
 ): Promise<AttachmentFileRows> {
-	const jira = await pool.query<{
-		source_id: string;
-		storage_path: string;
-		size: number;
-		sha256: string;
-	}>(
-		"select source_id, storage_path, size, sha256 from attachments order by source_id",
-	);
+	const jira = tables.has("attachments")
+		? await pool.query<AttachmentRow>(
+				"select source_id, storage_path, size, sha256 from attachments order by source_id",
+			)
+		: { rows: [] };
 	const wiki = tables.has("page_attachments")
-		? await pool.query<{
-				source_id: string;
-				storage_path: string;
-				size: number;
-				sha256: string;
-			}>(
+		? await pool.query<AttachmentRow>(
 				"select source_id, storage_path, size, sha256 from page_attachments order by source_id",
 			)
 		: { rows: [] };
 	return {
-		jira: jira.rows.map((row) => ({
-			sourceId: row.source_id,
-			storagePath: row.storage_path,
-			size: row.size,
-			sha256: row.sha256,
-		})),
-		wiki: wiki.rows.map((row) => ({
-			sourceId: row.source_id,
-			storagePath: row.storage_path,
-			size: row.size,
-			sha256: row.sha256,
-		})),
+		jira: jira.rows.map(toRow),
+		wiki: wiki.rows.map(toRow),
 	};
 }
 
@@ -69,7 +67,11 @@ async function mapLimit<T>(
 	limit: number,
 	fn: (value: T) => Promise<void>,
 ) {
+	if (limit < 1) {
+		throw new Error(`mapLimit limit must be positive, got ${limit}`);
+	}
 	let index = 0;
+	// Each worker takes the next index, so at most limit files are in flight.
 	const workers = Array.from(
 		{ length: Math.min(limit, values.length) },
 		async () => {
@@ -94,6 +96,7 @@ async function checkFiles(
 	const hashDetails: string[] = [];
 	let verified = 0;
 	let hashed = 0;
+	let attempted = 0;
 	await mapLimit(rows, 4, async (row) => {
 		const target = resolve(root, row.storagePath);
 		const insideRoot = target === root || target.startsWith(`${root}${sep}`);
@@ -109,6 +112,7 @@ async function checkFiles(
 			} else {
 				verified++;
 				if (!skipHash) {
+					attempted++;
 					const sha256 = await hashFile(target);
 					if (sha256 === row.sha256) {
 						hashed++;
@@ -125,7 +129,7 @@ async function checkFiles(
 	const result = check(name, rows.length, verified, details);
 	const hashResult = skipHash
 		? skipped(hashName, "--skip-hash")
-		: check(hashName, rows.length, hashed, hashDetails);
+		: check(hashName, attempted, hashed, hashDetails);
 	return [result, hashResult];
 }
 
