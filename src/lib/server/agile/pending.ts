@@ -28,16 +28,26 @@ export function trackBoardMove<T>(
 export async function waitForBoardMoves(rapidViewId: number) {
 	const operations = pending.get(rapidViewId);
 	if (!operations || operations.size === 0) return;
-	const settled = Promise.allSettled([...operations]);
+	const snapshot = [...operations];
+	const settled = Promise.allSettled(snapshot);
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timedOut = false;
 	try {
 		await Promise.race([
 			settled,
 			new Promise<void>((resolve) => {
-				timer = setTimeout(resolve, MOVE_WAIT_MS);
+				timer = setTimeout(() => {
+					timedOut = true;
+					resolve();
+				}, MOVE_WAIT_MS);
 			}),
 		]);
 	} finally {
 		clearTimeout(timer);
+	}
+	if (!timedOut) return;
+	for (const operation of snapshot) operations.delete(operation);
+	if (operations.size === 0 && pending.get(rapidViewId) === operations) {
+		pending.delete(rapidViewId);
 	}
 }

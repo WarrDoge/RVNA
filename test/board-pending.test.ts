@@ -23,6 +23,23 @@ test("a board read waits at most five seconds for a hung move", async () => {
 	expect(done).toBe(true);
 });
 
+test("a hung move is pruned after the timeout so later reads do not wait", async () => {
+	vi.useFakeTimers();
+	const hung = new Promise<void>(() => {});
+	trackBoardMove(94, hung);
+	const first = waitForBoardMoves(94);
+	await vi.advanceTimersByTimeAsync(5_000);
+	await first;
+
+	let secondDone = false;
+	const second = waitForBoardMoves(94).then(() => {
+		secondDone = true;
+	});
+	await vi.advanceTimersByTimeAsync(0);
+	expect(secondDone).toBe(true);
+	await second;
+});
+
 test("a settled move is removed and does not make the next read wait", async () => {
 	const settled = Promise.resolve("moved");
 	await trackBoardMove(92, settled);
