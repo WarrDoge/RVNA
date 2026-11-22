@@ -207,4 +207,14 @@ describe("branch names", () => {
 		expect(summarySlug("Вход в систему")).toBe("вход-в-систему");
 		expect(branchNameFor("demo-1", "修复登录")).toBe("DEMO-1-修复登录");
 	});
+
+	test("truncates at a code point boundary", () => {
+		const summary = `${"a".repeat(39)}\u{20000}`;
+		const slug = summarySlug(summary);
+		expect(slug).toBe(summary);
+		expect(slug.isWellFormed()).toBe(true);
+		expect(() =>
+			encodeURIComponent(branchNameFor("demo-1", summary)),
+		).not.toThrow();
+	});
 });

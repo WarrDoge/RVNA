@@ -72,10 +72,12 @@ export function summarySlug(summary: string, maxLength = 40) {
 		.replace(/\p{M}/gu, "")
 		.toLowerCase()
 		.replace(/[^\p{L}\p{N}]+/gu, "-")
-		.replace(/^-+|-+$/g, "")
+		.replace(/^-+|-+$/g, "");
+	const truncated = Array.from(slug)
 		.slice(0, maxLength)
+		.join("")
 		.replace(/-+$/g, "");
-	return slug || "task";
+	return truncated || "task";
 }
 
 export function branchNameFor(key: string, summary: string) {
