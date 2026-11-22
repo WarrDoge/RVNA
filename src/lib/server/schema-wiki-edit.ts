@@ -12,6 +12,11 @@ import {
 import { users } from "./schema.ts";
 import { pages, spaces } from "./schema-wiki.ts";
 
+/**
+ * One live edit lock per page. `acquiredAt` is when the current holder took the
+ * lock; `takenOverFrom`/`takenOverAt` name the previous holder when a live lock
+ * was taken over and are null for a normal claim or re-claim.
+ */
 export const pageLocks = pgTable("page_locks", {
 	pageId: uuid("page_id")
 		.primaryKey()
