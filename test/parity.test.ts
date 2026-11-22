@@ -662,6 +662,16 @@ describe("parity checks", () => {
 				),
 			} as typeof live;
 			expect(status(deleted)?.details).toContain("parity-test-filter");
+
+			const liveOnly = {
+				...live,
+				filters: [
+					...(live.filters ?? []),
+					{ id: "parity-live-only-filter", name: "Live only", jql: "" },
+				],
+			} as typeof live;
+			expect(status(liveOnly)?.status).toBe("MISMATCH");
+			expect(status(liveOnly)?.details).toContain("parity-live-only-filter");
 		} finally {
 			await pool.query("delete from filters where source_id = $1", [
 				"parity-test-filter",

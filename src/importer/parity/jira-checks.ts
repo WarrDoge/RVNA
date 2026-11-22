@@ -496,15 +496,22 @@ export function jiraChecks(
 		const liveFilters = new Map(
 			(live.filters ?? []).map((filter) => [filter.id, filter]),
 		);
+		const databaseFilters = new Map(
+			database.filters.map((filter) => [filter.id, filter]),
+		);
 		const filterDetails: string[] = [];
-		for (const filter of database.filters) {
-			const current = liveFilters.get(filter.id);
+		for (const id of sorted([
+			...new Set([...liveFilters.keys(), ...databaseFilters.keys()]),
+		])) {
+			const filter = databaseFilters.get(id);
+			const current = liveFilters.get(id);
 			if (
+				!filter ||
 				!current ||
 				current.name !== filter.name ||
 				current.jql !== filter.jql
 			) {
-				filterDetails.push(filter.id);
+				filterDetails.push(id);
 			}
 		}
 		checks.push(
