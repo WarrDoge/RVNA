@@ -636,10 +636,18 @@ export async function removePermissionSchemeProject(
 	}
 
 	await db.transaction(async (tx) => {
+		const [locked] = await tx
+			.select({ projectIds: permissionSchemes.projectIds })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id))
+			.for("update");
+		if (!locked) throw new HttpError(404, "Permission scheme not found");
 		await tx
 			.update(permissionSchemes)
 			.set({
-				projectIds: projectIds.filter((value) => value !== project.id),
+				projectIds: (locked.projectIds ?? []).filter(
+					(value) => value !== project.id,
+				),
 				updatedAt: new Date(),
 			})
 			.where(eq(permissionSchemes.id, scheme.id));

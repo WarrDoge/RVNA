@@ -908,3 +908,69 @@ test("concurrent assignments keep both projects assigned", async () => {
 			.where(eq(permissionSchemes.id, local.id));
 	}
 });
+test("a removal does not overwrite a concurrent assignment", async () => {
+	const [local] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `test:${run}:removal-local`,
+			name: `Removal local ${run}`,
+			projectIds: [],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	await db
+		.update(permissionSchemes)
+		.set({ projectIds: [project.projectId, otherProject.projectId] })
+		.where(eq(permissionSchemes.id, importedSchemeId));
+	const original = db.transaction.bind(db);
+	let release = () => {};
+	let entered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const removal = injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/permission-schemes/${importedSchemeId}/projects/${project.projectId}`,
+		);
+		await started;
+		restore();
+		const assigned = await injectAs(
+			app,
+			admin.session,
+			"POST",
+			`/api/admin/permission-schemes/${local.id}/projects`,
+			{ projectId: otherProject.projectId },
+		);
+		expect(assigned.statusCode).toBe(200);
+		release();
+		const removed = await removal;
+		expect(removed.statusCode).toBe(204);
+
+		const [imported] = await db
+			.select({ projectIds: permissionSchemes.projectIds })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, importedSchemeId));
+		const [localRow] = await db
+			.select({ projectIds: permissionSchemes.projectIds })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, local.id));
+		expect(imported.projectIds).toEqual([]);
+		expect(localRow.projectIds).toEqual([otherProject.projectId]);
+	} finally {
+		restore();
+		await db
+			.delete(permissionSchemes)
+			.where(eq(permissionSchemes.id, local.id));
+	}
+});
