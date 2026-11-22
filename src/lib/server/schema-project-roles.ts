@@ -34,3 +34,19 @@ export const permissionLocalAssignments = pgTable(
 		index("permission_local_assignments_scheme_idx").on(table.schemeId),
 	],
 );
+
+/**
+ * A project an administrator removed from a scheme in the app. The importer
+ * keeps it off Jira's scheme lists until it is assigned to a scheme again.
+ */
+export const permissionLocalUnassignments = pgTable(
+	"permission_local_unassignments",
+	{
+		projectId: uuid("project_id")
+			.primaryKey()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+);
