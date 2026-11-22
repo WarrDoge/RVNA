@@ -213,8 +213,19 @@ async function projectByKey(key: string) {
 }
 
 async function schemeForProject(projectId: string) {
-	const rows = await db.select().from(permissionSchemes);
-	return rows.find((scheme) => (scheme.projectIds ?? []).includes(projectId));
+	const [scheme] = await db
+		.select({
+			id: permissionSchemes.id,
+			sourceId: permissionSchemes.sourceId,
+			name: permissionSchemes.name,
+		})
+		.from(permissionSchemes)
+		.where(
+			sql`${permissionSchemes.projectIds} @> ${JSON.stringify([projectId])}::jsonb`,
+		)
+		.orderBy(permissionSchemes.sourceId, permissionSchemes.id)
+		.limit(1);
+	return scheme ?? null;
 }
 
 async function loadRoleData(projectId: string) {

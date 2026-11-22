@@ -535,3 +535,46 @@ test("local actors and locally removed imported actors survive a re-import", asy
 		.where(eq(projectRoleActors.projectId, importedProject.projectId));
 	expect(rows.some((row) => row.sourceId.startsWith("local:"))).toBe(true);
 });
+
+test("reads one scheme for the project instead of every scheme and its payload", async () => {
+	const [earlier] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `aaa:${run}:scheme`,
+			name: `Earlier scheme ${run}`,
+			projectIds: [project.projectId],
+			raw: { large: "payload" },
+		})
+		.returning({ id: permissionSchemes.id });
+
+	const original = pool.query.bind(pool);
+	const statements: string[] = [];
+	(pool as unknown as { query: typeof pool.query }).query = ((
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		statements.push(typeof query === "string" ? query : (query.text ?? ""));
+		return (original as (...args: unknown[]) => unknown)(query, ...rest);
+	}) as typeof pool.query;
+	try {
+		const response = await rolesFor(admin);
+		expect(response.statusCode).toBe(200);
+		expect(response.json().scheme.id).toBe(earlier.id);
+	} finally {
+		(pool as unknown as { query: typeof pool.query }).query = original;
+	}
+
+	const schemeReads = statements.filter((statement) =>
+		statement.includes('from "permission_schemes"'),
+	);
+	expect(
+		schemeReads.filter((statement) => statement.includes('"raw"')),
+	).toHaveLength(0);
+	expect(
+		schemeReads.filter((statement) => statement.includes("@>")),
+	).toHaveLength(1);
+
+	await db
+		.delete(permissionSchemes)
+		.where(eq(permissionSchemes.id, earlier.id));
+});
