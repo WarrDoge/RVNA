@@ -89,6 +89,13 @@ export async function createPage(
 	const created = await titleClash(body.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, space.id, parentId);
+			if (draftId) {
+				const draft = await lockPage(tx, draftId);
+				if (draft.status !== "draft" || draft.spaceId !== space.id) {
+					fail(409, "This page is no longer an unpublished draft");
+				}
+				await requireAccess(actor, draft, "edit");
+			}
 			const rendered = await renderBody(tx, doc, space.key, draftId);
 			const now = new Date();
 			const values = {

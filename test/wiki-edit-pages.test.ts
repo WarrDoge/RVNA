@@ -34,6 +34,19 @@ afterAll(async () => {
 	await pool.end();
 });
 
+async function waitForLockWaiters(count: number) {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const result = await pool.query<{ n: number }>(
+			`select count(*)::int as n from pg_stat_activity
+			 where datname = current_database() and wait_event_type = 'Lock'`,
+		);
+		if ((result.rows[0]?.n ?? 0) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	throw new Error(`timed out waiting for ${count} lock waiters`);
+}
+
 const versions = (pageId: string) =>
 	rows<{
 		number: number;
@@ -445,6 +458,44 @@ describe("drafts of unpublished pages", () => {
 		expect(
 			await rows("select id from page_drafts where page_id = $1", [pageId]),
 		).toHaveLength(0);
+	});
+
+	test("two publishes of the same draft leave one version", async () => {
+		const created = await author.post("/api/wiki/pages/drafts", {
+			spaceKey: space.key,
+			parentId: space.homeId,
+		});
+		const pageId = created.body.pageId as string;
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select id from pages where id = $1 for update", [
+				pageId,
+			]);
+			const body = {
+				spaceKey: space.key,
+				parentId: space.homeId,
+				title: "Race draft",
+				bodyDoc: doc("raced"),
+				draftPageId: pageId,
+			};
+			const first = author.post("/api/wiki/pages", body);
+			const second = author.post("/api/wiki/pages", body);
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const responses = await Promise.all([first, second]);
+			expect(responses.map((response) => response.status).sort()).toEqual([
+				201, 409,
+			]);
+			const failure = responses.find((response) => response.status === 409);
+			expect(failure?.body.error).not.toMatch(/already exists/);
+			expect((await versions(pageId)).map((version) => version.number)).toEqual(
+				[1],
+			);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
 	});
 
 	test("another user cannot publish someone else's draft page", async () => {
