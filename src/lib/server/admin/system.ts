@@ -180,19 +180,26 @@ function auditWhere(filters: AuditFilters) {
 	return conditions.length > 0 ? and(...conditions) : undefined;
 }
 
+async function loadAuditRowsPage(
+	filters: AuditFilters,
+	page: { offset: number; limit: number },
+) {
+	return db
+		.select(auditColumns)
+		.from(auditLog)
+		.where(auditWhere(filters))
+		.orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+		.limit(page.limit)
+		.offset(page.offset);
+}
+
 async function loadAuditRows(
 	filters: AuditFilters,
 	page: { offset: number; limit: number },
 ) {
 	const where = auditWhere(filters);
 	const [rows, totals] = await Promise.all([
-		db
-			.select(auditColumns)
-			.from(auditLog)
-			.where(where)
-			.orderBy(desc(auditLog.createdAt), desc(auditLog.id))
-			.limit(page.limit)
-			.offset(page.offset),
+		loadAuditRowsPage(filters, page),
 		db
 			.select({ total: sql<number>`count(*)::int` })
 			.from(auditLog)
@@ -225,7 +232,7 @@ function csvCell(value: unknown) {
 			: typeof value === "string"
 				? value
 				: JSON.stringify(value);
-	if (/^[=+\-@]/.test(text)) text = `'${text}`;
+	if (/^[=+\-@\t\r\n]/.test(text)) text = `'${text}`;
 	return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
@@ -267,30 +274,29 @@ export async function updateSettings(
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
 	const labels: string[] = [];
+	const rows: { key: string; value: string | null }[] = [];
 	if (body.title !== before.title) {
 		from.title = before.title;
 		to.title = body.title;
 		labels.push("title");
+		rows.push({ key: siteTitleKey, value: body.title });
 	}
 	if (body.defaultIssueTypeId !== before.defaultIssueTypeId) {
 		from.defaultIssueTypeId = before.defaultIssueTypeId;
 		to.defaultIssueTypeId = body.defaultIssueTypeId;
 		labels.push("default issue type");
+		rows.push({ key: defaultIssueTypeKey, value: body.defaultIssueTypeId });
 	}
 	if (body.defaultPriorityId !== before.defaultPriorityId) {
 		from.defaultPriorityId = before.defaultPriorityId;
 		to.defaultPriorityId = body.defaultPriorityId;
 		labels.push("default priority");
+		rows.push({ key: defaultPriorityKey, value: body.defaultPriorityId });
 	}
 
 	if (labels.length === 0) return before;
 
 	const updatedAt = new Date();
-	const rows: { key: string; value: string | null }[] = [
-		{ key: siteTitleKey, value: body.title },
-		{ key: defaultIssueTypeKey, value: body.defaultIssueTypeId },
-		{ key: defaultPriorityKey, value: body.defaultPriorityId },
-	];
 
 	await db.transaction(async (tx) => {
 		for (const row of rows) {
@@ -362,35 +368,41 @@ export async function getAuditFilterOptions(actor: CurrentUser) {
 	};
 }
 
+const AUDIT_EXPORT_PAGE_SIZE = 10_000;
+
 export async function exportAuditCsv(
 	actor: CurrentUser,
 	filters: AuditFilters,
 ) {
 	requireAdminActor(actor);
-	const { rows } = await loadAuditRows(filters, {
-		offset: 0,
-		limit: 10_000,
-	});
 
 	const lines = [
 		["When", "Who", "Action", "Entity type", "Entity id", "Summary", "Changes"]
 			.map(csvCell)
 			.join(","),
 	];
-	for (const row of rows) {
-		lines.push(
-			[
-				row.createdAt.toISOString(),
-				row.actorName,
-				row.action,
-				row.entityType,
-				row.entityId ?? "",
-				row.summary,
-				row.changes ?? "",
-			]
-				.map(csvCell)
-				.join(","),
-		);
+	for (let offset = 0; ; ) {
+		const rows = await loadAuditRowsPage(filters, {
+			offset,
+			limit: AUDIT_EXPORT_PAGE_SIZE,
+		});
+		for (const row of rows) {
+			lines.push(
+				[
+					row.createdAt.toISOString(),
+					row.actorName,
+					row.action,
+					row.entityType,
+					row.entityId ?? "",
+					row.summary,
+					row.changes ?? "",
+				]
+					.map(csvCell)
+					.join(","),
+			);
+		}
+		if (rows.length < AUDIT_EXPORT_PAGE_SIZE) break;
+		offset += rows.length;
 	}
 
 	return `${lines.join("\r\n")}\r\n`;

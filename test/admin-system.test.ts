@@ -403,6 +403,47 @@ describe("general configuration", () => {
 		expect(anonymous.statusCode).toBe(401);
 	});
 
+	test("keeps a concurrent edit to a key this request does not change", async () => {
+		const title = `Race ${run}`;
+		await injectAs(app, admin.session, "PUT", "/api/admin/settings", {
+			title,
+			defaultIssueTypeId: issueTypeId,
+			defaultPriorityId: null,
+		});
+
+		const client = await pool.connect();
+		try {
+			await client.query("begin");
+			await client.query(
+				"update app_settings set value = $1::jsonb where key = $2",
+				[JSON.stringify("concurrent"), siteTitleKey],
+			);
+			const pending = injectAs(
+				app,
+				admin.session,
+				"PUT",
+				"/api/admin/settings",
+				{
+					title,
+					defaultIssueTypeId: null,
+					defaultPriorityId: null,
+				},
+			);
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			await client.query("commit");
+			const response = await pending;
+			expect(response.statusCode).toBe(200);
+		} finally {
+			client.release();
+		}
+
+		const [row] = await db
+			.select({ value: appSettings.value })
+			.from(appSettings)
+			.where(eq(appSettings.key, siteTitleKey));
+		expect(row?.value).toBe("concurrent");
+	});
+
 	test("falls back to RVNA for a blank stored title", async () => {
 		await db
 			.insert(appSettings)
@@ -820,6 +861,50 @@ describe("audit log", () => {
 		expect(csv).toContain(`'+${auditTag}`);
 		expect(csv).toContain(`'-${auditTag}`);
 		expect(csv).toContain(`'@${auditTag}`);
+	});
+
+	test("defuses a formula behind a leading tab, carriage return or line feed", async () => {
+		const action = `${auditTag}.injected`;
+		for (const [index, prefix] of ["\t", "\r", "\n"].entries()) {
+			await audit(db, actorOf(admin, "admin"), {
+				action,
+				entityType: `${auditTag}-project`,
+				entityId: null,
+				summary: `${prefix}=cmd|' /C calc'!A0 ${index}`,
+			});
+		}
+
+		const csv = (
+			await injectAs(
+				app,
+				admin.session,
+				"GET",
+				`/api/admin/audit.csv?action=${action}`,
+			)
+		).body;
+		expect(csv).toContain("'\t=cmd");
+		expect(csv).toContain(`"'\r=cmd`);
+		expect(csv).toContain(`"'\n=cmd`);
+	});
+
+	test("exports every matching row past the page size", async () => {
+		const action = `${tag}-export-bulk`;
+		await pool.query(
+			`insert into audit_log (actor_name, action, entity_type, summary)
+			 select 'Bulk exporter', $1, $2, 'Bulk export row ' || g
+			 from generate_series(1, 10001) g`,
+			[action, `${tag}-bulk`],
+		);
+
+		const response = await injectAs(
+			app,
+			admin.session,
+			"GET",
+			`/api/admin/audit.csv?action=${action}`,
+		);
+		expect(response.statusCode).toBe(200);
+		const lines = response.body.split("\r\n").filter((line) => line !== "");
+		expect(lines).toHaveLength(10_002);
 	});
 
 	test("quotes a summary with a comma", async () => {
