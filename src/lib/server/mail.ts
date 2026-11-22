@@ -169,12 +169,16 @@ export async function deliverEmailBatch(
 	const sender = options.transport ?? transport;
 	if (!sender) return "skipped";
 
-	const [batch] = await db
-		.select()
+	const [stored] = await db
+		.select({
+			id: emailBatches.id,
+			userId: emailBatches.userId,
+			issueId: emailBatches.issueId,
+		})
 		.from(emailBatches)
 		.where(eq(emailBatches.id, batchId))
 		.limit(1);
-	if (!batch || batch.sentAt) return "skipped";
+	if (!stored) return "skipped";
 
 	const [recipient] = await db
 		.select({
@@ -184,47 +188,59 @@ export async function deliverEmailBatch(
 		})
 		.from(users)
 		.leftJoin(userSettings, eq(userSettings.userId, users.id))
-		.where(and(eq(users.id, batch.userId), eq(users.active, true)))
+		.where(and(eq(users.id, stored.userId), eq(users.active, true)))
 		.limit(1);
 
 	if (!recipient?.email || recipient.emailNotifications === false) {
 		return "skipped";
 	}
 
-	const format = recipient.emailFormat ?? "html";
-	const mail = renderNotificationMail({
-		appUrl: options.appUrl ?? env.APP_URL,
-		issue: {
-			id: batch.issueId,
-			key: batch.issueKey,
-			summary: batch.issueSummary,
-		},
-		events: batch.events,
-		reasons: [...new Set(batch.reasons)],
-		format,
-	});
-
-	const message: SendMailOptions = {
-		from: env.MAIL_FROM,
-		to: recipient.email,
-		subject: mail.subject,
-		text: mail.text,
-		headers: mail.headers,
-	};
-	if (format === "html") message.html = mail.html;
-
-	const redirectTo =
-		options.redirectTo === undefined
-			? env.MAIL_REDIRECT_TO
-			: options.redirectTo;
-	await sender.sendMail(
-		redirectTo ? redirectMessage(message, redirectTo) : message,
-	);
-
-	await db
+	// Claim the batch before sending. Appends stop at a claimed batch, and a
+	// second worker sees the claim instead of sending the same mail again.
+	const [batch] = await db
 		.update(emailBatches)
 		.set({ sentAt: new Date() })
-		.where(and(eq(emailBatches.id, batch.id), isNull(emailBatches.sentAt)));
+		.where(and(eq(emailBatches.id, stored.id), isNull(emailBatches.sentAt)))
+		.returning();
+	if (!batch) return "skipped";
+
+	const format = recipient.emailFormat ?? "html";
+	try {
+		const mail = renderNotificationMail({
+			appUrl: options.appUrl ?? env.APP_URL,
+			issue: {
+				id: batch.issueId,
+				key: batch.issueKey,
+				summary: batch.issueSummary,
+			},
+			events: batch.events,
+			reasons: [...new Set(batch.reasons)],
+			format,
+		});
+
+		const message: SendMailOptions = {
+			from: env.MAIL_FROM,
+			to: recipient.email,
+			subject: mail.subject,
+			text: mail.text,
+			headers: mail.headers,
+		};
+		if (format === "html") message.html = mail.html;
+
+		const redirectTo =
+			options.redirectTo === undefined
+				? env.MAIL_REDIRECT_TO
+				: options.redirectTo;
+		await sender.sendMail(
+			redirectTo ? redirectMessage(message, redirectTo) : message,
+		);
+	} catch (error) {
+		await db
+			.update(emailBatches)
+			.set({ sentAt: null })
+			.where(eq(emailBatches.id, batch.id));
+		throw error;
+	}
 
 	return "sent";
 }
