@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { CurrentUser } from "../auth.ts";
 import { loadFieldsForContext, optionTree } from "../custom-fields.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { requireProjectPermission } from "../projects/access.ts";
-import { issueTypes, projects } from "../schema.ts";
+import { issueTypes, projectIssueTypes, projects } from "../schema.ts";
 
 export const projectParams = z.object({ key: z.string().min(1).max(100) });
 
@@ -30,11 +30,21 @@ export async function getProjectCustomFields(
 	const issueTypeId = query.issueType || null;
 	if (issueTypeId) {
 		const [type] = await db
-			.select({ id: issueTypes.id })
+			.select({ id: issueTypes.id, enabled: projectIssueTypes.id })
 			.from(issueTypes)
+			.leftJoin(
+				projectIssueTypes,
+				and(
+					eq(projectIssueTypes.issueTypeId, issueTypes.id),
+					eq(projectIssueTypes.projectId, project.id),
+				),
+			)
 			.where(eq(issueTypes.id, issueTypeId))
 			.limit(1);
 		if (!type) throw new HttpError(404, "Issue type not found");
+		if (!type.enabled) {
+			throw new HttpError(400, "Issue type is not available in this project");
+		}
 	}
 
 	const includeDisabled =

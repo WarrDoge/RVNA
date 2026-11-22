@@ -676,6 +676,21 @@ describe("custom field administration", () => {
 		);
 		expect(missing.statusCode).toBe(404);
 
+		const [outside] = await db
+			.insert(issueTypes)
+			.values({
+				sourceId: `${tag}:type:outside`,
+				name: `${tag} Outside`,
+				subtask: false,
+			})
+			.returning();
+		extraTypeIds.push(outside.id);
+		const notInProject = await publicFields(outside.id);
+		expect(notInProject.statusCode).toBe(400);
+
+		const unknownType = await publicFields(randomUUID());
+		expect(unknownType.statusCode).toBe(404);
+
 		const replaced = await setContexts(both.id, []);
 		expect(replaced).toEqual([]);
 		const after = await publicFields(bugTypeId);
