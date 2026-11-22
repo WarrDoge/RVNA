@@ -79,6 +79,8 @@ import {
 	workflowForIssueType,
 } from "../workflows.ts";
 
+type BrowseContext = Awaited<ReturnType<typeof requireBrowseIssue>>;
+
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 
 function userRef(row: {
@@ -207,6 +209,7 @@ async function loadIssueRow(key: string) {
 			projectName: projects.name,
 			projectAvatarUrl: projectAvatarSql(projects.id),
 			projectType: projects.projectType,
+			projectArchived: projects.archived,
 			typeId: issueTypes.id,
 			typeName: issueTypes.name,
 			typeSubtask: issueTypes.subtask,
@@ -503,6 +506,7 @@ async function loadIssueDetail(key: string, viewer: PermissionUser) {
 		number: row.number,
 		summary: row.summary,
 		descriptionHtml: row.descriptionHtml,
+		projectArchived: row.projectArchived,
 		project: {
 			id: row.projectId,
 			key: row.projectKey,
@@ -1045,8 +1049,12 @@ export async function listResolutions() {
 		.orderBy(resolutions.sequence, resolutions.name);
 }
 
-export async function getIssue(actor: CurrentUser, key: string) {
-	await requireBrowseIssue(actor, key);
+export async function getIssue(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	if (!context) await requireBrowseIssue(actor, key);
 	const issue = await loadIssueDetail(key, actor);
 	if (!issue) throw new HttpError(404, "Issue not found");
 	return issue;
@@ -1786,18 +1794,15 @@ export async function transitionIssue(
 	return detail;
 }
 
-export async function listComments(actor: CurrentUser, key: string) {
-	await requireBrowseIssue(actor, key);
-
-	const [issue] = await db
-		.select({ id: issues.id, projectId: issues.projectId })
-		.from(issues)
-		.where(eq(issues.key, key.toUpperCase()))
-		.limit(1);
-	if (!issue) throw new HttpError(404, "Issue not found");
+export async function listComments(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	const issue = context ?? (await requireBrowseIssue(actor, key));
 
 	// Internal notes belong to the desk; a customer never sees them.
-	const agent = await isAgentForProject(actor, issue.projectId);
+	const agent = await isAgentForProject(actor, issue.project.id);
 	const author = alias(users, "comment_author");
 	const rows = await db
 		.select({
@@ -1984,15 +1989,12 @@ export async function deleteComment(
 	await recomputeIssueSla(row.issueId);
 }
 
-export async function listHistory(actor: CurrentUser, key: string) {
-	await requireBrowseIssue(actor, key);
-
-	const [issue] = await db
-		.select({ id: issues.id })
-		.from(issues)
-		.where(eq(issues.key, key.toUpperCase()))
-		.limit(1);
-	if (!issue) throw new HttpError(404, "Issue not found");
+export async function listHistory(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	const issue = context ?? (await requireBrowseIssue(actor, key));
 
 	const author = alias(users, "history_author");
 	const entries = await db
@@ -2046,15 +2048,12 @@ export async function listHistory(actor: CurrentUser, key: string) {
 	}));
 }
 
-export async function listWorklogs(actor: CurrentUser, key: string) {
-	await requireBrowseIssue(actor, key);
-
-	const [issue] = await db
-		.select({ id: issues.id })
-		.from(issues)
-		.where(eq(issues.key, key.toUpperCase()))
-		.limit(1);
-	if (!issue) throw new HttpError(404, "Issue not found");
+export async function listWorklogs(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	const issue = context ?? (await requireBrowseIssue(actor, key));
 
 	const author = alias(users, "worklog_author");
 	const rows = await db
