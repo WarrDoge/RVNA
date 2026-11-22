@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+	check,
 	index,
 	jsonb,
 	pgTable,
@@ -99,6 +100,10 @@ export const filterShares = pgTable(
 		unique("filter_shares_filter_group_unique").on(
 			table.filterId,
 			table.groupId,
+		),
+		check(
+			"filter_shares_one_target_check",
+			sql`num_nonnulls(${table.projectId}, ${table.groupId}) = 1`,
 		),
 	],
 );

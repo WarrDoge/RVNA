@@ -453,6 +453,21 @@ test("a filter can be shared with several projects and several groups", async ()
 	);
 });
 
+test("a share must target exactly one project or group", async () => {
+	const created = await createFilter(`One target ${run}`);
+	await expect(
+		pool.query(
+			"insert into filter_shares (filter_id, project_id, group_id) values ($1, $2, $3)",
+			[created.id, visibleProjectId, groupId],
+		),
+	).rejects.toThrow(/filter_shares_one_target_check/);
+	await expect(
+		pool.query("insert into filter_shares (filter_id) values ($1)", [
+			created.id,
+		]),
+	).rejects.toThrow(/filter_shares_one_target_check/);
+});
+
 test("a viewer does not receive the share list", async () => {
 	const created = await request("POST", "/api/filters", adminSession, {
 		name: `Viewer share ${run}`,
