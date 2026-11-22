@@ -18,7 +18,7 @@ import {
 	fixtureKey,
 	type SeedResult,
 } from "./fixtures/project.ts";
-import { buildServer, cleanupTestData, login } from "./helpers.ts";
+import { adminGroup, buildServer, cleanupTestData, login } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = randomUUID().slice(0, 8);
@@ -37,6 +37,7 @@ let jiraProject: SeedResult;
 let claimProject: SeedResult;
 let importedId: string;
 let adminGroupId: string;
+let appAdminGroupId: string;
 let globalSchemeCreated = false;
 const adminHolderGroup = `t-${run}-jira-admins`;
 
@@ -173,6 +174,19 @@ beforeAll(async () => {
 		.values({ name: adminHolderGroup })
 		.returning();
 	adminGroupId = holder.id;
+	const [appAdminGroup] = await db
+		.insert(groups)
+		.values({ name: adminGroup() })
+		.onConflictDoNothing()
+		.returning({ id: groups.id });
+	appAdminGroupId =
+		appAdminGroup?.id ??
+		(
+			await db
+				.select({ id: groups.id })
+				.from(groups)
+				.where(eq(groups.name, adminGroup()))
+		).id;
 });
 
 afterAll(async () => {
@@ -270,6 +284,33 @@ test("a group that holds the imported global ADMINISTER permission makes its mem
 			and(
 				eq(userGroups.userId, importedId),
 				eq(userGroups.groupId, adminGroupId),
+			),
+		);
+	expect(await isAdminAfterLogin(username, [])).toBe(false);
+});
+
+test("the administrator group in the claim compares without case", async () => {
+	expect(
+		await isAdminAfterLogin(`t-${run}-case`, [adminGroup().toUpperCase()]),
+	).toBe(true);
+	expect(await isAdminAfterLogin(`t-${run}-case`, [])).toBe(false);
+});
+
+test("a membership of the administrator group from an import or the app survives an SSO login", async () => {
+	await db.insert(userGroups).values({
+		userId: importedId,
+		groupId: appAdminGroupId,
+		source: "jira",
+	});
+	expect(await isAdminAfterLogin(username, [])).toBe(true);
+	expect(await isAdminAfterLogin(username, [claimGroup])).toBe(true);
+
+	await db
+		.delete(userGroups)
+		.where(
+			and(
+				eq(userGroups.userId, importedId),
+				eq(userGroups.groupId, appAdminGroupId),
 			),
 		);
 	expect(await isAdminAfterLogin(username, [])).toBe(false);

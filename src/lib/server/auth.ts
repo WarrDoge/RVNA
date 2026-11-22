@@ -209,10 +209,18 @@ export async function syncGroups(userId: string, groupNames: string[]) {
 			}
 		}
 
+		const memberships = await tx
+			.select({ name: groups.name })
+			.from(userGroups)
+			.innerJoin(groups, eq(groups.id, userGroups.groupId))
+			.where(eq(userGroups.userId, userId));
 		await tx
 			.update(users)
 			.set({
-				isAdmin: groupNames.includes(env.ADMIN_GROUP)
+				isAdmin: hasGroup(
+					{ groups: memberships.map((membership) => membership.name) },
+					env.ADMIN_GROUP,
+				)
 					? true
 					: sql`${users.adminLocal}`,
 			})
