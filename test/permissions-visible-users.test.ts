@@ -9,6 +9,7 @@ import {
 	projectRoleActors,
 	projects,
 	userGroups,
+	users,
 } from "../src/lib/server/schema.ts";
 import { makeUser, newRun } from "./admin-helpers.ts";
 import { cleanupTestData } from "./helpers.ts";
@@ -194,4 +195,41 @@ test("visible usernames include every grant shape and exclude inactive accounts"
 		expect(visible, label).toContain(`${tag}-${label}`);
 	}
 	expect(visible).not.toContain(`${tag}-hank`);
+});
+
+test("visible usernames use the browse check's case matching", async () => {
+	const groupName = `İquipe ${run}`;
+	const [group] = await db
+		.insert(groups)
+		.values({ name: groupName })
+		.returning({ id: groups.id });
+	const groupMember = await makeUser(run, "İdris");
+	const directMember = await makeUser(run, "İlker");
+	const grantSources = [`test:${run}:case-group`, `test:${run}:case-user`];
+	try {
+		await db.insert(userGroups).values({
+			userId: groupMember.id,
+			groupId: group.id,
+		});
+		await browse(schemeIds[0], grantSources[0], "group", groupName);
+		await browse(schemeIds[0], grantSources[1], "user", directMember.username);
+
+		const visible = await visibleUsernames({
+			id: viewer.id,
+			username: viewer.username,
+			groups: [],
+			isAdmin: false,
+		});
+		expect(visible).toContain(groupMember.username);
+		expect(visible).toContain(directMember.username);
+	} finally {
+		await db
+			.delete(permissionGrants)
+			.where(inArray(permissionGrants.sourceId, grantSources));
+		await db.delete(userGroups).where(eq(userGroups.groupId, group.id));
+		await db.delete(groups).where(eq(groups.id, group.id));
+		await db
+			.delete(users)
+			.where(inArray(users.id, [groupMember.id, directMember.id]));
+	}
 });

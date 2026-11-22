@@ -653,27 +653,39 @@ export async function visibleUsernames(user: PermissionUser) {
 
 	const filters = [eq(users.isAdmin, true)];
 	if (usernames.size > 0) {
-		filters.push(inArray(sql`lower(${users.username})`, [...usernames]));
+		const rows = await db
+			.select({ id: users.id, username: users.username })
+			.from(users);
+		const ids = rows
+			.filter((row) => usernames.has(lower(row.username)))
+			.map((row) => row.id);
+		if (ids.length > 0) filters.push(inArray(users.id, ids));
 	}
 	if (leadIds.size > 0) {
 		filters.push(inArray(users.id, [...leadIds]));
 	}
 	if (groupNames.size > 0) {
-		const names = [...groupNames];
-		filters.push(
-			exists(
-				db
-					.select({ one: sql`1` })
-					.from(userGroups)
-					.innerJoin(groups, eq(groups.id, userGroups.groupId))
-					.where(
-						and(
-							eq(userGroups.userId, users.id),
-							inArray(sql`lower(${groups.name})`, names),
+		const rows = await db
+			.select({ id: groups.id, name: groups.name })
+			.from(groups);
+		const ids = rows
+			.filter((row) => groupNames.has(lower(row.name)))
+			.map((row) => row.id);
+		if (ids.length > 0) {
+			filters.push(
+				exists(
+					db
+						.select({ one: sql`1` })
+						.from(userGroups)
+						.where(
+							and(
+								eq(userGroups.userId, users.id),
+								inArray(userGroups.groupId, ids),
+							),
 						),
-					),
-			),
-		);
+				),
+			);
+		}
 	}
 	const rows = await db
 		.select({ username: users.username })
