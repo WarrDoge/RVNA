@@ -375,7 +375,7 @@ export async function loadJiraSnapshot(
 		       (select count(*)::int from comments comment where comment.issue_id = issue.id) as comments,
 		       (select count(*)::int from worklogs worklog where worklog.issue_id = issue.id) as worklogs,
 		       (select count(*)::int from attachments attachment where attachment.issue_id = issue.id) as attachments,
-		       (select coalesce(sum(attachment.size), 0)::int from attachments attachment where attachment.issue_id = issue.id) as attachment_bytes,
+		       (select coalesce(sum(attachment.size), 0)::float8 from attachments attachment where attachment.issue_id = issue.id) as attachment_bytes,
 		       (select count(*)::int from issue_links link where link.source_issue_id = issue.id or link.target_issue_id = issue.id) as links,
 		       (select count(*)::int from watchers watcher where watcher.issue_id = issue.id) as watchers,
 		       (select count(*)::int from issues child where child.parent_id = issue.id) as subtasks,

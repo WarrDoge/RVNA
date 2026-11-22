@@ -401,6 +401,45 @@ describe("parity checks", () => {
 		expect(changed.changedSinceImport).toContain(`${projectKey}-1`);
 	});
 
+	test("attachment bytes above the integer range are reported as a number", async () => {
+		const issue = await pool.query<{ id: string }>(
+			"select id from issues where key = $1",
+			[`${projectKey}-1`],
+		);
+		const issueId = issue.rows[0]?.id ?? "";
+		await pool.query(
+			`insert into attachments (source_id, issue_id, file_name, size, storage_path, sha256)
+			 values ($1, $2, $3, $4, $5, $6), ($7, $2, $8, $9, $10, $11)`,
+			[
+				"parity-test-large-attachment",
+				issueId,
+				"large.bin",
+				2_147_483_647,
+				"parity-test/large",
+				"1".repeat(64),
+				"parity-test-small-attachment",
+				"small.bin",
+				1,
+				"parity-test/small",
+				"2".repeat(64),
+			],
+		);
+		try {
+			const tables = await loadTableSet(pool);
+			const database = await loadJiraSnapshot(pool, tables, {
+				projectKeys: [projectKey],
+			});
+			expect(database.issues.get(`${projectKey}-1`)?.attachmentBytes).toBe(
+				2_147_483_648,
+			);
+		} finally {
+			await pool.query("delete from attachments where source_id in ($1, $2)", [
+				"parity-test-large-attachment",
+				"parity-test-small-attachment",
+			]);
+		}
+	});
+
 	test("workflow resolution screens are compared per workflow", async () => {
 		const tables = await loadTableSet(pool);
 		const database = await loadJiraSnapshot(pool, tables, {
