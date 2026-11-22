@@ -12,9 +12,9 @@ export const tokenCreateSchema = z.object({
 });
 
 function tokenExpiresAt(expiresInDays: number | undefined) {
-	return expiresInDays
-		? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
-		: null;
+	return expiresInDays === undefined
+		? null
+		: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
 }
 
 export type TokenView = {
@@ -48,29 +48,32 @@ export async function listTokens(actor: CurrentUser): Promise<TokenView[]> {
 
 export async function createToken(
 	actor: CurrentUser,
-	input: { name: string; expiresInDays?: number },
+	input: z.infer<typeof tokenCreateSchema>,
 ): Promise<CreatedToken> {
 	const value = `rvna_${randomValue()}`;
 	const expiresAt = tokenExpiresAt(input.expiresInDays);
 
-	const [row] = await db
-		.insert(apiTokens)
-		.values({
-			userId: actor.id,
-			name: input.name,
-			tokenHash: sha256(value),
-			expiresAt,
-		})
-		.returning();
+	const row = await db.transaction(async (tx) => {
+		const [created] = await tx
+			.insert(apiTokens)
+			.values({
+				userId: actor.id,
+				name: input.name,
+				tokenHash: sha256(value),
+				expiresAt,
+			})
+			.returning();
 
-	await recordAudit(db, {
-		actorId: actor.id,
-		actorName: actor.displayName,
-		action: "token.create",
-		entityType: "api_token",
-		entityId: row.id,
-		summary: `Created API token "${row.name}"`,
-		changes: { to: { id: row.id, name: row.name } },
+		await recordAudit(tx, {
+			actorId: actor.id,
+			actorName: actor.displayName,
+			action: "token.create",
+			entityType: "api_token",
+			entityId: created.id,
+			summary: `Created API token "${created.name}"`,
+			changes: { to: { id: created.id, name: created.name } },
+		});
+		return created;
 	});
 
 	return { ...view(row), token: value };

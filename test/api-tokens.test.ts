@@ -1,10 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { sha256 } from "../src/lib/server/auth.ts";
+import { type CurrentUser, sha256 } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
-import { apiTokens } from "../src/lib/server/schema.ts";
-import { buildServer, cleanupTestData, login } from "./helpers.ts";
+import { apiTokens, users } from "../src/lib/server/schema.ts";
+import { auditLog } from "../src/lib/server/schema-admin.ts";
+import { createToken as createTokenDirect } from "../src/lib/server/tokens/service.ts";
+import {
+	buildServer,
+	cleanupTestData,
+	login,
+	swapTransaction,
+} from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = randomUUID().slice(0, 8);
@@ -273,4 +280,96 @@ test("creating and revoking a token writes an audit row without the token value"
 	});
 	expect(afterRevoke.rows[1].summary).toContain("Audited token");
 	expect(JSON.stringify(afterRevoke.rows)).not.toContain(token);
+});
+
+async function tokenActor(): Promise<CurrentUser> {
+	const [row] = await db
+		.select()
+		.from(users)
+		.where(eq(users.username, username("tokens")));
+	if (!row) throw new Error("user missing");
+	return {
+		id: row.id,
+		username: row.username,
+		displayName: row.displayName,
+		email: row.email,
+		avatarUrl: null,
+		groups: [],
+		isAdmin: false,
+		mustChangePassword: false,
+		hasPassword: true,
+	};
+}
+
+function failAuditInsert() {
+	const target = db as unknown as { insert: typeof db.insert };
+	const original = target.insert;
+	target.insert = ((table: Parameters<typeof db.insert>[0]) => {
+		if (table === auditLog) throw new Error("audit unavailable");
+		return original(table);
+	}) as typeof db.insert;
+	return () => {
+		target.insert = original;
+	};
+}
+
+test("a token asked to expire in zero days does not become permanent", async () => {
+	const actor = await tokenActor();
+	const created = await createTokenDirect(actor, {
+		name: "Zero days",
+		expiresInDays: 0,
+	});
+	try {
+		expect(created.expiresAt).not.toBeNull();
+		expect(Date.parse(created.expiresAt as string)).toBeLessThanOrEqual(
+			Date.now(),
+		);
+	} finally {
+		await db.delete(apiTokens).where(eq(apiTokens.id, created.id));
+	}
+});
+
+test("a failed audit write does not leave an orphaned token", async () => {
+	const actor = await tokenActor();
+	const undoInsert = failAuditInsert();
+	const realTransaction = db.transaction.bind(db);
+	const undoTransaction = swapTransaction(((
+		callback: Parameters<typeof realTransaction>[0],
+	) =>
+		realTransaction(async (tx) => {
+			const failing = new Proxy(tx, {
+				get(target, property) {
+					if (property === "insert") {
+						return (table: unknown) => {
+							if (table === auditLog) throw new Error("audit unavailable");
+							return target.insert(table as never);
+						};
+					}
+					const value = Reflect.get(target, property);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			return callback(failing);
+		})) as typeof db.transaction);
+	try {
+		await expect(
+			createTokenDirect(actor, { name: "Orphan check" }),
+		).rejects.toThrow("audit unavailable");
+	} finally {
+		undoTransaction();
+		undoInsert();
+	}
+
+	const orphaned = await db
+		.select()
+		.from(apiTokens)
+		.where(
+			and(eq(apiTokens.userId, actor.id), eq(apiTokens.name, "Orphan check")),
+		);
+	await db
+		.delete(apiTokens)
+		.where(
+			and(eq(apiTokens.userId, actor.id), eq(apiTokens.name, "Orphan check")),
+		);
+	expect(orphaned).toEqual([]);
 });
