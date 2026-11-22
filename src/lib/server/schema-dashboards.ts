@@ -11,6 +11,9 @@ import {
 } from "drizzle-orm/pg-core";
 import { users } from "./schema.ts";
 
+/** Jira's built-in System Dashboard; the REST list marks no default, so the id identifies it. */
+export const SYSTEM_DASHBOARD_ID = "10000";
+
 const importedAt = {
 	createdAt: timestamp("created_at", { withTimezone: true })
 		.notNull()
