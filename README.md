@@ -970,7 +970,8 @@ printf '%s\n' "$PASSWORD" | npm run user:create -- --username admin --admin --pa
 ```
 
 `--must-change` forces a new password at the next login. Running it again for an existing username
-sets a new password (and, with `--admin`, makes the account a local administrator).
+sets a new password (and, with `--admin`, makes the account a local administrator); an account that
+signs in with SSO is refused, because a local password would bypass the provider.
 
 Or set `BOOTSTRAP_ADMIN_USERNAME` and `BOOTSTRAP_ADMIN_PASSWORD` for the first start: when no
 administrator exists yet, the server creates that account with "must change password" set and logs

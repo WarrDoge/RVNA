@@ -1,4 +1,5 @@
 import { eq, sql } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
 import { recordAudit } from "./local-auth.ts";
@@ -28,9 +29,22 @@ export function validateUsername(username: string) {
 		: "The username must be 1 to 100 characters: letters, digits and . _ @ + -";
 }
 
+/** Empty clears the address; anything else must parse. */
+function emailValue(email: string | undefined) {
+	if (email === undefined) return { email: undefined, problem: null };
+	const trimmed = email.trim();
+	if (trimmed === "") return { email: null, problem: null };
+	if (!z.email().safeParse(trimmed).success) {
+		return { email: null, problem: "Enter a valid email address" };
+	}
+	return { email: trimmed, problem: null };
+}
+
 export type LocalUserInput = {
 	username: string;
 	password: string;
+	/** A hash computed before the transaction, for callers that hold a lock. */
+	passwordHash?: string;
 	displayName?: string;
 	email?: string;
 	admin?: boolean;
@@ -49,10 +63,17 @@ export async function saveLocalUser(
 		validateUsername(input.username) ??
 		validatePassword(input.password, input.username);
 	if (problem) throw new InvalidUserInput(problem);
-	const passwordHash = await hashPassword(input.password);
+	const email = emailValue(input.email);
+	if (email.problem) throw new InvalidUserInput(email.problem);
+	const passwordHash =
+		input.passwordHash ?? (await hashPassword(input.password));
 	const now = new Date();
 
 	return database.transaction(async (tx) => {
+		// Two spellings of one name must not both insert; lock the name without case.
+		await tx.execute(
+			sql`select pg_advisory_xact_lock(hashtext(${input.username.toLowerCase()})::bigint)`,
+		);
 		const [existing] = await tx
 			.select()
 			.from(users)
@@ -66,6 +87,9 @@ export async function saveLocalUser(
 					`The user ${existing.username} already exists. Use "npm run user:create" to change its password.`,
 				);
 			}
+			if (existing.oidcSub) {
+				throw new InvalidUserInput("This account signs in with SSO");
+			}
 			await tx
 				.update(users)
 				.set({
@@ -74,7 +98,7 @@ export async function saveLocalUser(
 					mustChangePassword: input.mustChangePassword ?? false,
 					...(input.admin && { adminLocal: true, isAdmin: true }),
 					...(input.displayName && { displayName: input.displayName }),
-					...(input.email && { email: input.email }),
+					...(email.email !== undefined && { email: email.email }),
 					updatedAt: now,
 				})
 				.where(eq(users.id, existing.id));
@@ -100,7 +124,7 @@ export async function saveLocalUser(
 			.values({
 				username: input.username,
 				displayName: input.displayName || input.username,
-				email: input.email || null,
+				email: email.email ?? null,
 				passwordHash,
 				passwordChangedAt: now,
 				mustChangePassword: input.mustChangePassword ?? false,
@@ -138,10 +162,15 @@ export async function bootstrapAdmin(
 	database: Executor = db,
 ): Promise<"created" | "skipped"> {
 	const { username, password } = config;
-	if (!username || !password) return "skipped";
+	if (!username && !password) return "skipped";
+	if (!username || !password) {
+		console.warn(
+			"bootstrap administrator skipped: set both BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD",
+		);
+		return "skipped";
+	}
 
 	const created = await database.transaction(async (tx) => {
-		await tx.execute(sql`select pg_advisory_xact_lock(${BOOTSTRAP_LOCK})`);
 		const [admin] = await tx
 			.select({ id: users.id })
 			.from(users)
@@ -149,10 +178,28 @@ export async function bootstrapAdmin(
 			.limit(1);
 		if (admin) return false;
 
+		const problem =
+			validateUsername(username) ?? validatePassword(password, username);
+		if (problem) {
+			throw new Error(
+				`BOOTSTRAP_ADMIN_USERNAME or BOOTSTRAP_ADMIN_PASSWORD is not usable: ${problem}`,
+			);
+		}
+		const passwordHash = await hashPassword(password);
+
+		await tx.execute(sql`select pg_advisory_xact_lock(${BOOTSTRAP_LOCK})`);
+		const [raced] = await tx
+			.select({ id: users.id })
+			.from(users)
+			.where(eq(users.isAdmin, true))
+			.limit(1);
+		if (raced) return false;
+
 		try {
 			await saveLocalUser(tx, {
 				username,
 				password,
+				passwordHash,
 				admin: true,
 				mustChangePassword: true,
 				createOnly: true,
@@ -162,10 +209,12 @@ export async function bootstrapAdmin(
 			if (error instanceof InvalidUserInput) {
 				throw new Error(
 					`BOOTSTRAP_ADMIN_USERNAME or BOOTSTRAP_ADMIN_PASSWORD is not usable: ${error.message}`,
+					{ cause: error },
 				);
 			}
 			throw new Error(
 				`bootstrap administrator could not be created: ${safeMessage(error)}`,
+				{ cause: error },
 			);
 		}
 		return true;

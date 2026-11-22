@@ -1,13 +1,17 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
-import { bootstrapAdmin } from "../src/lib/server/bootstrap.ts";
+import {
+	bootstrapAdmin,
+	InvalidUserInput,
+	saveLocalUser,
+} from "../src/lib/server/bootstrap.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
-import { verifyPassword } from "../src/lib/server/passwords.ts";
+import { hashPassword, verifyPassword } from "../src/lib/server/passwords.ts";
 import { apiTokens, sessions, users } from "../src/lib/server/schema.ts";
 import { makeUser, newRun } from "./admin-helpers.ts";
-import { cleanupTestData } from "./helpers.ts";
+import { cleanupTestData, swapTransaction } from "./helpers.ts";
 
 const run = newRun();
 const name = (label: string) => `t-${run}-${label}`;
@@ -96,6 +100,9 @@ test("does nothing when an administrator already exists or nothing is configured
 			await db.select().from(users).where(eq(users.username, username)),
 		).toHaveLength(0);
 		expect(await bootstrapAdmin({})).toBe("skipped");
+		expect(
+			await bootstrapAdmin({ username: name("never2"), password: "short" }),
+		).toBe("skipped");
 	} finally {
 		log.mockRestore();
 	}
@@ -128,6 +135,198 @@ test("an unusable password or a taken username stops the start without leaking t
 	} finally {
 		log.mockRestore();
 	}
+});
+
+test("concurrent creates of one name in two spellings make one account", async () => {
+	const username = name("race");
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	const fn = `user_delay_${run}`;
+	await pool.query(`drop trigger if exists ${fn} on users`);
+	await pool.query(`drop function if exists ${fn}()`);
+	await pool.query(
+		`create function ${fn}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.4); return new; end $$`,
+	);
+	await pool.query(
+		`create trigger ${fn} before insert on users for each row when (lower(new.username) = '${username.toLowerCase()}') execute function ${fn}()`,
+	);
+	try {
+		const first = saveLocalUser(db, {
+			username,
+			password,
+			actorName: "test",
+		});
+		const second = saveLocalUser(db, {
+			username: username.toUpperCase(),
+			password,
+			actorName: "test",
+		});
+		await both;
+		restore();
+		release();
+		await Promise.all([first, second]);
+
+		const rows = await db
+			.select()
+			.from(users)
+			.where(sql`lower(${users.username}) = ${username.toLowerCase()}`);
+		expect(rows).toHaveLength(1);
+	} finally {
+		restore();
+		await pool.query(`drop trigger if exists ${fn} on users`);
+		await pool.query(`drop function if exists ${fn}()`);
+		await db
+			.delete(users)
+			.where(sql`lower(${users.username}) = ${username.toLowerCase()}`);
+	}
+});
+
+test("a local password cannot be set on an account that signs in with SSO", async () => {
+	const username = name("sso");
+	const [existing] = await db
+		.insert(users)
+		.values({
+			username,
+			displayName: `SSO ${run}`,
+			oidcSub: `sub-${username}`,
+		})
+		.returning();
+	try {
+		await expect(
+			saveLocalUser(db, { username, password, actorName: "test" }),
+		).rejects.toBeInstanceOf(InvalidUserInput);
+		const [after] = await db
+			.select()
+			.from(users)
+			.where(eq(users.id, existing.id));
+		expect(after.passwordHash).toBeNull();
+	} finally {
+		await db.delete(users).where(eq(users.id, existing.id));
+	}
+});
+
+test("saveLocalUser validates an email and lets an empty address clear it", async () => {
+	const username = name("email");
+	const invalid = await db
+		.transaction(async (tx) => {
+			await saveLocalUser(tx, {
+				username,
+				password,
+				email: "not-an-address",
+				actorName: "test",
+			});
+			throw new Rollback();
+		})
+		.catch((error: unknown) => error);
+	expect(invalid).toBeInstanceOf(InvalidUserInput);
+	expect((invalid as Error).message).toContain("valid email");
+
+	await expect(
+		db.transaction(async (tx) => {
+			await saveLocalUser(tx, {
+				username,
+				password,
+				email: `${username}@example.test`,
+				actorName: "test",
+			});
+			await saveLocalUser(tx, {
+				username,
+				password,
+				email: "",
+				actorName: "test",
+			});
+			const [row] = await tx
+				.select()
+				.from(users)
+				.where(eq(users.username, username));
+			expect(row.email).toBeNull();
+			throw new Rollback();
+		}),
+	).rejects.toThrow(Rollback);
+});
+
+test("a partially configured bootstrap warns and skips", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		expect(await bootstrapAdmin({ username: name("partial") })).toBe("skipped");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("BOOTSTRAP_ADMIN_PASSWORD"),
+		);
+	} finally {
+		warn.mockRestore();
+	}
+});
+
+test("saveLocalUser can use a hash computed before its transaction", async () => {
+	const username = name("hash");
+	const passwordHash = await hashPassword(password);
+	await expect(
+		db.transaction(async (tx) => {
+			await saveLocalUser(tx, {
+				username,
+				password,
+				passwordHash,
+				actorName: "test",
+			});
+			const [row] = await tx
+				.select()
+				.from(users)
+				.where(eq(users.username, username));
+			expect(row.passwordHash).toBe(passwordHash);
+			expect((await verifyPassword(password, row.passwordHash)).ok).toBe(true);
+			throw new Rollback();
+		}),
+	).rejects.toThrow(Rollback);
+});
+
+test("a driver failure keeps its cause in the bootstrap error", async () => {
+	const driverError = new Error("driver exploded");
+	const chain = {
+		from: () => chain,
+		where: () => chain,
+		for: () => chain,
+		limit: () => Promise.resolve([]),
+	};
+	const tx: {
+		execute: () => Promise<undefined>;
+		select: (...args: unknown[]) => typeof chain;
+		insert: (...args: unknown[]) => never;
+		transaction: (
+			callback: (value: unknown) => Promise<unknown>,
+		) => Promise<unknown>;
+	} = {
+		execute: async () => undefined,
+		select: () => chain,
+		insert: () => {
+			throw driverError;
+		},
+		transaction: async (callback) => callback(tx),
+	};
+	const database = {
+		transaction: async (callback: (value: typeof tx) => Promise<unknown>) =>
+			callback(tx),
+	};
+	const error = await bootstrapAdmin(
+		{ username: name("cause"), password },
+		database as unknown as Parameters<typeof bootstrapAdmin>[1],
+	).catch((caught: unknown) => caught);
+	expect(error).toBeInstanceOf(Error);
+	expect((error as Error).message).toContain("driver exploded");
+	expect((error as Error).cause).toBe(driverError);
 });
 
 function cli(args: string[], stdin?: string) {
