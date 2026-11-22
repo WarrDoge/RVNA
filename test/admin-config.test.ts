@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { db, runMigrations } from "../src/lib/server/db.ts";
+import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	issueHistory,
 	issueHistoryItems,
@@ -744,6 +744,32 @@ describe("statuses", () => {
 			"status.delete",
 		]);
 		expect(audit.every((entry) => entry.actorName === adminName)).toBe(true);
+	});
+
+	test("answers 404 when the status disappears during the update", async () => {
+		const row = await createRow<StatusRow>(
+			"/api/admin/statuses",
+			{ name: name("Vanishing status"), category: "new" },
+			created.statuses,
+		);
+		const fn = `cfg_delete_status_${run}`;
+		await pool.query(`drop trigger if exists ${fn} on statuses`);
+		await pool.query(`drop function if exists ${fn}()`);
+		await pool.query(
+			`create function ${fn}() returns trigger language plpgsql as $$ begin delete from statuses where id = new.id; return new; end $$`,
+		);
+		await pool.query(
+			`create trigger ${fn} after update on statuses for each row when (new.id = '${row.id}') execute function ${fn}()`,
+		);
+		try {
+			const patched = await call("PATCH", `/api/admin/statuses/${row.id}`, {
+				category: "done",
+			});
+			expect(patched.statusCode, patched.body).toBe(404);
+		} finally {
+			await pool.query(`drop trigger if exists ${fn} on statuses`);
+			await pool.query(`drop function if exists ${fn}()`);
+		}
 	});
 
 	test("rejects duplicates and invalid categories", async () => {

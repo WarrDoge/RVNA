@@ -175,6 +175,11 @@ export const conflictSchema = z.object({
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+function requireRow<T>(row: T | undefined, message: string): T {
+	if (!row) throw new HttpError(404, message);
+	return row;
+}
+
 type HistoryItem = {
 	field: string;
 	fieldType: string;
@@ -431,11 +436,16 @@ export async function updateIssueType(
 		});
 	}
 
-	const updated = await db
-		.select()
-		.from(issueTypes)
-		.where(eq(issueTypes.id, row.id))
-		.limit(1);
+	const updated = requireRow(
+		(
+			await db
+				.select()
+				.from(issueTypes)
+				.where(eq(issueTypes.id, row.id))
+				.limit(1)
+		)[0],
+		"Issue type not found",
+	);
 	const [projects] = await db
 		.select({
 			count: sql<number>`count(distinct ${projectIssueTypes.projectId})::int`,
@@ -444,11 +454,11 @@ export async function updateIssueType(
 		.where(eq(projectIssueTypes.issueTypeId, row.id));
 
 	return {
-		id: updated[0].id,
-		name: updated[0].name,
-		description: updated[0].description,
-		subtask: updated[0].subtask,
-		iconUrl: updated[0].iconUrl,
+		id: updated.id,
+		name: updated.name,
+		description: updated.description,
+		subtask: updated.subtask,
+		iconUrl: updated.iconUrl,
 		issueCount,
 		projectCount: projects?.count ?? 0,
 	};
@@ -715,11 +725,16 @@ export async function updatePriority(
 		});
 	}
 
-	const [updated] = await db
-		.select()
-		.from(priorities)
-		.where(eq(priorities.id, row.id))
-		.limit(1);
+	const updated = requireRow(
+		(
+			await db
+				.select()
+				.from(priorities)
+				.where(eq(priorities.id, row.id))
+				.limit(1)
+		)[0],
+		"Priority not found",
+	);
 	const [counts] = await db
 		.select({ count: sql<number>`count(*)::int` })
 		.from(issues)
@@ -1024,11 +1039,16 @@ export async function updateResolution(
 		});
 	}
 
-	const [updated] = await db
-		.select()
-		.from(resolutions)
-		.where(eq(resolutions.id, row.id))
-		.limit(1);
+	const updated = requireRow(
+		(
+			await db
+				.select()
+				.from(resolutions)
+				.where(eq(resolutions.id, row.id))
+				.limit(1)
+		)[0],
+		"Resolution not found",
+	);
 	const [counts] = await db
 		.select({ count: sql<number>`count(*)::int` })
 		.from(issues)
@@ -1323,11 +1343,12 @@ export async function updateStatus(
 		});
 	}
 
-	const [updated] = await db
-		.select()
-		.from(statuses)
-		.where(eq(statuses.id, row.id))
-		.limit(1);
+	const updated = requireRow(
+		(
+			await db.select().from(statuses).where(eq(statuses.id, row.id)).limit(1)
+		)[0],
+		"Status not found",
+	);
 	const [counts] = await db
 		.select({ count: sql<number>`count(*)::int` })
 		.from(issues)
@@ -1581,11 +1602,12 @@ export async function updateLinkType(
 		});
 	}
 
-	const [updated] = await db
-		.select()
-		.from(linkTypes)
-		.where(eq(linkTypes.id, row.id))
-		.limit(1);
+	const updated = requireRow(
+		(
+			await db.select().from(linkTypes).where(eq(linkTypes.id, row.id)).limit(1)
+		)[0],
+		"Link type not found",
+	);
 	const [counts] = await db
 		.select({ count: sql<number>`count(*)::int` })
 		.from(issueLinks)
