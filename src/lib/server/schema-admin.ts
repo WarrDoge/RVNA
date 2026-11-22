@@ -31,6 +31,8 @@ export const auditLog = pgTable(
 	(table) => [
 		index("audit_log_created_idx").on(table.createdAt),
 		index("audit_log_action_idx").on(table.action),
+		index("audit_log_entity_type_idx").on(table.entityType),
+		index("audit_log_actor_id_idx").on(table.actorId),
 	],
 );
 
@@ -73,7 +75,8 @@ export const workflowDrafts = pgTable("workflow_drafts", {
 	definition: jsonb("definition").notNull(),
 	updatedAt: timestamp("updated_at", { withTimezone: true })
 		.notNull()
-		.defaultNow(),
+		.defaultNow()
+		.$onUpdate(() => new Date()),
 	updatedBy: uuid("updated_by").references(() => users.id, {
 		onDelete: "set null",
 	}),

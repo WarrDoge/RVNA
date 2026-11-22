@@ -774,6 +774,15 @@ describe("audit log", () => {
 		expect(users.entries[0].entityType).toBe(`${auditTag}-user`);
 	});
 
+	test("the audit filters have supporting indexes", async () => {
+		const result = await pool.query<{ indexname: string }>(
+			"select indexname from pg_indexes where tablename = 'audit_log'",
+		);
+		const names = result.rows.map((row) => row.indexname);
+		expect(names).toContain("audit_log_entity_type_idx");
+		expect(names).toContain("audit_log_actor_id_idx");
+	});
+
 	test("filters by a date range", async () => {
 		const now = Date.now();
 		const past = new Date(now - 60 * 60 * 1000).toISOString();
