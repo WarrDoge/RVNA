@@ -1,7 +1,10 @@
 import { z } from "zod";
 
 export const portalParams = z.object({ id: z.uuid() });
-export const requestParams = z.object({ id: z.uuid(), key: z.string().min(1) });
+export const requestParams = z.object({
+	id: z.uuid(),
+	key: z.string().min(1).max(100),
+});
 export const formParams = z.object({
 	id: z.uuid(),
 	requestTypeId: z.uuid(),
@@ -137,13 +140,16 @@ export const commentBodySchema = z.object({
 
 export const commentCreatedSchema = z.object({ id: z.uuid() });
 
+const queueSummarySchema = z.object({
+	id: z.uuid(),
+	name: z.string(),
+	jql: z.string(),
+});
+
 export const queueListSchema = z.object({
 	isAgent: z.boolean(),
 	queues: z.array(
-		z.object({
-			id: z.uuid(),
-			name: z.string(),
-			jql: z.string(),
+		queueSummarySchema.extend({
 			parentId: z.uuid().nullable(),
 			sequence: z.number().int(),
 			issueCount: z.number().int().nullable(),
@@ -152,24 +158,28 @@ export const queueListSchema = z.object({
 	),
 });
 
+const cellKindSchema = z.enum([
+	"key",
+	"summary",
+	"type",
+	"status",
+	"priority",
+	"user",
+	"text",
+	"date",
+	"components",
+	"sla",
+]);
+
+const slaStateSchema = z.enum(["ongoing", "paused", "completed", "breached"]);
+
 export const cellSchema = z.object({
-	kind: z.enum([
-		"key",
-		"summary",
-		"type",
-		"status",
-		"priority",
-		"user",
-		"text",
-		"date",
-		"components",
-		"sla",
-	]),
+	kind: cellKindSchema,
 	text: z.string().nullable(),
 	href: z.string().nullable(),
 	category: z.string().nullable(),
 	iconColor: z.string().nullable(),
-	state: z.enum(["ongoing", "paused", "completed", "breached"]).nullable(),
+	state: slaStateSchema.nullable(),
 	remainingMinutes: z.number().int().nullable(),
 	breached: z.boolean().nullable(),
 	names: z.array(z.string()),
@@ -181,23 +191,12 @@ export const queueQuerySchema = z.object({
 });
 
 export const queuePageSchema = z.object({
-	queue: z.object({ id: z.uuid(), name: z.string(), jql: z.string() }),
+	queue: queueSummarySchema,
 	columns: z.array(
 		z.object({
 			id: z.string(),
 			label: z.string(),
-			kind: z.enum([
-				"key",
-				"summary",
-				"type",
-				"status",
-				"priority",
-				"user",
-				"text",
-				"date",
-				"components",
-				"sla",
-			]),
+			kind: cellKindSchema,
 		}),
 	),
 	startAt: z.number().int(),
@@ -223,7 +222,7 @@ export const slaSchema = z.object({
 			cycles: z.array(
 				z.object({
 					cycle: z.number().int(),
-					state: z.enum(["ongoing", "paused", "completed", "breached"]),
+					state: slaStateSchema,
 					startedAt: z.iso.datetime(),
 					stoppedAt: z.iso.datetime().nullable(),
 					goalMinutes: z.number().int().nullable(),

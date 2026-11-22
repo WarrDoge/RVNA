@@ -743,6 +743,15 @@ describe("portal API", () => {
 		expect(body.groups[1].requestTypes[0].name).toBe("Get access");
 	});
 
+	test("a request key longer than the issue key limit is rejected", async () => {
+		const response = await inject(
+			"GET",
+			`/api/servicedesk/portals/${deskId}/requests/${"A".repeat(101)}`,
+			customerSession,
+		);
+		expect(response.statusCode).toBe(400);
+	});
+
 	test("the portal detail counts only its own open requests", async () => {
 		const [type] = await db
 			.select({ issueTypeId: requestTypes.issueTypeId })
