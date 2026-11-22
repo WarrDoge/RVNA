@@ -14,6 +14,8 @@ import { requireAdminActor } from "../permissions.ts";
 import { apiTokens, groups, sessions, userGroups, users } from "../schema.ts";
 import { audit } from "./audit.ts";
 
+const adminGuardLockKey = 7_418_529_632;
+
 export const groupRefSchema = z.object({
 	id: z.uuid(),
 	name: z.string(),
@@ -465,12 +467,6 @@ export async function updateUser(
 		}
 	}
 
-	if (current.adminLocal && !nextAdminLocal) {
-		if ((await otherActiveAdmins(db, current.id)) === 0) {
-			throw new HttpError(409, "You cannot remove the last administrator");
-		}
-	}
-
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
 	if (nextDisplayName !== current.displayName) {
@@ -487,7 +483,23 @@ export async function updateUser(
 	}
 
 	await db.transaction(async (tx) => {
+		if (body.isAdmin === false) {
+			await tx.execute(
+				sql`select pg_advisory_xact_lock(${adminGuardLockKey}::bigint)`,
+			);
+		}
+		const [fresh] = await tx
+			.select({ isAdmin: users.isAdmin })
+			.from(users)
+			.where(eq(users.id, current.id))
+			.for("update");
+		if (!fresh) throw new HttpError(404, "User not found");
 		const isAdmin = nextAdminLocal || (await inAdminGroup(tx, current.id));
+		if (fresh.isAdmin && !isAdmin) {
+			if ((await otherActiveAdmins(tx, current.id)) === 0) {
+				throw new HttpError(409, "You cannot remove the last administrator");
+			}
+		}
 		await tx
 			.update(users)
 			.set({

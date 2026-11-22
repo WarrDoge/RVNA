@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { sha256 } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
@@ -12,7 +12,7 @@ import {
 	users,
 } from "../src/lib/server/schema.ts";
 import { injectAs, makeUser, newRun, type TestUser } from "./admin-helpers.ts";
-import { buildServer, cleanupTestData } from "./helpers.ts";
+import { buildServer, cleanupTestData, swapTransaction } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = newRun();
@@ -366,6 +366,124 @@ test("an SSO admin group keeps is_admin after admin_local is cleared", async () 
 
 	await db.delete(userGroups).where(eq(userGroups.userId, member.id));
 	await patchUser(member.id, { isAdmin: false });
+});
+
+async function withOnlyAdmins<T>(keep: string[], run: () => Promise<T>) {
+	const active = await db
+		.select({ id: users.id })
+		.from(users)
+		.where(and(eq(users.active, true), eq(users.isAdmin, true)));
+	const hidden = active.map((row) => row.id).filter((id) => !keep.includes(id));
+	try {
+		if (hidden.length > 0) {
+			await db
+				.update(users)
+				.set({ active: false })
+				.where(inArray(users.id, hidden));
+		}
+		return await run();
+	} finally {
+		if (hidden.length > 0) {
+			await db
+				.update(users)
+				.set({ active: true })
+				.where(inArray(users.id, hidden));
+		}
+	}
+}
+
+test("a group administrator can be demoted locally", async () => {
+	const { env } = await import("../src/lib/server/env.ts");
+	await db
+		.insert(groups)
+		.values({ name: env.ADMIN_GROUP, local: false })
+		.onConflictDoNothing();
+	const [group] = await db
+		.select()
+		.from(groups)
+		.where(eq(groups.name, env.ADMIN_GROUP));
+	const member = await makeUser(run, "groupadmin");
+	await db
+		.update(users)
+		.set({ adminLocal: true, isAdmin: true })
+		.where(eq(users.id, member.id));
+	await db
+		.insert(userGroups)
+		.values({ userId: member.id, groupId: group.id })
+		.onConflictDoNothing();
+
+	await withOnlyAdmins([member.id], async () => {
+		const patched = await injectAs(
+			app,
+			member.session,
+			"PATCH",
+			`/api/admin/users/${member.id}`,
+			{ isAdmin: false },
+		);
+		expect(patched.statusCode, patched.body).toBe(200);
+		expect(patched.json().user).toMatchObject({
+			adminLocal: false,
+			isAdmin: true,
+		});
+	});
+});
+
+test("concurrent demotions keep one administrator", async () => {
+	const first = await makeUser(run, "demote-first", { admin: true });
+	const second = await makeUser(run, "demote-second", { admin: true });
+	await db
+		.update(users)
+		.set({ adminLocal: true, isAdmin: true })
+		.where(inArray(users.id, [first.id, second.id]));
+
+	await withOnlyAdmins([first.id, second.id], async () => {
+		const original = db.transaction.bind(db);
+		let entered = 0;
+		let release = () => {};
+		let bothEntered = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const both = new Promise<void>((resolve) => {
+			bothEntered = resolve;
+		});
+		const restore = swapTransaction(async (callback) => {
+			entered += 1;
+			if (entered === 2) bothEntered();
+			await gate;
+			return original(callback);
+		});
+		try {
+			const left = injectAs(
+				app,
+				first.session,
+				"PATCH",
+				`/api/admin/users/${first.id}`,
+				{ isAdmin: false },
+			);
+			const right = injectAs(
+				app,
+				first.session,
+				"PATCH",
+				`/api/admin/users/${second.id}`,
+				{ isAdmin: false },
+			);
+			await both;
+			restore();
+			release();
+			const responses = await Promise.all([left, right]);
+			expect(responses.map((response) => response.statusCode).sort()).toEqual([
+				200, 409,
+			]);
+			const [remaining] = await db
+				.select({ total: sql<number>`count(*)::int` })
+				.from(users)
+				.where(and(eq(users.active, true), eq(users.isAdmin, true)));
+			expect(remaining.total).toBe(1);
+		} finally {
+			restore();
+		}
+	});
 });
 
 test("the last active administrator cannot be demoted", async () => {
