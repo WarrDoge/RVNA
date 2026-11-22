@@ -16,7 +16,11 @@ export function boardRef(board: BoardConfig): BoardRef {
 	};
 }
 
-/** The sidebar data of a board page; a board without a project renders board-only. */
+/**
+ * The sidebar data of a board page; a board without a project renders board-only.
+ * That placeholder project has the board's id and an empty key, so consumers must
+ * check `project.key` before treating it as a real project.
+ */
 export async function loadBoardSidebar(
 	actor: CurrentUser,
 	board: BoardRef,
