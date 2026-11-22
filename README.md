@@ -1198,7 +1198,8 @@ sent and rows an earlier run imported stay unchanged.
 
 The import copies spaces, pages, blog posts, versions, comments, attachments, labels and page
 restrictions; with `--private-apis` it also copies page and space watchers and page likes, then runs
-the Confluence group step.
+the Confluence group step. Confluence space templates are not imported; page templates are created
+in RVNA.
 A page with a local version, a local move, rename or restore, or locally changed labels or
 restrictions keeps its current content, title, parent, position, version number, labels and
 restrictions. New Confluence versions are still added as history when their number is free, but

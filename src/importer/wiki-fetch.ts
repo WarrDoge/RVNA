@@ -49,6 +49,28 @@ function pageError(sourceId: string, error: unknown) {
 	return new Error(`page ${sourceId}: ${message}`);
 }
 
+const FETCH_CONCURRENCY = 4;
+
+async function mapLimit<T, R>(
+	values: T[],
+	fn: (value: T) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(values.length);
+	let index = 0;
+	const workers = Array.from(
+		{ length: Math.min(FETCH_CONCURRENCY, values.length) },
+		async () => {
+			for (;;) {
+				const current = index++;
+				if (current >= values.length) return;
+				results[current] = await fn(values[current] as T);
+			}
+		},
+	);
+	await Promise.all(workers);
+	return results;
+}
+
 function userRefKey(user: ConfluenceUserRef | undefined) {
 	return user?.userKey ?? user?.username ?? null;
 }
@@ -164,27 +186,31 @@ function toSpacePermission(entry: {
 		return { permission, userKey: null, groupName: null, anonymous: true };
 	}
 	if (subject.type === "group") {
+		if (!subject.name) return null;
 		return {
 			permission,
 			userKey: null,
-			groupName: subject.name ?? null,
+			groupName: subject.name,
 			anonymous: false,
 		};
 	}
+	const userKey = subject.userKey ?? subject.username;
+	if (!userKey) return null;
 	return {
 		permission,
-		userKey: subject.userKey ?? subject.username ?? null,
+		userKey,
 		groupName: null,
 		anonymous: false,
 	};
 }
 
 function toUser(user: ConfluenceUserRef): WikiUser | null {
-	if (!user.username) return null;
+	const username = user.username ?? user.userKey;
+	if (!username) return null;
 	return {
 		userKey: user.userKey ?? null,
-		username: user.username,
-		displayName: user.displayName ?? user.username,
+		username,
+		displayName: user.displayName ?? username,
 		email: user.email ?? user.emailAddress ?? null,
 		avatarUrl: user.profilePicture?.path ?? null,
 		active: user.active !== false && user.deleted !== true,
@@ -231,15 +257,18 @@ async function orderContent(
 		for (const page of current) {
 			if (page.parentSourceId) parentIds.add(page.parentSourceId);
 		}
-		await Promise.all(
-			[...parentIds].map(async (parentId) => {
+		await mapLimit([...parentIds], async (parentId) => {
+			try {
 				const children = await client.listChildPages(parentId);
 				ordered.set(
 					`${parentId}\u0000page`,
 					children.map((c) => c.id),
 				);
-			}),
-		);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				throw new Error(`parent ${parentId}: ${message}`);
+			}
+		});
 	}
 
 	for (const [key, group] of groups) {
@@ -273,30 +302,24 @@ async function fetchVersions(
 	if (content.status !== "current") return [];
 
 	const versions = await client.listVersions(content.id);
-	const mapped: WikiVersion[] = [];
-	for (const version of versions) {
+	const mapped = await mapLimit(versions, async (version) => {
 		if (version.number === content.version?.number) {
-			mapped.push(
-				toVersion(version, {
-					title: content.title,
-					storage: contentStorage(content),
-					view: contentView(content),
-				}),
-			);
-			continue;
+			return toVersion(version, {
+				title: content.title,
+				storage: contentStorage(content),
+				view: contentView(content),
+			});
 		}
 		const historical = await client.getHistoricalVersion(
 			content.id,
 			version.number,
 		);
-		mapped.push(
-			toVersion(version, {
-				title: historical.title,
-				storage: contentStorage(historical),
-				view: contentView(historical),
-			}),
-		);
-	}
+		return toVersion(version, {
+			title: historical.title,
+			storage: contentStorage(historical),
+			view: contentView(historical),
+		});
+	});
 	return mapped.sort((a, b) => a.number - b.number);
 }
 
@@ -329,7 +352,11 @@ export async function fetchAttachments(
 		let versions: ConfluenceVersion[] = [];
 		try {
 			versions = await client.listAttachmentVersions(attachment.id);
-		} catch {
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(
+				`attachment ${attachment.id}: could not read version history: ${message}`,
+			);
 			versions = [];
 		}
 		if (versions.length === 0 && attachment.version) {
@@ -503,17 +530,19 @@ async function fetchSpace(
 	const pages: WikiPage[] = [];
 	const spaceWatchers = new Map<string, WikiSocialUser>();
 	const socialShapeKeys = new Set<string>();
-	for (const content of contents) {
+	const fetchedPages = await mapLimit(contents, async (content) => {
 		try {
-			const fetched = await fetchPage(client, content, options);
-			pages.push(fetched.page);
-			for (const key of fetched.unexpectedKeys) socialShapeKeys.add(key);
-			for (const watcher of fetched.spaceWatchers) {
-				const key = socialUserKey(watcher);
-				if (key) spaceWatchers.set(key, watcher);
-			}
+			return await fetchPage(client, content, options);
 		} catch (error) {
 			throw pageError(content.id, error);
+		}
+	});
+	for (const fetched of fetchedPages) {
+		pages.push(fetched.page);
+		for (const key of fetched.unexpectedKeys) socialShapeKeys.add(key);
+		for (const watcher of fetched.spaceWatchers) {
+			const key = socialUserKey(watcher);
+			if (key) spaceWatchers.set(key, watcher);
 		}
 	}
 
@@ -522,6 +551,7 @@ async function fetchSpace(
 	return {
 		space,
 		permissions,
+		// Space templates are not imported; page templates are created in RVNA.
 		templates: [],
 		pages,
 		spaceWatchers: [...spaceWatchers.values()],
