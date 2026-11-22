@@ -149,3 +149,99 @@ describe("collectMacroNames", () => {
 		expect(attachmentKey("100", "a b.png")).toBe("100/a b.png");
 	});
 });
+
+describe("wiki link decoding and origins", () => {
+	test("keeps an encoded plus in a page title", () => {
+		const plusCtx: WikiLinkContext = {
+			...ctx,
+			pageIdsBySpaceTitle: new Map([["FIX\u0000C++", "101"]]),
+		};
+
+		const clean = sanitizeWikiHtml(
+			'<p><a href="/display/FIX/C%2B%2B">C++</a></p>',
+			plusCtx,
+			baseUrl,
+		);
+
+		expect(clean).toContain('href="/pages/viewpage.action?pageId=101"');
+	});
+
+	test("does not rewrite internal-looking links on another origin", () => {
+		const clean = sanitizeWikiHtml(
+			[
+				'<p><a href="https://other.example.test/display/FIX/Child+One">page</a></p>',
+				'<p><a href="https://evil.example.test/download/attachments/100/diagram.png">file</a></p>',
+				'<p><img src="https://evil.example.test/download/attachments/100/diagram.png" /></p>',
+				'<p><a href="https://jira.example.test/browse/ABC-12">ABC-12</a></p>',
+			].join(""),
+			ctx,
+			baseUrl,
+		);
+
+		expect(clean).toContain(
+			'href="https://other.example.test/display/FIX/Child+One"',
+		);
+		expect(clean).toContain(
+			'href="https://evil.example.test/download/attachments/100/diagram.png"',
+		);
+		expect(clean).toContain(
+			'src="https://evil.example.test/download/attachments/100/diagram.png"',
+		);
+		expect(clean).toContain('href="/browse/ABC-12"');
+	});
+});
+
+describe("storage reference escaping", () => {
+	test("escapes a display name used as a mention", () => {
+		const maliciousCtx: WikiLinkContext = {
+			...ctx,
+			userNamesByUserKey: new Map([
+				["uk-alice", '<img src="https://evil.example.test/track.png">'],
+			]),
+		};
+
+		const rewritten = rewriteStorageReferences(
+			'<ac:link><ri:user ri:userkey="uk-alice" /></ac:link>',
+			maliciousCtx,
+			"100",
+		);
+
+		expect(rewritten).not.toContain("<img");
+		expect(rewritten).toContain("&lt;img");
+	});
+
+	test("decodes entities in link bodies before escaping them", () => {
+		const rewritten = rewriteStorageReferences(
+			'<ac:link><ri:page ri:content-title="A &amp; B" ri:space-key="FIX" /><ac:plain-text-link-body>go &lt;here&gt;</ac:plain-text-link-body></ac:link>',
+			ctx,
+			"100",
+		);
+
+		expect(rewritten).toContain("go &lt;here&gt;");
+		expect(rewritten).not.toContain("&amp;lt;");
+	});
+
+	test("uses the file name when an attachment link cannot be resolved", () => {
+		const rewritten = rewriteStorageReferences(
+			'<ac:link><ri:attachment ri:filename="missing.png" /></ac:link>',
+			ctx,
+			"100",
+		);
+
+		expect(rewritten).not.toContain("ac:link");
+		expect(rewritten).toContain("missing.png");
+	});
+
+	test("does not let an image attribute break out of its value", () => {
+		const rewritten = rewriteStorageReferences(
+			'<ac:image ac:alt="x&quot; onerror=&quot;alert(1)"><ri:attachment ri:filename="diagram.png" /></ac:image>',
+			ctx,
+			"100",
+		);
+		const clean = sanitizeWikiHtml(rewritten, ctx, baseUrl) ?? "";
+
+		expect(clean).toContain('src="/api/wiki/attachments/att-1"');
+		expect(clean).not.toContain('onerror="');
+		expect(clean).toContain('alt="x&quot; onerror=&quot;alert(1)"');
+	});
+});
