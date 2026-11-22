@@ -502,6 +502,42 @@ describe("Confluence page and space watchers and page likes", () => {
 		expect(spaceRows.rows[0]?.count).toBe(1);
 	});
 
+	test("an unexpected response shape does not delete imported rows", async () => {
+		const snapshot = async () => ({
+			pageWatchers: (
+				await pool.query(
+					"select source_id, user_id from page_watchers where page_id in (select id from pages where source_id = $1) order by source_id",
+					[pageId],
+				)
+			).rows,
+			spaceWatchers: (
+				await pool.query(
+					"select source_id, user_id from space_watchers where space_id in (select id from spaces where key = $1) order by source_id",
+					[spaceKey],
+				)
+			).rows,
+			pageLikes: (
+				await pool.query(
+					"select source_id, user_id from page_likes where page_id in (select id from pages where source_id = $1) order by source_id",
+					[pageId],
+				)
+			).rows,
+		});
+		const before = await snapshot();
+		expect(before.pageWatchers).not.toHaveLength(0);
+		expect(before.spaceWatchers).not.toHaveLength(0);
+
+		const { client } = clientFor(initialSocial(), { badShape: true });
+		const bad = await fetchWikiDataset(client, {
+			attachmentsDir: "/tmp",
+			skipAttachments: true,
+			privateApis: true,
+		});
+		await importWikiDataset(bad, { baseUrl, privateApis: true });
+
+		expect(await snapshot()).toEqual(before);
+	});
+
 	test("an unexpected response shape is logged once with its keys, not values", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { client } = clientFor(initialSocial(), { badShape: true });

@@ -602,7 +602,7 @@ async function importSpace(
 	const spaceId = spaceResult.ids.get(data.space.sourceId);
 	if (!spaceId) throw new Error(`space ${data.space.key} was not imported`);
 
-	if (!socialSkipped) {
+	if (!socialSkipped && !data.socialShapeMismatch) {
 		await importSocialRows(
 			tx,
 			spaceWatchers,
@@ -711,7 +711,7 @@ async function importSpace(
 	for (const page of data.pages) {
 		const pageId = maps.pageIds.get(page.sourceId);
 		if (!pageId) throw new Error(`page ${page.sourceId} was not imported`);
-		if (!socialSkipped) {
+		if (!socialSkipped && !page.socialShapeMismatch) {
 			await importSocialRows(
 				tx,
 				pageWatchers,

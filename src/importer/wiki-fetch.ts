@@ -458,6 +458,7 @@ async function fetchPage(
 			restrictions: restrictionsOf(content),
 			watchers: social.watchers,
 			likes: social.likes,
+			socialShapeMismatch: social.unexpectedKeys.length > 0,
 		},
 		spaceWatchers: social.spaceWatchers,
 		unexpectedKeys: social.unexpectedKeys,
@@ -524,6 +525,7 @@ async function fetchSpace(
 		templates: [],
 		pages,
 		spaceWatchers: [...spaceWatchers.values()],
+		socialShapeMismatch: pages.some((page) => page.socialShapeMismatch),
 		skippedPermissions,
 		socialShapeKeys,
 	};

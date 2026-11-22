@@ -209,6 +209,8 @@ export interface WikiPage {
 	restrictions: WikiRestriction[];
 	watchers: WikiSocialUser[];
 	likes: WikiSocialUser[];
+	/** The watcher or like response had an unexpected shape; do not reconcile. */
+	socialShapeMismatch?: boolean;
 }
 
 export interface WikiSpaceData {
@@ -217,6 +219,8 @@ export interface WikiSpaceData {
 	templates: WikiTemplate[];
 	pages: WikiPage[];
 	spaceWatchers: WikiSocialUser[];
+	/** The watcher response had an unexpected shape; do not reconcile. */
+	socialShapeMismatch?: boolean;
 }
 
 export interface WikiDataset {
