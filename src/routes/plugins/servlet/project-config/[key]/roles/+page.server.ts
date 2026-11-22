@@ -1,6 +1,7 @@
 import { fail } from "@sveltejs/kit";
 import { HttpError, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
+import { ARCHIVED_PROJECT_MESSAGE } from "#lib/server/project-keys.ts";
 import {
 	addRoleActor,
 	getProjectRoles,
@@ -47,7 +48,7 @@ export const actions = {
 	default: pageAction(async ({ event, form }, actor) => {
 		const project = await getProject(actor, event.params.key);
 		if (project.archived) {
-			return fail(403, { error: "This project is archived and read-only" });
+			return fail(403, { error: ARCHIVED_PROJECT_MESSAGE });
 		}
 		const roleId = text(form, "roleId");
 		if (roleId === "") return fail(400, { error: "Choose a role" });

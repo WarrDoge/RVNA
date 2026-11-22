@@ -2,6 +2,7 @@ import { fail } from "@sveltejs/kit";
 import { getProjectGitlab } from "#lib/server/gitlab/routes.ts";
 import { HttpError, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
+import { ARCHIVED_PROJECT_MESSAGE } from "#lib/server/project-keys.ts";
 import {
 	createComponent,
 	createVersion,
@@ -84,7 +85,7 @@ export const actions = {
 	default: pageAction(async ({ event, form }, actor) => {
 		const project = await getProject(actor, event.params.key);
 		if (project.archived) {
-			return fail(403, { error: "This project is archived and read-only" });
+			return fail(403, { error: ARCHIVED_PROJECT_MESSAGE });
 		}
 
 		const intent = text(form, "intent");
