@@ -12,7 +12,18 @@ DROP INDEX "sla_imported_cycles_issue_idx";--> statement-breakpoint
 DROP INDEX "sla_metrics_desk_idx";--> statement-breakpoint
 ALTER TABLE "permission_local_unassignments" ADD CONSTRAINT "permission_local_unassignments_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "email_batches_pending_idx" ON "email_batches" USING btree ("send_after") WHERE "email_batches"."sent_at" is null;--> statement-breakpoint
--- Rows written before the constraint may have no target or both; keep the project as the readers did.
+-- Rows written before the constraint may have no target or both. Both targets
+-- grant access, so stage the group targets, clear them from the project rows,
+-- then put the group grants back in their own rows.
 DELETE FROM "filter_shares" WHERE "project_id" IS NULL AND "group_id" IS NULL;--> statement-breakpoint
+CREATE TEMP TABLE "filter_shares_legacy_group_targets" AS
+SELECT "filter_id", "group_id", "created_at", "updated_at"
+FROM "filter_shares"
+WHERE "project_id" IS NOT NULL AND "group_id" IS NOT NULL;--> statement-breakpoint
 UPDATE "filter_shares" SET "group_id" = NULL WHERE "project_id" IS NOT NULL AND "group_id" IS NOT NULL;--> statement-breakpoint
+INSERT INTO "filter_shares" ("filter_id", "group_id", "created_at", "updated_at")
+SELECT "filter_id", "group_id", "created_at", "updated_at"
+FROM "filter_shares_legacy_group_targets"
+ON CONFLICT ("filter_id", "group_id") DO NOTHING;--> statement-breakpoint
+DROP TABLE "filter_shares_legacy_group_targets";--> statement-breakpoint
 ALTER TABLE "filter_shares" ADD CONSTRAINT "filter_shares_one_target_check" CHECK (num_nonnulls("filter_shares"."project_id", "filter_shares"."group_id") = 1);
