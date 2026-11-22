@@ -677,3 +677,142 @@ test("a gadget of a private dashboard is not readable by others", async () => {
 	);
 	expect(hidden.statusCode).toBe(404);
 });
+
+test("a project key with a backslash is quoted in the gadget JQL", async () => {
+	const gadget = await addGadget("pie-chart", {
+		statistic: "status",
+		project: `${key}\\`,
+	});
+	const response = await request(
+		"GET",
+		`/api/gadgets/${gadget.id}/data`,
+		session,
+	);
+	expect(response.statusCode).toBe(400);
+	expect(response.json().error).toMatch(
+		/does not exist for the field 'project'/,
+	);
+});
+
+test("a stale filter JQL in a statistics gadget is a 400, not a 500", async () => {
+	const created = await request("POST", "/api/filters", session, {
+		name: `Stale statistics ${run}`,
+		jql: `project = ${key}`,
+		shared: true,
+	});
+	expect(created.statusCode).toBe(201);
+	const staleId = created.json().id as string;
+	await client.query("update filters set jql = $1 where id = $2", [
+		"noSuchField = 1",
+		staleId,
+	]);
+
+	const gadget = await addGadget("pie-chart", {
+		statistic: "status",
+		filterId: staleId,
+	});
+	const response = await request(
+		"GET",
+		`/api/gadgets/${gadget.id}/data`,
+		session,
+	);
+	expect(response.statusCode).toBe(400);
+	expect(response.json().error).toMatch(/JQL Query/i);
+});
+
+test("a non-numeric day window falls back instead of failing", async () => {
+	const activity = await addGadget("activity-stream", {
+		projects: [key],
+		days: 7,
+		rows: 20,
+	});
+	await client.query(
+		"update dashboard_gadgets set config = $1::jsonb where id = $2",
+		[
+			JSON.stringify({
+				projects: [key],
+				days: "not-a-number",
+				rows: 20,
+			}),
+			activity.id,
+		],
+	);
+	expect((await data(activity.id)).activity).toHaveLength(1);
+
+	const series = await addGadget("created-vs-resolved", {
+		project: key,
+		days: 7,
+	});
+	await client.query(
+		"update dashboard_gadgets set config = $1::jsonb where id = $2",
+		[JSON.stringify({ project: key, days: "not-a-number" }), series.id],
+	);
+	expect((await data(series.id)).series.days).toHaveLength(30);
+});
+
+test("an introduction stored without sanitising is sanitised when read", async () => {
+	const created = await request(
+		"POST",
+		`/api/dashboards/${dashboardId}/gadgets`,
+		adminSession,
+		{ type: "introduction", config: { html: "<p>Welcome</p>" } },
+	);
+	expect(created.statusCode).toBe(201);
+	const gadgetId = created.json().id as string;
+	await client.query(
+		"update dashboard_gadgets set config = $1::jsonb where id = $2",
+		[
+			JSON.stringify({
+				html: '<p>Welcome</p><img src="x" onerror="alert(1)"><script>alert(2)</script>',
+			}),
+			gadgetId,
+		],
+	);
+
+	const body = await data(gadgetId);
+	expect(body.html).toContain("<p>Welcome</p>");
+	expect(body.html).not.toContain("onerror");
+	expect(body.html).not.toContain("<script");
+});
+
+test("an unknown statistic is a 400, not a 500", async () => {
+	const pie = await addGadget("pie-chart", {
+		statistic: "status",
+		project: key,
+	});
+	await client.query(
+		"update dashboard_gadgets set config = $1::jsonb where id = $2",
+		[JSON.stringify({ statistic: "bogus", project: key }), pie.id],
+	);
+	const pieResponse = await request(
+		"GET",
+		`/api/gadgets/${pie.id}/data`,
+		session,
+	);
+	expect(pieResponse.statusCode).toBe(400);
+	expect(pieResponse.json().error).toMatch(/Unknown statistic: bogus/);
+
+	const two = await addGadget("two-dimensional", {
+		xStatistic: "status",
+		yStatistic: "priority",
+		project: key,
+	});
+	await client.query(
+		"update dashboard_gadgets set config = $1::jsonb where id = $2",
+		[
+			JSON.stringify({
+				xStatistic: "status",
+				yStatistic: "bogus",
+				project: key,
+			}),
+			two.id,
+		],
+	);
+	const twoResponse = await request(
+		"GET",
+		`/api/gadgets/${two.id}/data`,
+		session,
+	);
+	expect(twoResponse.statusCode).toBe(400);
+	expect(twoResponse.json().error).toMatch(/Unknown statistic: bogus/);
+});

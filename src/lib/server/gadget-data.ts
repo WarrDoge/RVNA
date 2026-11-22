@@ -4,13 +4,15 @@ import { formatDuration } from "../shared/agile-reports/types.ts";
 import {
 	DEFAULT_COLUMNS,
 	isSafeLinkUrl,
+	STATISTICS,
 	type StatisticType,
 } from "../shared/gadgets.ts";
-import { JqlError, parseJql } from "../shared/jql/index.ts";
+import { JqlError, parseJql, quoteJqlValue } from "../shared/jql/index.ts";
 import { userRefSchema } from "./api-schemas.ts";
 import type { GadgetRow } from "./dashboards/schemas.ts";
 import { db } from "./db.ts";
 import { listFilters, loadVisibleFilter } from "./filters/service.ts";
+import { sanitizeBodyHtml } from "./html.ts";
 import { HttpError } from "./http.ts";
 import { loadCatalog } from "./jql/catalog.ts";
 import { compileJql, type SearchUser } from "./jql/compile.ts";
@@ -110,6 +112,12 @@ function clampRows(value: unknown) {
 	return Math.min(MAX_ROWS, Math.max(1, Math.trunc(rows)));
 }
 
+function clampDays(value: unknown, min: number, max: number, fallback: number) {
+	const days = Number(value ?? fallback);
+	if (!Number.isFinite(days)) return fallback;
+	return Math.min(max, Math.max(min, days));
+}
+
 function stringList(value: unknown) {
 	return Array.isArray(value)
 		? value.filter((item): item is string => typeof item === "string")
@@ -161,14 +169,20 @@ async function scopeJql(
 	}
 	const project = typeof config.project === "string" ? config.project : null;
 	if (project) {
-		return `project = "${project.replace(/"/g, '\\"')}" ORDER BY key DESC`;
+		return `project = ${quoteJqlValue(project)} ORDER BY key DESC`;
 	}
 	return "ORDER BY key DESC";
 }
 
 async function scopedWhere(config: Record<string, unknown>, user: Viewer) {
 	const jql = await scopeJql(config, user);
-	return jql === null ? sql`false` : compiledWhere(jql, user);
+	if (jql === null) return sql`false`;
+	try {
+		return await compiledWhere(jql, user);
+	} catch (error) {
+		if (error instanceof JqlError) throw new HttpError(400, error.jiraMessage);
+		throw error;
+	}
 }
 
 async function compiledWhere(jql: string, user: Viewer): Promise<SQL> {
@@ -218,7 +232,12 @@ const SCALAR_AXES: Record<
 	},
 };
 
+const STATISTIC_TYPES = new Set(STATISTICS.map((statistic) => statistic.value));
+
 function axis(statistic: StatisticType, alias: string) {
+	if (!STATISTIC_TYPES.has(statistic)) {
+		throw new HttpError(400, `Unknown statistic: ${String(statistic)}`);
+	}
 	if (statistic === "component") {
 		return {
 			join: sql`left join issue_components ic_${sql.raw(alias)} on ic_${sql.raw(alias)}.issue_id = issues.id
@@ -412,7 +431,7 @@ function describeChanges(changes: HistoryChange[]) {
 }
 
 async function activityStream(config: Record<string, unknown>, user: Viewer) {
-	const days = Math.min(ACTIVITY_DAYS, Math.max(1, Number(config.days ?? 7)));
+	const days = clampDays(config.days, 1, ACTIVITY_DAYS, 7);
 	const rows = clampRows(config.rows);
 	const projects = stringList(config.projects).map((key) => key.toUpperCase());
 	const usernames = stringList(config.users);
@@ -577,7 +596,10 @@ export async function loadGadgetData(
 		case "introduction":
 			return {
 				...base,
-				html: typeof config.html === "string" ? config.html : "",
+				html:
+					(await sanitizeBodyHtml(
+						typeof config.html === "string" ? config.html : "",
+					)) ?? "",
 			};
 		case "assigned-to-me":
 			return {
@@ -626,7 +648,7 @@ export async function loadGadgetData(
 			return { ...base, matrix: await statisticMatrix(x, y, where) };
 		}
 		case "created-vs-resolved": {
-			const days = Math.min(120, Math.max(2, Number(config.days ?? 30)));
+			const days = clampDays(config.days, 2, 120, 30);
 			const where = await scopedWhere(config, user);
 			return { ...base, series: await createdVsResolved(where, days) };
 		}
