@@ -5,6 +5,12 @@ import type {
 	WikiDatabaseSnapshot,
 } from "./types.ts";
 
+const SAMPLE_SIZE = 20;
+const MAX_BOARDS = 5;
+const MAX_REDIRECTS = 10;
+const REQUEST_CONCURRENCY = 4;
+const REQUEST_TIMEOUT_MS = 120_000;
+
 function numericId(value: string) {
 	try {
 		return BigInt(value);
@@ -47,7 +53,7 @@ function chooseIssueKeys(jira: JiraDatabaseSnapshot) {
 	const projects = [...byProject.keys()].sort();
 	const selected: string[] = [];
 	const add = (key: string | undefined) => {
-		if (key && !selected.includes(key) && selected.length < 20)
+		if (key && !selected.includes(key) && selected.length < SAMPLE_SIZE)
 			selected.push(key);
 	};
 	for (const project of projects) {
@@ -55,7 +61,7 @@ function chooseIssueKeys(jira: JiraDatabaseSnapshot) {
 		add(list[0]);
 		add(list.at(-1));
 	}
-	for (let offset = 1; selected.length < 20; offset++) {
+	for (let offset = 1; selected.length < SAMPLE_SIZE; offset++) {
 		let added = false;
 		for (const project of projects) {
 			const list = byProject.get(project) ?? [];
@@ -64,7 +70,7 @@ function chooseIssueKeys(jira: JiraDatabaseSnapshot) {
 			if (low || high) added = true;
 			add(low);
 			add(high);
-			if (selected.length >= 20) break;
+			if (selected.length >= SAMPLE_SIZE) break;
 		}
 		if (!added) break;
 	}
@@ -83,14 +89,15 @@ function choosePageIds(wiki: WikiDatabaseSnapshot) {
 	const spaces = [...bySpace.keys()].sort();
 	const selected: string[] = [];
 	const add = (id: string | undefined) => {
-		if (id && !selected.includes(id) && selected.length < 20) selected.push(id);
+		if (id && !selected.includes(id) && selected.length < SAMPLE_SIZE)
+			selected.push(id);
 	};
 	for (const space of spaces) {
 		const list = bySpace.get(space) ?? [];
 		add(list[0]);
 		add(list.at(-1));
 	}
-	for (let offset = 1; selected.length < 20; offset++) {
+	for (let offset = 1; selected.length < SAMPLE_SIZE; offset++) {
 		let added = false;
 		for (const space of spaces) {
 			const list = bySpace.get(space) ?? [];
@@ -99,7 +106,7 @@ function choosePageIds(wiki: WikiDatabaseSnapshot) {
 			if (low || high) added = true;
 			add(low);
 			add(high);
-			if (selected.length >= 20) break;
+			if (selected.length >= SAMPLE_SIZE) break;
 		}
 		if (!added) break;
 	}
@@ -119,7 +126,7 @@ export function buildOldUrlPaths(
 		const boards = (agile?.boards ?? [])
 			.map((board) => board.id)
 			.sort(compareIds)
-			.slice(0, 5);
+			.slice(0, MAX_BOARDS);
 		for (const board of boards) {
 			paths.push(
 				`/secure/RapidBoard.jspa?rapidView=${encodeURIComponent(board)}`,
@@ -169,12 +176,13 @@ async function requestOne(
 	appToken: string,
 	fetchImpl: typeof fetch,
 	counter: { count: number },
+	timeoutMs: number,
 ): Promise<OldUrlResult> {
 	const chain: number[] = [];
 	try {
 		const appOrigin = new URL(appUrl).origin;
 		let current = new URL(path, appUrl);
-		for (let redirect = 0; redirect <= 10; redirect++) {
+		for (let redirect = 0; redirect <= MAX_REDIRECTS; redirect++) {
 			counter.count++;
 			const response = await fetchImpl(current, {
 				method: "GET",
@@ -185,6 +193,7 @@ async function requestOne(
 					}),
 				},
 				redirect: "manual",
+				signal: AbortSignal.timeout(timeoutMs),
 			});
 			chain.push(response.status);
 			await response.body?.cancel();
@@ -223,16 +232,18 @@ export async function requestOldUrls(
 	appUrl: string,
 	appToken: string,
 	fetchImpl: typeof fetch = fetch,
+	timeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<{ urls: OldUrlResult[]; requests: number }> {
 	const counter = { count: 0 };
 	const results = [...urls];
-	await mapLimit(results, 4, async (item, index) => {
+	await mapLimit(results, REQUEST_CONCURRENCY, async (item, index) => {
 		results[index] = await requestOne(
 			item.path,
 			appUrl,
 			appToken,
 			fetchImpl,
 			counter,
+			timeoutMs,
 		);
 	});
 	return { urls: results, requests: counter.count };

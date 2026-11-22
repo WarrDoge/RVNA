@@ -1502,6 +1502,24 @@ describe("parity checks", () => {
 		expect(result.requests).toBe(0);
 	});
 
+	test("a hung old URL request times out and is reported", async () => {
+		const fetchImpl = ((_input: string | URL | Request, init?: RequestInit) =>
+			new Promise<Response>((_resolve, reject) => {
+				init?.signal?.addEventListener("abort", () =>
+					reject(init.signal?.reason),
+				);
+			})) as typeof fetch;
+		const result = await requestOldUrls(
+			[{ path: "/browse/A-1", status: null, chain: [], ok: null }],
+			"https://app.example.test",
+			"token",
+			fetchImpl,
+			10,
+		);
+		expect(result.urls[0]?.ok).toBe(false);
+		expect(result.urls[0]?.error).toMatch(/timeout/i);
+	});
+
 	test("old URL requests keep the app token on the app origin only", async () => {
 		const seen: { url: string; authorization: string | null }[] = [];
 		const fetchImpl = (async (
