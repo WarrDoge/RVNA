@@ -57,6 +57,19 @@ afterAll(async () => {
 const mk = (title: string, parentId?: string | null, as: Client = wiki.admin) =>
 	wiki.page(as, space.key, title, { parentId });
 
+async function waitForLockWaiters(count: number) {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const result = await pool.query<{ n: number }>(
+			`select count(*)::int as n from pg_stat_activity
+			 where datname = current_database() and wait_event_type = 'Lock'`,
+		);
+		if ((result.rows[0]?.n ?? 0) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	throw new Error(`timed out waiting for ${count} lock waiters`);
+}
+
 const updateBody = { bodyDoc: doc("changed") };
 
 describe("space permission mapping", () => {
@@ -613,6 +626,74 @@ describe("page restrictions", () => {
 			},
 		);
 		expect(refused.status).toBe(400);
+	});
+
+	test("a restriction with no resolvable subject stays fail-closed", async () => {
+		const page = await mk("Orphan restriction");
+		await pool.query(
+			"insert into page_restrictions (source_id, page_id, operation) values ($1, $2, 'read')",
+			[`fat:test-${randomUUID()}`, page.id],
+		);
+		expect((await creator.get(`/api/wiki/pages/${page.id}`)).status).toBe(404);
+		const report = await wiki.admin.get(
+			`/api/wiki/edit/pages/${page.id}/restrictions`,
+		);
+		expect(report.body.read).toEqual({ users: [], groups: [] });
+		const cleared = await wiki.admin.put(
+			`/api/wiki/pages/${page.id}/restrictions`,
+			{
+				read: { userIds: [], groups: [] },
+				update: { userIds: [], groups: [] },
+			},
+		);
+		expect(cleared.status).toBe(200);
+		expect((await creator.get(`/api/wiki/pages/${page.id}`)).status).toBe(200);
+	});
+
+	test("concurrent replacements replace instead of merging", async () => {
+		const page = await mk("Restriction race");
+		await pool.query(`
+			create or replace function test_slow_restriction_insert() returns trigger
+			language plpgsql as $$
+			begin
+				perform pg_advisory_xact_lock(987654325);
+				return new;
+			end $$`);
+		await pool.query(
+			"create trigger test_slow_restriction_insert before insert on page_restrictions for each row execute function test_slow_restriction_insert()",
+		);
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select pg_advisory_xact_lock(987654325)");
+			const first = wiki.admin.put(`/api/wiki/pages/${page.id}/restrictions`, {
+				read: { userIds: [reader.id], groups: [] },
+				update: { userIds: [], groups: [] },
+			});
+			await waitForLockWaiters(1);
+			const second = wiki.admin.put(`/api/wiki/pages/${page.id}/restrictions`, {
+				read: { userIds: [creator.id], groups: [] },
+				update: { userIds: [], groups: [] },
+			});
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const responses = await Promise.all([first, second]);
+			expect(responses.map((response) => response.status)).toEqual([200, 200]);
+			const stored = await rows<{ user_id: string }>(
+				"select user_id from page_restrictions where page_id = $1 and operation = 'read'",
+				[page.id],
+			);
+			expect(stored.map((row) => row.user_id)).toEqual([creator.id]);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+			await pool.query(
+				"drop trigger if exists test_slow_restriction_insert on page_restrictions",
+			);
+			await pool.query(
+				"drop function if exists test_slow_restriction_insert()",
+			);
+		}
 	});
 });
 

@@ -19,6 +19,7 @@ import {
 	newSourceId,
 	type PageRow,
 } from "./common.ts";
+import { lockPage } from "./content.ts";
 import { ancestors } from "./helpers.ts";
 
 type Operation = "read" | "update";
@@ -54,11 +55,11 @@ export async function restrictionsOf(
 ): Promise<PageRestrictions> {
 	const chain = await ancestors(ex, page.id);
 	const byPage = await subjectsByPage(ex, [page.id, ...chain.map((a) => a.id)]);
-	const empty = { users: [], groups: [] };
+	const empty = () => ({ users: [], groups: [] });
 	const own = byPage.get(page.id);
 	return {
-		read: own?.read ?? empty,
-		update: own?.update ?? empty,
+		read: own?.read ?? empty(),
+		update: own?.update ?? empty(),
 		// Only view restrictions inherit; an ancestor's edit restriction has no effect here.
 		inherited: chain.flatMap((ancestor) => {
 			const entry = byPage.get(ancestor.id);
@@ -70,7 +71,7 @@ export async function restrictionsOf(
 							pageId: ancestor.id,
 							title: ancestor.title,
 							read: entry.read,
-							update: empty,
+							update: empty(),
 						},
 					]
 				: [];
@@ -143,6 +144,8 @@ export async function replacePageRestrictions(
 	}
 
 	await db.transaction(async (tx) => {
+		const fresh = await lockPage(tx, page.id);
+		assertCurrent(fresh);
 		await tx
 			.delete(pageRestrictions)
 			.where(eq(pageRestrictions.pageId, page.id));
