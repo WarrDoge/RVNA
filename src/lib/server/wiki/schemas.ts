@@ -4,7 +4,6 @@ import { userRefSchema } from "../api-schemas.ts";
 export const pageParams = z.object({ id: z.string().min(1) });
 export const spaceParams = z.object({ key: z.string().min(1) });
 export const commentParams = z.object({ id: z.uuid() });
-export const labelParams = z.object({ id: z.uuid() });
 export const attachmentParams = z.object({ id: z.uuid() });
 /** The download answers 404 for an id that is not a UUID, so the schema only needs a value. */
 export const attachmentDownloadParams = z.object({ id: z.string().min(1) });
@@ -75,6 +74,18 @@ export const commentSchema = z.object({
 	canEdit: z.boolean(),
 });
 
+export const pageWatchSchema = z.object({
+	count: z.number().int(),
+	watching: z.boolean(),
+});
+
+export const likeSchema = z.object({
+	count: z.number().int(),
+	liked: z.boolean(),
+});
+
+export const labelSchema = z.object({ id: z.uuid(), label: z.string() });
+
 export const pageDetailSchema = z.object({
 	id: z.uuid(),
 	sourceId: z.string(),
@@ -86,7 +97,7 @@ export const pageDetailSchema = z.object({
 		id: z.uuid(),
 		key: z.string(),
 		name: z.string(),
-		type: z.enum(["global", "personal"]),
+		type: spaceSummarySchema.shape.type,
 		iconPath: z.string().nullable(),
 	}),
 	ancestors: z.array(
@@ -97,29 +108,17 @@ export const pageDetailSchema = z.object({
 	created: z.iso.datetime().nullable(),
 	updated: z.iso.datetime().nullable(),
 	bodyHtml: z.string().nullable(),
-	labels: z.array(z.object({ id: z.uuid(), label: z.string() })),
+	labels: z.array(labelSchema),
 	attachments: z.array(attachmentSchema),
 	comments: z.array(commentSchema),
 	children: z.array(pageRefSchema),
-	watchers: z.object({ count: z.number().int(), watching: z.boolean() }),
-	likes: z.object({ count: z.number().int(), liked: z.boolean() }),
+	watchers: pageWatchSchema,
+	likes: likeSchema,
 	restricted: z.boolean(),
 	spaceWatching: z.boolean(),
 });
 
-export const pageWatchSchema = z.object({
-	count: z.number().int(),
-	watching: z.boolean(),
-});
-
-export const likeSchema = z.object({
-	count: z.number().int(),
-	liked: z.boolean(),
-});
-
 export const spaceWatchSchema = z.object({ watching: z.boolean() });
-
-export const labelSchema = z.object({ id: z.uuid(), label: z.string() });
 
 export const restrictionSchema = z.object({
 	space: z.array(
@@ -234,7 +233,7 @@ export const spaceListQuery = z.object({
 });
 
 export const pageQuery = z.object({
-	version: z.coerce.number().int().optional(),
+	version: z.coerce.number().int().positive().optional(),
 });
 
 export const versionParams = pageParams.extend({
@@ -270,12 +269,37 @@ export const labelNameParams = z.object({
 	name: z.string().min(1).max(255),
 });
 
+function isDateValue(value: string) {
+	if (value === "") return true;
+	const parts = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ].*)?$/);
+	if (!parts) return false;
+	const year = Number(parts[1]);
+	const month = Number(parts[2]);
+	const day = Number(parts[3]);
+	const date = new Date(Date.UTC(year, month - 1, day));
+	if (
+		date.getUTCFullYear() !== year ||
+		date.getUTCMonth() !== month - 1 ||
+		date.getUTCDate() !== day
+	) {
+		return false;
+	}
+	return !Number.isNaN(Date.parse(value));
+}
+
+const dateValue = z
+	.string()
+	.trim()
+	.max(40)
+	.refine(isDateValue, { message: "Expected a date" })
+	.optional();
+
 export const searchQuery = z.object({
 	query: z.string().trim().max(500).default(""),
 	space: z.string().trim().max(100).optional(),
 	contributor: z.string().trim().max(200).optional(),
-	from: z.string().trim().max(40).optional(),
-	to: z.string().trim().max(40).optional(),
+	from: dateValue,
+	to: dateValue,
 	offset: z.coerce.number().int().min(0).default(0),
 	limit: z.coerce.number().int().min(1).max(100).default(25),
 });
@@ -310,7 +334,7 @@ export const attachmentNameParams = pageParams.extend({
 
 export const downloadParams = z.object({
 	pageId: z.string().min(1),
-	fileName: z.string().min(1),
+	fileName: z.string().min(1).max(1000),
 });
 
 /** A repeated query key is accepted, as it was before; an array never matches a value. */
@@ -327,7 +351,6 @@ export const attachmentInlineQuery = z.object({
 	inline: singleValue.transform((value) => (Array.isArray(value) ? "" : value)),
 });
 
-export type SpaceListInput = z.infer<typeof spaceListQuery>;
 export type CreateCommentInput = z.infer<typeof createCommentBody>;
 export type SearchInput = z.infer<typeof searchQuery>;
 export type ResolveInput = z.infer<typeof resolveQuery>;

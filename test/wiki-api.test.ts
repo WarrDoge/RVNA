@@ -604,6 +604,14 @@ describe("permission enforcement", () => {
 		expect(allowed.body).toBe("version two");
 	});
 
+	test("rejects an attachment name over the API limit", async () => {
+		const response = await get(
+			`/download/attachments/${home.sourceId}/${"a".repeat(1001)}`,
+			alice,
+		);
+		expect(response.statusCode).toBe(400);
+	});
+
 	test("a signed-out HEAD is a 401, only a GET goes to the sign-in form", async () => {
 		for (const url of [
 			`/download/attachments/${home.sourceId}/notes.txt`,
@@ -811,6 +819,21 @@ describe("versions and diff", () => {
 		const version = response.json() as { bodyHtml: string; current: boolean };
 		expect(version.bodyHtml).toContain("the old body");
 		expect(version.current).toBe(false);
+	});
+
+	test("rejects a version that is not a positive number", async () => {
+		for (const version of ["", "0", "-1"]) {
+			const response = await get(
+				`/api/wiki/pages/${home.sourceId}?version=${version}`,
+				alice,
+			);
+			expect(response.statusCode, version).toBe(400);
+		}
+		const response = await get(
+			`/api/wiki/pages/${home.sourceId}?version=1`,
+			alice,
+		);
+		expect(response.statusCode).toBe(200);
 	});
 
 	test("diffs two versions word by word", async () => {
@@ -1226,6 +1249,18 @@ describe("search", () => {
 		const hits = (response.json() as { hits: { excerpt: string }[] }).hits;
 		const bodyHit = hits.find((hit) => hit.excerpt.includes("<mark>"));
 		expect(bodyHit).toBeDefined();
+	});
+
+	test("rejects a search date it cannot parse", async () => {
+		for (const value of ["not-a-date", "2024-02-30"]) {
+			const response = await get(
+				`/api/wiki/search?query=x&from=${encodeURIComponent(value)}`,
+				bob,
+			);
+			expect(response.statusCode, value).toBe(400);
+		}
+		const response = await get("/api/wiki/search?query=x&from=2024-01-01", bob);
+		expect(response.statusCode).toBe(200);
 	});
 
 	test("suggests page titles for the top bar", async () => {
