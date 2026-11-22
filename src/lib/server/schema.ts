@@ -13,42 +13,63 @@ import {
 	text,
 	timestamp,
 	unique,
+	uniqueIndex,
 	uuid,
 } from "drizzle-orm/pg-core";
+// schema-servicedesk imports back from this module. Its references() callbacks
+// run after both modules are evaluated, so it must not read a table eagerly.
 import { requestTypes } from "./schema-servicedesk.ts";
 
-export const users = pgTable("users", {
-	id: uuid("id").primaryKey().defaultRandom(),
-	oidcSub: text("oidc_sub").unique(),
-	sourceKey: text("source_key").unique(),
-	username: text("username").notNull().unique(),
-	email: text("email"),
-	displayName: text("display_name").notNull(),
-	avatarUrl: text("avatar_url"),
-	avatarFile: text("avatar_file"),
-	avatarSource: text("avatar_source"),
-	active: boolean("active").notNull().default(true),
-	isAdmin: boolean("is_admin").notNull().default(false),
-	adminLocal: boolean("admin_local").notNull().default(false),
-	lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
-	passwordHash: text("password_hash"),
-	passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
-	mustChangePassword: boolean("must_change_password").notNull().default(false),
-	messengerMatrixId: text("messenger_matrix_id").unique(),
-	createdAt: timestamp("created_at", { withTimezone: true })
-		.notNull()
-		.defaultNow(),
-	updatedAt: timestamp("updated_at", { withTimezone: true })
-		.notNull()
-		.defaultNow(),
-});
+export const users = pgTable(
+	"users",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		oidcSub: text("oidc_sub").unique(),
+		sourceKey: text("source_key").unique(),
+		username: text("username").notNull().unique(),
+		email: text("email"),
+		displayName: text("display_name").notNull(),
+		avatarUrl: text("avatar_url"),
+		avatarFile: text("avatar_file"),
+		avatarSource: text("avatar_source"),
+		active: boolean("active").notNull().default(true),
+		isAdmin: boolean("is_admin").notNull().default(false),
+		adminLocal: boolean("admin_local").notNull().default(false),
+		lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+		passwordHash: text("password_hash"),
+		passwordChangedAt: timestamp("password_changed_at", { withTimezone: true }),
+		mustChangePassword: boolean("must_change_password")
+			.notNull()
+			.default(false),
+		messengerMatrixId: text("messenger_matrix_id").unique(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+		updatedAt: timestamp("updated_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		uniqueIndex("users_username_lower_unique").on(
+			sql`lower(${table.username})`,
+		),
+	],
+);
 
-export const groups = pgTable("groups", {
-	id: uuid("id").primaryKey().defaultRandom(),
-	name: text("name").notNull().unique(),
-	local: boolean("local").notNull().default(false),
-});
+export const groups = pgTable(
+	"groups",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		name: text("name").notNull().unique(),
+		local: boolean("local").notNull().default(false),
+	},
+	(table) => [
+		uniqueIndex("groups_name_lower_unique").on(sql`lower(${table.name})`),
+	],
+);
 
+// A user can be a member of one group through several sources (oidc, jira,
+// local), so the source is part of the identity; callers dedupe by group.
 export const userGroups = pgTable(
 	"user_groups",
 	{
@@ -65,17 +86,21 @@ export const userGroups = pgTable(
 	],
 );
 
-export const sessions = pgTable("sessions", {
-	idHash: text("id_hash").primaryKey(),
-	userId: uuid("user_id")
-		.notNull()
-		.references(() => users.id, { onDelete: "cascade" }),
-	idToken: text("id_token"),
-	createdAt: timestamp("created_at", { withTimezone: true })
-		.notNull()
-		.defaultNow(),
-	expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-});
+export const sessions = pgTable(
+	"sessions",
+	{
+		idHash: text("id_hash").primaryKey(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		idToken: text("id_token"),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+		expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+	},
+	(table) => [index("sessions_user_id_idx").on(table.userId)],
+);
 
 export const oidcTransactions = pgTable(
 	"oidc_transactions",
@@ -99,19 +124,23 @@ export const oidcTransactions = pgTable(
 	],
 );
 
-export const apiTokens = pgTable("api_tokens", {
-	id: uuid("id").primaryKey().defaultRandom(),
-	userId: uuid("user_id")
-		.notNull()
-		.references(() => users.id, { onDelete: "cascade" }),
-	name: text("name").notNull(),
-	tokenHash: text("token_hash").notNull().unique(),
-	createdAt: timestamp("created_at", { withTimezone: true })
-		.notNull()
-		.defaultNow(),
-	lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-	expiresAt: timestamp("expires_at", { withTimezone: true }),
-});
+export const apiTokens = pgTable(
+	"api_tokens",
+	{
+		id: uuid("id").primaryKey().defaultRandom(),
+		userId: uuid("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		name: text("name").notNull(),
+		tokenHash: text("token_hash").notNull().unique(),
+		createdAt: timestamp("created_at", { withTimezone: true })
+			.notNull()
+			.defaultNow(),
+		lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+		expiresAt: timestamp("expires_at", { withTimezone: true }),
+	},
+	(table) => [index("api_tokens_user_id_idx").on(table.userId)],
+);
 
 const tsvector = customType<{ data: string; driverData: string }>({
 	dataType() {
@@ -128,29 +157,25 @@ const importedAt = {
 		.defaultNow(),
 };
 
-export const projects = pgTable(
-	"projects",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		sourceId: text("source_id").notNull().unique(),
-		key: text("key").notNull().unique(),
-		name: text("name").notNull(),
-		description: text("description"),
-		leadId: uuid("lead_id").references(() => users.id, {
-			onDelete: "set null",
-		}),
-		projectType: text("project_type", {
-			enum: ["software", "service_desk"],
-		}).notNull(),
-		avatarUrl: text("avatar_url"),
-		avatarFile: text("avatar_file"),
-		categoryName: text("category_name"),
-		archived: boolean("archived").notNull().default(false),
-		lastIssueNumber: integer("last_issue_number").notNull().default(0),
-		...importedAt,
-	},
-	(table) => [index("projects_key_idx").on(table.key)],
-);
+export const projects = pgTable("projects", {
+	id: uuid("id").primaryKey().defaultRandom(),
+	sourceId: text("source_id").notNull().unique(),
+	key: text("key").notNull().unique(),
+	name: text("name").notNull(),
+	description: text("description"),
+	leadId: uuid("lead_id").references(() => users.id, {
+		onDelete: "set null",
+	}),
+	projectType: text("project_type", {
+		enum: ["software", "service_desk"],
+	}).notNull(),
+	avatarUrl: text("avatar_url"),
+	avatarFile: text("avatar_file"),
+	categoryName: text("category_name"),
+	archived: boolean("archived").notNull().default(false),
+	lastIssueNumber: integer("last_issue_number").notNull().default(0),
+	...importedAt,
+});
 
 export const issueTypes = pgTable("issue_types", {
 	id: uuid("id").primaryKey().defaultRandom(),
@@ -447,6 +472,7 @@ export const issues = pgTable(
 		...importedAt,
 	},
 	(table) => [
+		unique("issues_project_number_unique").on(table.projectId, table.number),
 		index("issues_project_idx").on(table.projectId),
 		index("issues_type_idx").on(table.typeId),
 		index("issues_status_idx").on(table.statusId),
