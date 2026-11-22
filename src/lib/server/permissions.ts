@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { eq } from "drizzle-orm";
+import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
+import { permissionLabel } from "../permission-labels.ts";
 import type { CurrentUser } from "./auth.ts";
 import { db } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -51,6 +52,8 @@ export const PERMISSION_KEYS = [
 ] as const;
 
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const BUILTIN_PROJECT_ROLES = ["admin", "member", "viewer"] as const;
 
 export type PermissionUser = {
 	id: string;
@@ -231,6 +234,10 @@ type Data = {
 	}[];
 	grantsByScheme: Map<string, GrantLike[]>;
 	actorsByProject: Map<string, ActorLike[]>;
+	schemeByProject: Map<
+		string,
+		{ id: string; sourceId: string; projectIds: string[]; name: string }
+	>;
 	globalSchemeId: string | null;
 };
 
@@ -289,16 +296,27 @@ async function loadData(): Promise<Data> {
 		actorsByProject.set(actor.projectId, list);
 	}
 
+	const schemes = schemeRows.map((scheme) => ({
+		...scheme,
+		projectIds: scheme.projectIds ?? [],
+	}));
+	const schemeByProject = new Map<string, (typeof schemes)[number]>();
+	for (const scheme of schemes) {
+		for (const projectId of scheme.projectIds) {
+			if (!schemeByProject.has(projectId)) {
+				schemeByProject.set(projectId, scheme);
+			}
+		}
+	}
+
 	return {
 		projects: new Map(
 			projectRows.map((project) => [project.id, project] as const),
 		),
-		schemes: schemeRows.map((scheme) => ({
-			...scheme,
-			projectIds: scheme.projectIds ?? [],
-		})),
+		schemes,
 		grantsByScheme,
 		actorsByProject,
+		schemeByProject,
 		globalSchemeId:
 			schemeRows.find((scheme) => scheme.sourceId === "global")?.id ?? null,
 	};
@@ -327,7 +345,7 @@ function getData(user: object) {
 }
 
 function schemeForProject(data: Data, projectId: string) {
-	return data.schemes.find((scheme) => scheme.projectIds.includes(projectId));
+	return data.schemeByProject.get(projectId);
 }
 
 const customerRoleName = "service desk customers";
@@ -574,44 +592,111 @@ export async function visibleUsernames(user: PermissionUser) {
 	);
 	if (visible.length === 0) return new Set<string>();
 
-	const [userRows, membershipRows] = await Promise.all([
-		db
-			.select({ id: users.id, username: users.username })
-			.from(users)
-			.where(eq(users.active, true)),
-		db
-			.select({ userId: userGroups.userId, name: groups.name })
-			.from(userGroups)
-			.innerJoin(groups, eq(groups.id, userGroups.groupId)),
-	]);
-	const groupsByUser = new Map<string, string[]>();
-	for (const row of membershipRows) {
-		const list = groupsByUser.get(row.userId) ?? [];
-		list.push(row.name);
-		groupsByUser.set(row.userId, list);
-	}
+	const usernames = new Set<string>();
+	const groupNames = new Set<string>();
+	const leadIds = new Set<string>();
+	let everyone = false;
 
-	const result = new Set<string>();
-	for (const row of userRows) {
-		const candidate: PermissionUser = {
-			id: row.id,
-			username: row.username,
-			groups: groupsByUser.get(row.id) ?? [],
-			isAdmin: false,
-		};
-		if (
-			visible.some((project) =>
-				canWithData(candidate, "BROWSE_PROJECTS", project, null, data),
-			)
-		) {
-			result.add(row.username);
+	const addGrant = (grant: GrantLike, project: PermissionProject | null) => {
+		switch (lower(grant.holderType)) {
+			case "anyone":
+			case "applicationrole":
+				everyone = true;
+				return;
+			case "group": {
+				const name = lower(grant.holderParameter);
+				if (name !== "") groupNames.add(name);
+				return;
+			}
+			case "user": {
+				const name = lower(grant.holderParameter);
+				if (name !== "") usernames.add(name);
+				return;
+			}
+			case "projectlead":
+				if (project?.leadId) leadIds.add(project.leadId);
+				return;
+			case "projectrole": {
+				const role = lower(grant.holderParameter);
+				if (role === "" || !project) return;
+				for (const actor of data.actorsByProject.get(project.id) ?? []) {
+					if (lower(actor.roleId) !== role && lower(actor.roleName) !== role) {
+						continue;
+					}
+					const type = lower(actor.actorType);
+					const parameter = lower(actor.actorParameter);
+					if (parameter === "") continue;
+					if (type === "user") usernames.add(parameter);
+					else if (type === "group") groupNames.add(parameter);
+				}
+			}
+		}
+	};
+
+	if (data.globalSchemeId) {
+		for (const grant of data.grantsByScheme.get(data.globalSchemeId) ?? []) {
+			if (lower(grant.permissionKey) === "administer") addGrant(grant, null);
 		}
 	}
-	return result;
+
+	for (const project of visible) {
+		const scheme = schemeForProject(data, project.id);
+		const grants = scheme
+			? (data.grantsByScheme.get(scheme.id) ?? [])
+			: DEFAULT_SCHEME_GRANTS;
+		for (const grant of grants) {
+			if (lower(grant.permissionKey) === "browse_projects") {
+				addGrant(grant, project);
+			}
+		}
+	}
+
+	if (everyone) {
+		const rows = await db
+			.select({ username: users.username })
+			.from(users)
+			.where(eq(users.active, true));
+		return new Set(rows.map((row) => row.username));
+	}
+
+	const filters = [];
+	if (usernames.size > 0) {
+		filters.push(inArray(sql`lower(${users.username})`, [...usernames]));
+	}
+	if (leadIds.size > 0) {
+		filters.push(inArray(users.id, [...leadIds]));
+	}
+	if (groupNames.size > 0) {
+		const names = [...groupNames];
+		filters.push(
+			exists(
+				db
+					.select({ one: sql`1` })
+					.from(userGroups)
+					.innerJoin(groups, eq(groups.id, userGroups.groupId))
+					.where(
+						and(
+							eq(userGroups.userId, users.id),
+							inArray(sql`lower(${groups.name})`, names),
+						),
+					),
+			),
+		);
+	}
+	if (filters.length === 0) return new Set<string>();
+
+	const rows = await db
+		.select({ username: users.username })
+		.from(users)
+		.where(and(eq(users.active, true), or(...filters)));
+	return new Set(rows.map((row) => row.username));
 }
 
 export async function issuePermissionContext(keyOrId: string) {
-	const byId = /^[0-9a-f-]{36}$/i.test(keyOrId);
+	const byId =
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+			keyOrId,
+		);
 	const [row] = await db
 		.select({
 			id: issues.id,
@@ -643,32 +728,35 @@ export async function issuePermissionContext(keyOrId: string) {
 }
 
 export function permissionDenied(permission: string) {
-	return `You do not have permission to ${permission} in this project`;
+	return `You do not have permission to ${permissionLabel(permission)} in this project`;
 }
+
+type ProjectAdminWriter = Pick<typeof db, "select" | "insert">;
 
 /** The built-in scheme's admin role actor for a project created in the app. */
 export async function addProjectAdmin(
 	projectId: string,
 	userId: string,
-	database: Pick<typeof db, "select" | "insert"> = db,
+	database: ProjectAdminWriter = db,
 ) {
 	const [user] = await database
 		.select({ username: users.username })
 		.from(users)
 		.where(eq(users.id, userId))
 		.limit(1);
-	if (!user) return;
+	if (!user) throw new HttpError(404, "User not found");
+	const role = BUILTIN_PROJECT_ROLES[0];
 	await database
 		.insert(projectRoleActors)
 		.values({
 			sourceId: `local:${projectId}:admin:user:${user.username}`,
 			projectId,
-			roleId: "admin",
-			roleName: "admin",
+			roleId: role,
+			roleName: role,
 			actorType: "user",
 			actorParameter: user.username,
 			actorDisplayName: user.username,
-			raw: { role: "admin", actor: user.username },
+			raw: { role, actor: user.username },
 		})
 		.onConflictDoNothing();
 }

@@ -55,14 +55,14 @@ test("the desk's settings, queue and SLA endpoints refuse a plain user", async (
 			method: "GET",
 			url: `/api/servicedesk/projects/${key}/settings`,
 			error:
-				"You do not have permission to ADMINISTER_PROJECTS in this project",
+				"You do not have permission to Administer projects in this project",
 		},
 		{
 			method: "PATCH",
 			url: `/api/servicedesk/projects/${key}/settings`,
 			payload: { openAccess: false },
 			error:
-				"You do not have permission to ADMINISTER_PROJECTS in this project",
+				"You do not have permission to Administer projects in this project",
 		},
 		{
 			method: "GET",
