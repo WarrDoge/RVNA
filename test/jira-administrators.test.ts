@@ -459,3 +459,60 @@ test("a failed admin search does not delete the global administrator grants", as
 		grantSources.sort(),
 	);
 });
+
+test("the admin search keeps several requests in flight", async () => {
+	const usernames = Array.from(
+		{ length: 12 },
+		(_, index) => `t-${run}-conc-${index}`,
+	);
+	await db.insert(users).values(
+		usernames.map((username) => ({
+			username,
+			displayName: `Fixture ${username}`,
+			sourceKey: `fixture-${username}`,
+		})),
+	);
+	let inFlight = 0;
+	let maxInFlight = 0;
+	const client: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			if (path === "/rest/api/2/permissions") {
+				return { permissions: {} } as T;
+			}
+			if (path === "/rest/api/2/applicationrole") return [] as T;
+			if (path === "/rest/api/2/user/permission/search") {
+				inFlight++;
+				maxInFlight = Math.max(maxInFlight, inFlight);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				inFlight--;
+				return { users: [] } as T;
+			}
+			if (path === "/rest/api/2/myself") {
+				return { name: "fixture-importer" } as T;
+			}
+			if (path === "/rest/api/2/mypermissions") {
+				return {
+					permissions: { ADMINISTER: { havePermission: false } },
+				} as T;
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+
+	try {
+		await importPermissions(client, {
+			projectKeys: [],
+			fullImport: false,
+			fetchGlobal: true,
+		});
+		expect(maxInFlight).toBeGreaterThan(1);
+		expect(maxInFlight).toBeLessThanOrEqual(5);
+	} finally {
+		await pool.query("delete from users where username = any($1::text[])", [
+			usernames,
+		]);
+	}
+});

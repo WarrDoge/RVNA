@@ -10,6 +10,7 @@ import { syncGroups } from "../src/lib/server/auth.ts";
 import {
 	groups,
 	permissionGrants,
+	permissionLocalAssignments,
 	permissionSchemes,
 	projectRoleActors,
 	projects,
@@ -510,4 +511,389 @@ test("a failed scheme fetch keeps the project link that already exists", async (
 	expect([...(scheme?.projectIds ?? [])].sort()).toEqual(
 		[projectId, projectIdB].sort(),
 	);
+});
+
+test("the groups picker pages past a short response that reports a total", async () => {
+	const names = [`${tag}-page-a`, `${tag}-page-b`, `${tag}-page-c`];
+	const client: PermissionImportClient = {
+		async getJson<T>(
+			path: string,
+			params?: Record<string, string | number | boolean | undefined>,
+		) {
+			if (path === "/rest/api/2/groups/picker") {
+				const startAt = Number(params?.startAt ?? 0);
+				const groups =
+					startAt === 0
+						? names.slice(0, 2).map((name) => ({ name }))
+						: names.slice(2).map((name) => ({ name }));
+				return { groups, total: names.length } as T;
+			}
+			if (path === "/rest/api/2/group/member") {
+				return { values: [], isLast: true } as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+
+	const result = await importPermissions(client, {
+		projectKeys: [],
+		fullImport: false,
+		fetchGlobal: false,
+	});
+	expect(result.report).toContain(`groups picker: ${names.length} groups`);
+	const rows = await db
+		.select({ name: groups.name })
+		.from(groups)
+		.where(inArray(groups.name, names));
+	expect(rows.map((row) => row.name).sort()).toEqual(names);
+});
+
+test("the groups picker pages past a full response without a total", async () => {
+	const name = `${tag}-page-full`;
+	const client: PermissionImportClient = {
+		async getJson<T>(
+			path: string,
+			params?: Record<string, string | number | boolean | undefined>,
+		) {
+			if (path === "/rest/api/2/groups/picker") {
+				const startAt = Number(params?.startAt ?? 0);
+				const groups =
+					startAt === 0
+						? Array.from({ length: 1000 }, () => ({ name: "" }))
+						: [{ name }];
+				return { groups } as T;
+			}
+			if (path === "/rest/api/2/group/member") {
+				return { values: [], isLast: true } as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+
+	const result = await importPermissions(client, {
+		projectKeys: [],
+		fullImport: false,
+		fetchGlobal: false,
+	});
+	expect(result.report).toContain("groups picker: 1 groups");
+	const rows = await db
+		.select({ name: groups.name })
+		.from(groups)
+		.where(eq(groups.name, name));
+	expect(rows).toHaveLength(1);
+});
+
+test("a failed group member fetch skips only that group", async () => {
+	const okGroup = `${tag}-members-ok`;
+	const failedGroup = `${tag}-members-failed`;
+	const [failed] = await db
+		.insert(groups)
+		.values({ name: failedGroup, local: false })
+		.returning({ id: groups.id });
+	await db.insert(userGroups).values({
+		userId: reporterId,
+		groupId: failed.id,
+		source: "jira",
+	});
+
+	const client: PermissionImportClient = {
+		async getJson<T>(
+			path: string,
+			params?: Record<string, string | number | boolean | undefined>,
+		) {
+			if (path === "/rest/api/2/groups/picker") {
+				return {
+					groups: [{ name: okGroup }, { name: failedGroup }],
+					total: 2,
+				} as T;
+			}
+			if (path === "/rest/api/2/group/member") {
+				if (params?.groupname === failedGroup) {
+					throw new Error("member list unavailable");
+				}
+				return {
+					values: [{ name: "fixture_reporter" }],
+					isLast: true,
+				} as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+
+	try {
+		const result = await importPermissions(client, {
+			projectKeys: [],
+			fullImport: false,
+			fetchGlobal: false,
+		});
+		expect(
+			result.report.some((line) =>
+				line.includes(`group members unavailable for ${failedGroup}`),
+			),
+		).toBe(true);
+		const kept = await db
+			.select({ groupId: userGroups.groupId })
+			.from(userGroups)
+			.where(eq(userGroups.userId, reporterId));
+		expect(kept.some((row) => row.groupId === failed.id)).toBe(true);
+
+		const [ok] = await db
+			.select({ id: groups.id })
+			.from(groups)
+			.where(eq(groups.name, okGroup));
+		const added = await db
+			.select({ groupId: userGroups.groupId })
+			.from(userGroups)
+			.where(eq(userGroups.userId, reporterId));
+		expect(added.some((row) => row.groupId === ok.id)).toBe(true);
+	} finally {
+		await db.delete(userGroups).where(eq(userGroups.groupId, failed.id));
+		await db.delete(groups).where(eq(groups.id, failed.id));
+	}
+});
+
+test("a group created while the import runs does not abort it", async () => {
+	const groupName = `${tag}-race`;
+	const functionName = `test_slow_group_${run}`;
+	const triggerName = `test_slow_group_${run}_trigger`;
+	let pickerCalls = 0;
+	let signalInsert = () => {};
+	const insertStarted = new Promise<void>((resolve) => {
+		signalInsert = resolve;
+	});
+	const makeClient = (): PermissionImportClient => ({
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				pickerCalls++;
+				if (pickerCalls === 2) await insertStarted;
+				return { groups: [{ name: groupName }], total: 1 } as T;
+			}
+			if (path === "/rest/api/2/group/member") {
+				return { values: [], isLast: true } as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	});
+
+	const database = db as unknown as { insert: typeof db.insert };
+	const originalInsert = database.insert.bind(db);
+	database.insert = ((table: Parameters<typeof db.insert>[0]) => {
+		if (table === groups) signalInsert();
+		return originalInsert(table);
+	}) as typeof db.insert;
+
+	try {
+		await pool.query(
+			`create or replace function ${functionName}() returns trigger language plpgsql as $$
+			 begin
+			   if new.name = '${groupName}' then perform pg_sleep(0.5); end if;
+			   return new;
+			 end $$`,
+		);
+		await pool.query(
+			`create trigger ${triggerName} before insert on groups
+			 for each row execute function ${functionName}()`,
+		);
+
+		const [first, second] = await Promise.all([
+			importPermissions(makeClient(), {
+				projectKeys: [],
+				fullImport: false,
+				fetchGlobal: false,
+			}),
+			importPermissions(makeClient(), {
+				projectKeys: [],
+				fullImport: false,
+				fetchGlobal: false,
+			}),
+		]);
+		expect(first.report).toContain("groups picker: 1 groups");
+		expect(second.report).toContain("groups picker: 1 groups");
+		const rows = await db
+			.select({ id: groups.id })
+			.from(groups)
+			.where(eq(groups.name, groupName));
+		expect(rows).toHaveLength(1);
+		expect(
+			(first.counts.groups?.inserted ?? 0) +
+				(second.counts.groups?.inserted ?? 0),
+		).toBe(1);
+		expect(
+			(first.counts.groups?.unchanged ?? 0) +
+				(second.counts.groups?.unchanged ?? 0),
+		).toBe(1);
+	} finally {
+		database.insert = originalInsert;
+		await pool.query(`drop trigger if exists ${triggerName} on groups`);
+		await pool.query(`drop function if exists ${functionName}()`);
+		await db.delete(groups).where(eq(groups.name, groupName));
+	}
+});
+
+test("a role's raw payload does not repeat the whole role for every actor", async () => {
+	const key = `RA${run.slice(0, 6).toUpperCase()}`;
+	const source = `fixture-role-raw-${run}`;
+	const [project] = await db
+		.insert(projects)
+		.values({
+			sourceId: `${tag}:raw-project`,
+			key,
+			name: `${tag} raw project`,
+			projectType: "software",
+		})
+		.returning({ id: projects.id });
+	const actors = Array.from({ length: 20 }, (_, index) => ({
+		id: index + 1,
+		displayName: `Fixture Actor ${index}`,
+		type: "atlassian-user-role-actor",
+		name: `fixture_actor_${index}`,
+	}));
+	const client: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			if (path === `/rest/api/2/project/${key}/role`) {
+				return {
+					Developers: `${base}/rest/api/2/project/${key}/role/77`,
+				} as T;
+			}
+			if (path.endsWith("/role/77")) {
+				return {
+					id: 77,
+					name: "Developers",
+					description: "Fixture role",
+					actors,
+				} as T;
+			}
+			if (path === `/rest/api/2/project/${key}/permissionscheme`) {
+				return {
+					id: source,
+					name: "Fixture role scheme",
+					permissions: [],
+				} as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+
+	try {
+		await importPermissions(client, {
+			projectKeys: [key],
+			fullImport: true,
+			fetchGlobal: false,
+		});
+		const rows = await db
+			.select({ raw: projectRoleActors.raw })
+			.from(projectRoleActors)
+			.where(eq(projectRoleActors.projectId, project.id));
+		expect(rows).toHaveLength(20);
+		for (const row of rows) {
+			const raw = row.raw as {
+				role?: { actors?: unknown };
+				actor?: unknown;
+			};
+			expect(raw.actor).toBeDefined();
+			expect(raw.role?.actors).toBeUndefined();
+		}
+	} finally {
+		await db.delete(projects).where(eq(projects.id, project.id));
+		await pool.query(
+			"delete from permission_grants where scheme_id in (select id from permission_schemes where source_id = $1)",
+			[source],
+		);
+		await pool.query("delete from permission_schemes where source_id = $1", [
+			source,
+		]);
+	}
+});
+
+test("reapplying local assignments writes once per scheme", async () => {
+	const source = `fixture-local-assignment-${run}`;
+	const [scheme] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: source,
+			name: "Fixture local assignment scheme",
+			projectIds: [],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	await db
+		.delete(permissionLocalAssignments)
+		.where(
+			inArray(permissionLocalAssignments.projectId, [projectId, projectIdB]),
+		);
+	const otherSchemes = await db
+		.select({
+			id: permissionSchemes.id,
+			projectIds: permissionSchemes.projectIds,
+		})
+		.from(permissionSchemes);
+	for (const other of otherSchemes) {
+		if (other.id === scheme.id) continue;
+		const next = (other.projectIds ?? []).filter(
+			(id) => id !== projectId && id !== projectIdB,
+		);
+		if (next.length !== (other.projectIds ?? []).length) {
+			await db
+				.update(permissionSchemes)
+				.set({ projectIds: next })
+				.where(eq(permissionSchemes.id, other.id));
+		}
+	}
+	await db.insert(permissionLocalAssignments).values([
+		{ projectId, schemeId: scheme.id },
+		{ projectId: projectIdB, schemeId: scheme.id },
+	]);
+
+	const client: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+	const original = pool.query.bind(pool);
+	const statements: string[] = [];
+	(pool as unknown as { query: typeof pool.query }).query = ((
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		statements.push(typeof query === "string" ? query : (query.text ?? ""));
+		return (original as (...args: unknown[]) => unknown)(query, ...rest);
+	}) as typeof pool.query;
+
+	try {
+		await importPermissions(client, {
+			projectKeys: [],
+			fullImport: false,
+			fetchGlobal: false,
+		});
+	} finally {
+		(pool as unknown as { query: typeof pool.query }).query = original;
+	}
+	try {
+		const updates = statements.filter((statement) =>
+			statement.includes('update "permission_schemes"'),
+		);
+		expect(updates).toHaveLength(1);
+		const [row] = await db
+			.select({ projectIds: permissionSchemes.projectIds })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id));
+		expect([...(row?.projectIds ?? [])].sort()).toEqual(
+			[projectId, projectIdB].sort(),
+		);
+	} finally {
+		await db
+			.delete(permissionLocalAssignments)
+			.where(
+				inArray(permissionLocalAssignments.projectId, [projectId, projectIdB]),
+			);
+		await db
+			.delete(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id));
+	}
 });

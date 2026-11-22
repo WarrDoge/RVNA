@@ -28,6 +28,7 @@ export interface JiraGroup {
 export interface JiraGroupPicker {
 	groups?: JiraGroup[];
 	total?: number;
+	isLast?: boolean;
 }
 
 export interface JiraGroupMember {
@@ -101,6 +102,7 @@ export interface PermissionImportResult {
 }
 
 const PAGE_SIZE = 1000;
+const ADMIN_SEARCH_CONCURRENCY = 5;
 
 function errorMessage(error: unknown) {
 	return error instanceof Error ? error.message : String(error);
@@ -118,12 +120,11 @@ async function fetchGroups(client: PermissionImportClient) {
 		for (const group of batch) {
 			if (group.name) byName.set(group.name, group);
 		}
-		const total = response.total ?? byName.size;
-		if (
-			batch.length === 0 ||
-			byName.size >= total ||
-			batch.length < PAGE_SIZE
-		) {
+		const total = typeof response.total === "number" ? response.total : null;
+		if (batch.length === 0 || response.isLast === true) break;
+		if (total !== null) {
+			if (startAt + batch.length >= total) break;
+		} else if (batch.length < PAGE_SIZE) {
 			break;
 		}
 		startAt += batch.length;
@@ -168,8 +169,18 @@ async function importGroupsAndMemberships(
 	const jiraGroups = await fetchGroups(client);
 	report.push(`groups picker: ${jiraGroups.length} groups`);
 	const membersByGroup = new Map<string, string[]>();
+	const skippedGroups = new Set<string>();
 	for (const group of jiraGroups) {
-		const members = await fetchGroupMembers(client, group.name);
+		let members: JiraGroupMember[];
+		try {
+			members = await fetchGroupMembers(client, group.name);
+		} catch (error) {
+			skippedGroups.add(group.name);
+			report.push(
+				`group members unavailable for ${group.name}: ${errorMessage(error)}`,
+			);
+			continue;
+		}
 		membersByGroup.set(
 			group.name,
 			members.map((member) => member.name),
@@ -189,12 +200,26 @@ async function importGroupsAndMemberships(
 			const [created] = await db
 				.insert(groups)
 				.values({ name: group.name, local: false })
+				.onConflictDoNothing()
 				.returning();
 			if (created) {
 				groupIds.set(group.name, created.id);
 				byName.set(group.name.toLowerCase(), created);
+				groupCounts.inserted++;
+				continue;
 			}
-			groupCounts.inserted++;
+			const [raced] = await db
+				.select()
+				.from(groups)
+				.where(sql`lower(${groups.name}) = ${group.name.toLowerCase()}`)
+				.limit(1);
+			if (!raced) {
+				report.push(`group ${group.name} could not be created`);
+				continue;
+			}
+			groupIds.set(group.name, raced.id);
+			byName.set(group.name.toLowerCase(), raced);
+			groupCounts.unchanged++;
 			continue;
 		}
 		groupIds.set(group.name, existing.id);
@@ -206,7 +231,10 @@ async function importGroupsAndMemberships(
 		.select({ id: users.id, username: users.username })
 		.from(users);
 	const userIds = new Map(userRows.map((user) => [user.username, user.id]));
-	const importedGroupIds = [...groupIds.values()];
+	// A group whose member list failed keeps its existing memberships.
+	const importedGroupIds = [...groupIds.entries()]
+		.filter(([name]) => !skippedGroups.has(name))
+		.map(([, id]) => id);
 	const existingMemberships = importedGroupIds.length
 		? await db
 				.select({
@@ -308,7 +336,17 @@ function roleActorRow(
 			actor.actorUser?.displayName ??
 			actor.actorGroup?.displayName ??
 			parameter,
-		raw: { project: projectKey, role, actor },
+		raw: {
+			project: projectKey,
+			role: {
+				id: role.id,
+				name: role.name,
+				...(role.description !== undefined && {
+					description: role.description,
+				}),
+			},
+			actor,
+		},
 	};
 }
 
@@ -666,15 +704,30 @@ async function importGlobalPermissions(
 		.from(users)
 		.where(eq(users.active, true));
 	try {
-		for (const user of localUsers) {
-			const response = await client.getJson<UserPermissionSearch>(
-				"/rest/api/2/user/permission/search",
-				{
-					permissions: "ADMINISTER",
-					username: user.username,
-				},
+		for (
+			let index = 0;
+			index < localUsers.length;
+			index += ADMIN_SEARCH_CONCURRENCY
+		) {
+			const chunk = localUsers.slice(index, index + ADMIN_SEARCH_CONCURRENCY);
+			const results = await Promise.allSettled(
+				chunk.map(async (user) => {
+					const response = await client.getJson<UserPermissionSearch>(
+						"/rest/api/2/user/permission/search",
+						{
+							permissions: "ADMINISTER",
+							username: user.username,
+						},
+					);
+					return { user, response };
+				}),
 			);
-			if ((response.users ?? []).length > 0) admins.add(user.username);
+			for (const result of results) {
+				if (result.status === "rejected") throw result.reason;
+				if ((result.value.response.users ?? []).length > 0) {
+					admins.add(result.value.user.username);
+				}
+			}
 		}
 		adminSearch = `user/permission/search: ${admins.size} ADMINISTER users`;
 	} catch (error) {
@@ -826,21 +879,34 @@ async function applyLocalAssignments() {
 			projectIds: permissionSchemes.projectIds,
 		})
 		.from(permissionSchemes);
+	const assignedProjects = new Set(
+		assignments.map((assignment) => assignment.projectId),
+	);
+	const byScheme = new Map<string, string[]>();
 	for (const assignment of assignments) {
-		for (const scheme of schemes) {
-			const projectIds = scheme.projectIds ?? [];
-			const shouldHold = scheme.id === assignment.schemeId;
-			const holds = projectIds.includes(assignment.projectId);
-			if (holds === shouldHold) continue;
-			const next = shouldHold
-				? [...new Set([...projectIds, assignment.projectId])].sort()
-				: projectIds.filter((id) => id !== assignment.projectId);
-			await db
-				.update(permissionSchemes)
-				.set({ projectIds: next, updatedAt: new Date() })
-				.where(eq(permissionSchemes.id, scheme.id));
-			scheme.projectIds = next;
+		const list = byScheme.get(assignment.schemeId) ?? [];
+		list.push(assignment.projectId);
+		byScheme.set(assignment.schemeId, list);
+	}
+	for (const scheme of schemes) {
+		const projectIds = scheme.projectIds ?? [];
+		const assignedHere = new Set(byScheme.get(scheme.id) ?? []);
+		let next = projectIds.filter(
+			(id) => !assignedProjects.has(id) || assignedHere.has(id),
+		);
+		const added = [...assignedHere].filter((id) => !next.includes(id));
+		if (added.length > 0) {
+			next = [...new Set([...next, ...added])].sort();
 		}
+		const changed =
+			next.length !== projectIds.length ||
+			next.some((id, index) => id !== projectIds[index]);
+		if (!changed) continue;
+		await db
+			.update(permissionSchemes)
+			.set({ projectIds: next, updatedAt: new Date() })
+			.where(eq(permissionSchemes.id, scheme.id));
+		scheme.projectIds = next;
 	}
 }
 
