@@ -729,7 +729,7 @@ export type CumulativeFlowPayload = {
 		sequence: number;
 		statusIds: string[];
 	}[];
-	assignees: string[];
+	assignees: { id: string; name: string }[];
 	dates: string[];
 	series: { columnId: string; name: string; values: number[] }[];
 	total: number[];

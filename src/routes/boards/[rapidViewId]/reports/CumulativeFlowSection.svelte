@@ -113,8 +113,8 @@
 			bind:value={() => assignee ?? "", (value) => setParam("assignee", value)}
 		>
 			<option value="">All assignees</option>
-			{#each flow?.assignees ?? [] as name (name)}
-				<option value={name}>{name}</option>
+			{#each flow?.assignees ?? [] as assignee (assignee.id)}
+				<option value={assignee.id}>{assignee.name}</option>
 			{/each}
 		</select>
 	</label>

@@ -12,6 +12,7 @@ import {
 	type SprintReportRow,
 	type SprintReportSums,
 	type StatusCategory,
+	type VelocitySprint,
 } from "../../shared/agile-reports/index.ts";
 import { JqlError, parseJql } from "../../shared/jql/index.ts";
 import { canAccessProjectlessBoard } from "../agile/service.ts";
@@ -50,7 +51,12 @@ import type { cfdQuery, reportQuery, velocityQuery } from "./schemas.ts";
 
 type BoardRow = typeof boards.$inferSelect;
 type SprintRow = typeof sprints.$inferSelect;
-type StatusRow = { id: string; name: string; category: StatusCategory };
+type StatusRow = {
+	id: string;
+	sourceId: string;
+	name: string;
+	category: StatusCategory;
+};
 
 type BoardIssueRow = {
 	id: string;
@@ -61,6 +67,7 @@ type BoardIssueRow = {
 	statusId: string;
 	statusName: string;
 	statusCategory: StatusCategory;
+	assigneeId: string | null;
 	assignee: string | null;
 	storyPoints: number | null;
 	originalEstimate: number | null;
@@ -81,9 +88,12 @@ type BoardReportData = {
 	board: BoardRow;
 	issueRows: BoardIssueRow[];
 	historyByIssue: Map<string, HistoryRow[]>;
+	statusById: Map<string, StatusRow>;
+	statusBySourceId: Map<string, StatusRow>;
 	statusByName: Map<string, StatusRow>;
 	sprintRows: SprintRow[];
 	storyPointsFieldName: string;
+	visibleProjectIds: string[];
 };
 
 function iso(value: Date | null | undefined) {
@@ -141,10 +151,29 @@ async function loadSprint(boardId: string, sprintId: string) {
 	return row ?? null;
 }
 
-async function loadBoardIssueRows(board: BoardRow, user: SearchUser) {
+const boardIssueSelection = {
+	id: issues.id,
+	key: issues.key,
+	summary: issues.summary,
+	typeName: issueTypes.name,
+	typeSubtask: issueTypes.subtask,
+	statusId: statuses.id,
+	statusName: statuses.name,
+	statusCategory: statuses.category,
+	assigneeId: issues.assigneeId,
+	assignee: users.displayName,
+	storyPoints: issues.storyPoints,
+	originalEstimate: issues.originalEstimate,
+	created: issues.created,
+};
+
+async function loadBoardIssueRows(
+	board: BoardRow,
+	user: SearchUser,
+	visible: string[],
+) {
 	const conditions: SQL[] = [];
 	const catalog = await loadCatalog();
-	const visible = await viewerProjectIds(user);
 	for (const jql of [board.filterJql, board.subFilterJql]) {
 		if (!jql?.trim()) continue;
 		const compiled = await compileJql(parseJql(jql), {
@@ -162,25 +191,33 @@ async function loadBoardIssueRows(board: BoardRow, user: SearchUser) {
 	const where = and(...conditions);
 	const rows = await withStatementTimeout((tx) =>
 		tx
-			.select({
-				id: issues.id,
-				key: issues.key,
-				summary: issues.summary,
-				typeName: issueTypes.name,
-				typeSubtask: issueTypes.subtask,
-				statusId: statuses.id,
-				statusName: statuses.name,
-				statusCategory: statuses.category,
-				assignee: users.displayName,
-				storyPoints: issues.storyPoints,
-				originalEstimate: issues.originalEstimate,
-				created: issues.created,
-			})
+			.select(boardIssueSelection)
 			.from(issues)
 			.innerJoin(issueTypes, eq(issueTypes.id, issues.typeId))
 			.innerJoin(statuses, eq(statuses.id, issues.statusId))
 			.leftJoin(users, eq(users.id, issues.assigneeId))
 			.where(where)
+			.orderBy(sql`${issues.rank} collate "C"`, issues.key),
+	);
+	return rows as BoardIssueRow[];
+}
+
+/** Rows for snapshot keys that the board filter no longer returns, still limited to visible projects. */
+async function loadIssueRowsByKeys(keys: string[], visible: string[]) {
+	if (keys.length === 0) return [] as BoardIssueRow[];
+	const rows = await withStatementTimeout((tx) =>
+		tx
+			.select(boardIssueSelection)
+			.from(issues)
+			.innerJoin(issueTypes, eq(issueTypes.id, issues.typeId))
+			.innerJoin(statuses, eq(statuses.id, issues.statusId))
+			.leftJoin(users, eq(users.id, issues.assigneeId))
+			.where(
+				and(
+					inArray(issues.key, keys),
+					sql`issues.project_id = any(${sql.param(visible)}::uuid[])`,
+				),
+			)
 			.orderBy(sql`${issues.rank} collate "C"`, issues.key),
 	);
 	return rows as BoardIssueRow[];
@@ -218,12 +255,14 @@ async function loadBoardReportData(
 	board: BoardRow,
 	user: SearchUser,
 ): Promise<BoardReportData> {
+	const visible = await viewerProjectIds(user);
 	const [issueRows, statusRows, sprintRows, storyPointsName] =
 		await Promise.all([
-			loadBoardIssueRows(board, user),
+			loadBoardIssueRows(board, user, visible),
 			db
 				.select({
 					id: statuses.id,
+					sourceId: statuses.sourceId,
 					name: statuses.name,
 					category: statuses.category,
 				})
@@ -242,9 +281,12 @@ async function loadBoardReportData(
 		board,
 		issueRows,
 		historyByIssue,
+		statusById: new Map(statusRows.map((row) => [row.id, row])),
+		statusBySourceId: new Map(statusRows.map((row) => [row.sourceId, row])),
 		statusByName: new Map(statusRows.map((row) => [row.name, row])),
 		sprintRows,
 		storyPointsFieldName: storyPointsName,
+		visibleProjectIds: visible,
 	};
 }
 
@@ -317,6 +359,19 @@ function estimationFieldNames(
 	if (estimation === "story_points") return [storyPointsName];
 	if (estimation === "original_estimate") return ["timeoriginalestimate"];
 	return [];
+}
+
+/** Local history stores the status uuid, imported history the Jira id; both fall back to the name. */
+function statusForHistory(
+	data: BoardReportData,
+	value: string | null | undefined,
+): StatusRow | undefined {
+	if (!value) return undefined;
+	return (
+		data.statusById.get(value) ??
+		data.statusBySourceId.get(value) ??
+		data.statusByName.get(value)
+	);
 }
 
 type SprintSnapshot = {
@@ -404,20 +459,55 @@ function parseSnapshot(
 	};
 }
 
+type SprintLoad = {
+	reportRow?: typeof sprintReports.$inferSelect | null;
+	memberIds?: string[];
+};
+
 async function buildSprintData(
 	data: BoardReportData,
 	sprint: SprintRow,
 	estimation: EstimationStatistic,
+	loaded?: SprintLoad,
 ) {
-	const [reportRow] = await db
-		.select()
-		.from(sprintReports)
-		.where(eq(sprintReports.sprintId, sprint.id))
-		.limit(1);
+	const reportRow =
+		loaded?.reportRow !== undefined
+			? loaded.reportRow
+			: ((
+					await db
+						.select()
+						.from(sprintReports)
+						.where(eq(sprintReports.sprintId, sprint.id))
+						.limit(1)
+				)[0] ?? null);
 	const snapshot = reportRow
 		? parseSnapshot(reportRow.contents as Record<string, unknown>, estimation)
 		: null;
+	if (snapshot) {
+		const snapshotKeys = [
+			...snapshot.completed,
+			...snapshot.notCompleted,
+			...snapshot.punted,
+		];
+		const known = new Set(data.issueRows.map((row) => row.key));
+		const missing = snapshotKeys.filter((key) => !known.has(key));
+		if (missing.length > 0) {
+			const extra = await loadIssueRowsByKeys(missing, data.visibleProjectIds);
+			data.issueRows.push(...extra);
+			const extraHistory = await loadHistoryRows(extra.map((row) => row.id));
+			for (const row of extraHistory) {
+				const list = data.historyByIssue.get(row.issueId) ?? [];
+				list.push(row);
+				data.historyByIssue.set(row.issueId, list);
+			}
+		}
+	}
 	const names = data.sprintRows.map((row) => row.name);
+	const estimateFields = new Set(
+		estimationFieldNames(estimation, data.storyPointsFieldName).map((name) =>
+			name.toLowerCase(),
+		),
+	);
 	const events: SprintEvent[] = [];
 	const candidateIds = new Set<string>();
 
@@ -461,17 +551,30 @@ async function buildSprintData(
 		}
 	}
 
-	const membership = await db
-		.select({ issueId: issueSprints.issueId })
-		.from(issueSprints)
-		.where(eq(issueSprints.sprintId, sprint.id));
+	const memberIds =
+		loaded?.memberIds ??
+		(
+			await db
+				.select({ issueId: issueSprints.issueId })
+				.from(issueSprints)
+				.where(eq(issueSprints.sprintId, sprint.id))
+		).map((row) => row.issueId);
 	const issueById = new Map(data.issueRows.map((row) => [row.id, row]));
 	const currentMembers = new Set(
-		membership
-			.map((row) => row.issueId)
-			.filter((issueId) => !issueById.get(issueId)?.typeSubtask),
+		memberIds.filter((issueId) => !issueById.get(issueId)?.typeSubtask),
 	);
 	for (const issueId of currentMembers) candidateIds.add(issueId);
+	if (snapshot) {
+		const issueByKey = new Map(data.issueRows.map((row) => [row.key, row]));
+		for (const key of [
+			...snapshot.completed,
+			...snapshot.notCompleted,
+			...snapshot.punted,
+		]) {
+			const issue = issueByKey.get(key);
+			if (issue && !issue.typeSubtask) candidateIds.add(issue.id);
+		}
+	}
 	const reportIssues: ReportIssue[] = [];
 	for (const issueId of candidateIds) {
 		const issue = issueById.get(issueId);
@@ -539,8 +642,12 @@ async function buildSprintData(
 
 		for (const row of history) {
 			if (row.field === "status" && row.created) {
-				const from = data.statusByName.get(row.fromString ?? "");
-				const to = data.statusByName.get(row.toString ?? "");
+				const from =
+					statusForHistory(data, row.fromValue) ??
+					statusForHistory(data, row.fromString);
+				const to =
+					statusForHistory(data, row.toValue) ??
+					statusForHistory(data, row.toString);
 				if (!from || !to) continue;
 				events.push({
 					at: row.created.toISOString(),
@@ -551,12 +658,7 @@ async function buildSprintData(
 					toCategory: to.category,
 				});
 			}
-			if (
-				estimationFieldNames(estimation, data.storyPointsFieldName).includes(
-					row.field,
-				) &&
-				row.created
-			) {
+			if (estimateFields.has(row.field.toLowerCase()) && row.created) {
 				const value = estimateValue(row);
 				if (value.from !== value.to) {
 					events.push({
@@ -569,14 +671,6 @@ async function buildSprintData(
 					});
 				}
 			}
-		}
-		if (issue.created) {
-			events.push({
-				at: issue.created.toISOString(),
-				type: "issue-created",
-				issueId,
-				issueKey: issue.key,
-			});
 		}
 	}
 
@@ -661,6 +755,22 @@ async function buildSprintData(
 	}
 
 	return { issues: reportIssues, events, snapshot };
+}
+
+function sprintBurndown(
+	sprint: SprintRow,
+	sprintData: Awaited<ReturnType<typeof buildSprintData>>,
+) {
+	const now = new Date();
+	const start = sprint.startDate ?? sprint.endDate ?? now;
+	const end = sprint.completeDate ?? sprint.endDate ?? now;
+	return buildBurndown({
+		start: start.toISOString(),
+		end: end.toISOString(),
+		completeAt: sprint.completeDate?.toISOString() ?? null,
+		issues: sprintData.issues,
+		events: sprintData.events,
+	});
 }
 
 function reportIssuePayload(issue: ReportIssue) {
@@ -778,16 +888,7 @@ export async function burndownReport(
 	try {
 		const data = await loadBoardReportData(board, actor);
 		const sprintData = await buildSprintData(data, sprint, estimation);
-		const burndown = buildBurndown({
-			start: sprint.startDate?.toISOString() ?? new Date().toISOString(),
-			end:
-				sprint.endDate?.toISOString() ??
-				sprint.completeDate?.toISOString() ??
-				new Date().toISOString(),
-			completeAt: sprint.completeDate?.toISOString() ?? null,
-			issues: sprintData.issues,
-			events: sprintData.events,
-		});
+		const burndown = sprintBurndown(sprint, sprintData);
 		return {
 			board: {
 				rapidViewId: board.rapidViewId,
@@ -825,16 +926,7 @@ export async function sprintReport(
 			issues: sprintData.issues,
 			events: sprintData.events,
 		});
-		const burndown = buildBurndown({
-			start: sprint.startDate?.toISOString() ?? new Date().toISOString(),
-			end:
-				sprint.endDate?.toISOString() ??
-				sprint.completeDate?.toISOString() ??
-				new Date().toISOString(),
-			completeAt: sprint.completeDate?.toISOString() ?? null,
-			issues: sprintData.issues,
-			events: sprintData.events,
-		});
+		const burndown = sprintBurndown(sprint, sprintData);
 		const useSnapshotSums = estimation === board.estimationField;
 		const sums = {
 			...report.sums,
@@ -876,9 +968,41 @@ export async function velocityReport(
 		const closed = data.sprintRows.filter(
 			(row) => row.state === "closed" && row.startDate,
 		);
-		const velocitySprints = [];
+		const closedIds = closed.map((sprint) => sprint.id);
+		const reportRows: (typeof sprintReports.$inferSelect)[] = [];
+		const membershipRows: { sprintId: string; issueId: string }[] = [];
+		if (closedIds.length > 0) {
+			const [reports, members] = await Promise.all([
+				db
+					.select()
+					.from(sprintReports)
+					.where(inArray(sprintReports.sprintId, closedIds)),
+				db
+					.select({
+						sprintId: issueSprints.sprintId,
+						issueId: issueSprints.issueId,
+					})
+					.from(issueSprints)
+					.where(inArray(issueSprints.sprintId, closedIds)),
+			]);
+			reportRows.push(...reports);
+			membershipRows.push(...members);
+		}
+		const reportBySprint = new Map(
+			reportRows.map((row) => [row.sprintId, row]),
+		);
+		const membersBySprint = new Map<string, string[]>();
+		for (const row of membershipRows) {
+			const list = membersBySprint.get(row.sprintId) ?? [];
+			list.push(row.issueId);
+			membersBySprint.set(row.sprintId, list);
+		}
+		const velocitySprints: VelocitySprint[] = [];
 		for (const sprint of closed) {
-			const sprintData = await buildSprintData(data, sprint, estimation);
+			const sprintData = await buildSprintData(data, sprint, estimation, {
+				reportRow: reportBySprint.get(sprint.id) ?? null,
+				memberIds: membersBySprint.get(sprint.id) ?? [],
+			});
 			const report = buildSprintReport({
 				sprint: sprintPayload(sprint),
 				issues: sprintData.issues,
@@ -964,24 +1088,30 @@ export async function cumulativeFlowReport(
 			if (row.statusId) column.statusIds.push(row.statusId);
 			columns.set(row.id, column);
 		}
-		const statusIdByName = new Map(
-			[...data.statusByName.values()].map((row) => [row.name, row.id]),
-		);
 		const cfdIssues = data.issueRows
-			.filter((issue) => !query.assignee || issue.assignee === query.assignee)
+			.filter(
+				(issue) =>
+					!query.assignee ||
+					issue.assigneeId === query.assignee ||
+					issue.assignee === query.assignee,
+			)
 			.map((issue) => {
 				const history = (data.historyByIssue.get(issue.id) ?? []).filter(
 					(row) => row.field === "status" && row.created,
 				);
 				const statusChanges = [];
 				for (const row of history) {
-					const fromStatusId = statusIdByName.get(row.fromString ?? "");
-					const toStatusId = statusIdByName.get(row.toString ?? "");
-					if (!toStatusId) continue;
+					const fromStatus =
+						statusForHistory(data, row.fromValue) ??
+						statusForHistory(data, row.fromString);
+					const toStatus =
+						statusForHistory(data, row.toValue) ??
+						statusForHistory(data, row.toString);
+					if (!toStatus) continue;
 					statusChanges.push({
 						at: row.created?.toISOString() as string,
-						fromStatusId: fromStatusId ?? null,
-						toStatusId,
+						fromStatusId: fromStatus?.id ?? null,
+						toStatusId: toStatus.id,
 					});
 				}
 				return {
@@ -998,13 +1128,15 @@ export async function cumulativeFlowReport(
 			columns: [...columns.values()],
 			issues: cfdIssues,
 		});
-		const assignees = [
-			...new Set(
-				data.issueRows
-					.map((issue) => issue.assignee)
-					.filter((value): value is string => Boolean(value)),
-			),
-		].sort();
+		const assigneeOptions = new Map<string, string>();
+		for (const issue of data.issueRows) {
+			if (issue.assigneeId && issue.assignee) {
+				assigneeOptions.set(issue.assigneeId, issue.assignee);
+			}
+		}
+		const assignees = [...assigneeOptions]
+			.map(([id, name]) => ({ id, name }))
+			.sort((left, right) => left.name.localeCompare(right.name));
 		return {
 			board: {
 				rapidViewId: board.rapidViewId,
