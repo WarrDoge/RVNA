@@ -188,6 +188,7 @@ test("visible usernames include every grant shape and exclude inactive accounts"
 		"dave",
 		"frank",
 		"gina",
+		"ivan",
 		"viewer",
 	]) {
 		expect(visible, label).toContain(`${tag}-${label}`);

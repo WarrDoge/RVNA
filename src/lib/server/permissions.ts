@@ -651,7 +651,7 @@ export async function visibleUsernames(user: PermissionUser) {
 		return new Set(rows.map((row) => row.username));
 	}
 
-	const filters = [];
+	const filters = [eq(users.isAdmin, true)];
 	if (usernames.size > 0) {
 		filters.push(inArray(sql`lower(${users.username})`, [...usernames]));
 	}
@@ -675,8 +675,6 @@ export async function visibleUsernames(user: PermissionUser) {
 			),
 		);
 	}
-	if (filters.length === 0) return new Set<string>();
-
 	const rows = await db
 		.select({ username: users.username })
 		.from(users)
