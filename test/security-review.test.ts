@@ -417,6 +417,21 @@ test("query groups run with a local statement timeout", async () => {
 	).rejects.toMatchObject({ cause: { code: "57014" } });
 });
 
+test("an invalid statement timeout is rejected before it reaches SQL", async () => {
+	for (const timeoutMs of [
+		0,
+		-1,
+		1.5,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		1e21,
+	]) {
+		await expect(
+			withStatementTimeout(async () => {}, timeoutMs),
+		).rejects.toBeInstanceOf(RangeError);
+	}
+});
+
 test("JQL nested deeper than 20 levels is rejected", async () => {
 	const jql = `${"(".repeat(21)}project = ${KEY}${")".repeat(21)}`;
 	const response = await get(`/api/search?jql=${enc(jql)}`);

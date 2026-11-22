@@ -6,10 +6,15 @@ export const STATEMENT_TIMEOUT_MS = 15_000;
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Run a query group with a local PostgreSQL statement timeout. */
-export function withStatementTimeout<T>(
+export async function withStatementTimeout<T>(
 	run: (tx: Transaction) => Promise<T>,
 	timeoutMs = STATEMENT_TIMEOUT_MS,
 ): Promise<T> {
+	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+		throw new RangeError(
+			"Statement timeout must be a positive whole number of milliseconds",
+		);
+	}
 	return db.transaction(async (tx) => {
 		await tx.execute(
 			sql`set local statement_timeout = ${sql.raw(String(timeoutMs))}`,
