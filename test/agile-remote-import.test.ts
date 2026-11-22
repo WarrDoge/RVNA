@@ -427,6 +427,17 @@ describe("Jira agile mapping", () => {
 		expect(filterProjectKeys(filter)).toContain(projectKey);
 	});
 
+	test("reads an unquoted project key from the filter JQL", () => {
+		expect(projectKeysFromJql(`project = ${projectKey}`)).toEqual([projectKey]);
+		expect(
+			filterProjectKeys({
+				id: "1",
+				name: "Fixture filter",
+				jql: `project = ${projectKey}`,
+			}),
+		).toEqual([projectKey]);
+	});
+
 	test("reads the rank field and tolerates a missing rank", () => {
 		const ranked = issue(issueKeys[0], "0|a", statusIds[0]);
 		expect(issueRank(ranked, fixtureFieldIds.rank)).toBe("0|a");

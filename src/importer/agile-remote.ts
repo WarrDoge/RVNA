@@ -391,23 +391,18 @@ export function mapSprint(
 export function projectKeysFromJql(jql: string | undefined): string[] {
 	if (!jql) return [];
 	const keys = new Set<string>();
-	const patterns = [
+	for (const match of jql.matchAll(
 		/\bproject\s*=\s*(?:"([^"]+)"|([A-Za-z][A-Za-z0-9_]*))/gi,
-		/\bproject\s+in\s*\(([^)]*)\)/gi,
-	];
-	for (const pattern of patterns) {
-		for (const match of jql.matchAll(pattern)) {
-			if (match[1] !== undefined && pattern === patterns[0]) {
-				const key = match[1] ?? match[2];
-				if (key) keys.add(key.trim());
-				continue;
-			}
-			const list = match[1];
-			if (!list) continue;
-			for (const item of list.split(",")) {
-				const key = item.trim().replace(/^"|"$/g, "");
-				if (/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) keys.add(key);
-			}
+	)) {
+		const key = match[1] ?? match[2];
+		if (key) keys.add(key.trim());
+	}
+	for (const match of jql.matchAll(/\bproject\s+in\s*\(([^)]*)\)/gi)) {
+		const list = match[1];
+		if (!list) continue;
+		for (const item of list.split(",")) {
+			const key = item.trim().replace(/^"|"$/g, "");
+			if (/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) keys.add(key);
 		}
 	}
 	return [...keys];
