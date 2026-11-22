@@ -196,7 +196,14 @@ export async function pagesWithLabels(
 	spaceIds: string[],
 	options: { limit?: number; matchAll?: boolean } = {},
 ): Promise<PageLink[]> {
-	if (labels.length === 0 || spaceIds.length === 0) return [];
+	const wanted = [
+		...new Set(
+			labels
+				.map((label) => label.trim().toLowerCase())
+				.filter((label) => label !== ""),
+		),
+	];
+	if (wanted.length === 0 || spaceIds.length === 0) return [];
 	const filters = [visiblePages(access), inArray(pages.spaceId, spaceIds)];
 	const rows = await db
 		.select({
@@ -207,11 +214,11 @@ export async function pagesWithLabels(
 		.innerJoin(spaces, eq(spaces.id, pages.spaceId))
 		.innerJoin(pageLabels, eq(pageLabels.pageId, pages.id))
 		.leftJoin(users, eq(users.id, pages.lastModifierId))
-		.where(and(...filters, inArray(pageLabels.label, labels)))
+		.where(and(...filters, inArray(pageLabels.label, wanted)))
 		.groupBy(pages.id, spaces.key, spaces.name, users.displayName)
 		.having(
 			options.matchAll
-				? sql`count(distinct ${pageLabels.label}) = ${labels.length}`
+				? sql`count(distinct ${pageLabels.label}) = ${wanted.length}`
 				: sql`count(distinct ${pageLabels.label}) > 0`,
 		)
 		.orderBy(desc(pages.updated))
