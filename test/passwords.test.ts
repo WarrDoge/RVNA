@@ -8,12 +8,17 @@ type Derivation = {
 };
 
 const derivations: Derivation[] = [];
+let failures = 0;
 
 vi.mock("node:util", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:util")>();
 	return {
 		...actual,
 		promisify: () => async (_algorithm: string, options: Derivation) => {
+			if (failures > 0) {
+				failures -= 1;
+				throw new Error("argon2 failed");
+			}
 			derivations.push({ ...options });
 			return Buffer.alloc(options.tagLength ?? 32);
 		},
@@ -21,6 +26,16 @@ vi.mock("node:util", async (importOriginal) => {
 });
 
 const password = "a password long enough";
+
+test("a failed dummy hash is retried instead of cached", async () => {
+	const { verifyPassword } = await import("../src/lib/server/passwords.ts");
+	failures = 1;
+	await expect(verifyPassword(password, null)).rejects.toThrow("argon2 failed");
+	expect(await verifyPassword(password, null)).toEqual({
+		ok: false,
+		needsRehash: false,
+	});
+});
 
 test("a stored hash with out-of-range argon2 parameters is unparseable", async () => {
 	const { hashPassword, verifyPassword } = await import(

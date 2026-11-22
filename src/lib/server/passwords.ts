@@ -160,8 +160,14 @@ export async function verifyPassword(
 ): Promise<{ ok: boolean; needsRehash: boolean }> {
 	const parsed = stored ? parse(stored) : null;
 	if (!parsed) {
-		dummyHash ??= hashPassword(randomBytes(16).toString("hex"));
-		const dummy = parse(await dummyHash) as Parsed;
+		dummyHash ??= hashPassword(randomBytes(16).toString("hex")).catch(
+			(error) => {
+				dummyHash = undefined;
+				throw error;
+			},
+		);
+		const dummy = parse(await dummyHash);
+		if (!dummy) throw new Error("The dummy password hash is unparsable");
 		await derive(password, dummy.parameters, dummy.salt);
 		return { ok: false, needsRehash: false };
 	}
