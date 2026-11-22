@@ -1,8 +1,13 @@
-import { redirect } from "@sveltejs/kit";
+import { isRedirect, redirect } from "@sveltejs/kit";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { sequence } from "@sveltejs/kit/hooks";
 import { type DateContext, setDateProvider } from "#lib/dates.ts";
-import { requestPath, userForSession, userForToken } from "#lib/server/auth.ts";
+import {
+	requestPath,
+	SESSION_COOKIE,
+	userForSession,
+	userForToken,
+} from "#lib/server/auth.ts";
 import { env } from "#lib/server/env.ts";
 import { jsonResponse } from "#lib/server/http.ts";
 import { passwordPage } from "#lib/server/http-svelte.ts";
@@ -77,37 +82,59 @@ const dateContextHandle: Handle = ({ event, resolve }) => {
 	);
 };
 
-/** Page responses also carry the Content-Security-Policy of `vite.config.ts`. */
-const securityHeadersHandle: Handle = async ({ event, resolve }) => {
-	const response = await resolve(event);
-	try {
-		response.headers.set("X-Content-Type-Options", "nosniff");
-		response.headers.set("X-Frame-Options", "SAMEORIGIN");
-		response.headers.set("Referrer-Policy", "same-origin");
-		// An API answer or a signed-in page holds one person's data; no cache may keep it.
-		const type = response.headers.get("content-type");
-		if (
-			(type?.startsWith("application/json") ||
-				(type?.startsWith("text/html") && event.locals.user)) &&
-			!response.headers.has("Cache-Control")
-		) {
-			response.headers.set("Cache-Control", "no-store");
-		}
-		if (env.APP_URL.startsWith("https://")) {
-			response.headers.set(
-				"Strict-Transport-Security",
-				"max-age=31536000; includeSubDomains",
-			);
-		}
-	} catch {
-		// A response made by `Response.redirect()` or `fetch` has read-only headers.
+function applySecurityHeaders(response: Response, signedIn: boolean) {
+	response.headers.set("X-Content-Type-Options", "nosniff");
+	response.headers.set("X-Frame-Options", "SAMEORIGIN");
+	response.headers.set("Referrer-Policy", "same-origin");
+	// An API answer or a signed-in page holds one person's data; no cache may keep it.
+	const type = response.headers.get("content-type");
+	if (
+		(type?.startsWith("application/json") ||
+			(type?.startsWith("text/html") && signedIn)) &&
+		!response.headers.has("Cache-Control")
+	) {
+		response.headers.set("Cache-Control", "no-store");
 	}
-	return response;
+	if (env.APP_URL.startsWith("https://")) {
+		response.headers.set(
+			"Strict-Transport-Security",
+			"max-age=31536000; includeSubDomains",
+		);
+	}
+}
+
+/**
+ * Page responses also carry the Content-Security-Policy of `vite.config.ts`.
+ * Exported for the tests, like `sessionHandle`.
+ */
+export const securityHeadersHandle: Handle = async ({ event, resolve }) => {
+	let response: Response;
+	try {
+		response = await resolve(event);
+	} catch (cause) {
+		if (!isRedirect(cause)) throw cause;
+		// A hook may throw `redirect()`; SvelteKit would turn it into a response
+		// outside this hook, where the security headers would be lost.
+		response = new Response(null, {
+			status: cause.status,
+			headers: { location: cause.location },
+		});
+	}
+	try {
+		applySecurityHeaders(response, Boolean(event.locals.user));
+		return response;
+	} catch {
+		// `Response.redirect()` and `fetch` answers have read-only headers; clone one
+		// so the security headers still apply.
+		const writable = new Response(response.body, response);
+		applySecurityHeaders(writable, Boolean(event.locals.user));
+		return writable;
+	}
 };
 
 const mutating = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const passwordChangeAllowed = new Set(["GET /api/me", "POST /api/me/password"]);
-const profilePage = "/secure/ViewProfile.jspa";
+const profilePage = new URL(passwordPage, "http://localhost").pathname;
 
 /** The forced-change target itself must stay reachable instead of redirecting to itself. */
 function isPasswordPage(url: URL) {
@@ -131,7 +158,7 @@ function csrfGuard(event: Parameters<Handle>[0]["event"], bearer: boolean) {
 
 	if (isDataPath(pathname)) {
 		if (
-			event.cookies.get("sid") &&
+			event.cookies.get(SESSION_COOKIE) &&
 			!event.request.headers.get("x-requested-with")
 		) {
 			return jsonResponse(
@@ -162,14 +189,21 @@ export const sessionHandle: Handle = async ({ event, resolve }) => {
 	const bearer = event.request.headers
 		.get("authorization")
 		?.match(/^Bearer (.+)$/i)?.[1];
-	event.locals.user = bearer
-		? await userForToken(bearer)
-		: await userForSession(event.cookies.get("sid"));
+	let user: App.Locals["user"];
+	try {
+		user = bearer
+			? await userForToken(bearer)
+			: await userForSession(event.cookies.get(SESSION_COOKIE));
+	} catch (cause) {
+		if (!isDataPath(requestPath(event.url.pathname))) throw cause;
+		console.error(cause);
+		return jsonResponse({ error: "Internal server error" }, { status: 500 });
+	}
+	event.locals.user = user;
 
 	const blocked = csrfGuard(event, Boolean(bearer));
 	if (blocked) return blocked;
 
-	const user = event.locals.user;
 	if (user?.mustChangePassword) {
 		const pathname = requestPath(event.url.pathname);
 		const method =

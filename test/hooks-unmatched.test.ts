@@ -1,3 +1,4 @@
+import { redirect } from "@sveltejs/kit";
 import { expect, test, vi } from "vitest";
 
 const userForSession = vi.hoisted(() => vi.fn());
@@ -11,7 +12,10 @@ vi.mock("../src/lib/server/runtime.ts", () => ({
 	stop: vi.fn(),
 }));
 
-import { sessionHandle as handle } from "../src/hooks.server.ts";
+import {
+	sessionHandle as handle,
+	securityHeadersHandle,
+} from "../src/hooks.server.ts";
 
 const mustChange = { mustChangePassword: true };
 
@@ -60,4 +64,65 @@ test("an unknown page of a user who must change the password still redirects", a
 		location: "/secure/ViewProfile.jspa?selectedTab=password",
 		lookups: 1,
 	});
+});
+
+test("security headers are added to a response whose headers are read-only", async () => {
+	const redirect = Response.redirect("http://localhost/login.jsp", 302);
+	const response = await securityHeadersHandle({
+		event: { locals: { user: null } },
+		resolve: async () => redirect,
+	} as never);
+	expect(response.status).toBe(302);
+	expect(response.headers.get("location")).toBe("http://localhost/login.jsp");
+	expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+	expect(response.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+	expect(response.headers.get("referrer-policy")).toBe("same-origin");
+});
+
+test("a redirect thrown by an inner hook still carries the security headers", async () => {
+	const response = await securityHeadersHandle({
+		event: { locals: { user: null } },
+		resolve: async () => {
+			redirect(302, "/login.jsp");
+		},
+	} as never);
+	expect(response.status).toBe(302);
+	expect(response.headers.get("location")).toBe("/login.jsp");
+	expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+	expect(response.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+	expect(response.headers.get("referrer-policy")).toBe("same-origin");
+});
+
+test("a failed session lookup answers a data path with JSON 500", async () => {
+	userForSession.mockRejectedValueOnce(new Error("database down"));
+	const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+	const event = {
+		route: { id: "/api/me" },
+		url: new URL("http://localhost/api/me"),
+		request: new Request("http://localhost/api/me"),
+		cookies: { get: () => "session" },
+		locals: {},
+	};
+	const response = await handle({
+		event,
+		resolve: async () => new Response("ok"),
+	} as never);
+	logged.mockRestore();
+	expect(response.status).toBe(500);
+	expect(response.headers.get("content-type")).toContain("application/json");
+	expect(await response.json()).toEqual({ error: "Internal server error" });
+});
+
+test("a failed session lookup still rethrows for a page route", async () => {
+	userForSession.mockRejectedValueOnce(new Error("database down"));
+	const event = {
+		route: { id: "/dashboard" },
+		url: new URL("http://localhost/dashboard"),
+		request: new Request("http://localhost/dashboard"),
+		cookies: { get: () => "session" },
+		locals: {},
+	};
+	await expect(
+		handle({ event, resolve: async () => new Response("ok") } as never),
+	).rejects.toThrow("database down");
 });
