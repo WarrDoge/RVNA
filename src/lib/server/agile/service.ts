@@ -1346,10 +1346,19 @@ async function targetContainerPlan(
 	return { conditions, mode, sprintId, extra, writesSprint };
 }
 
-export async function listBoards(actor: CurrentUser) {
+export async function listBoards(
+	actor: CurrentUser,
+	options: { projectId?: string } = {},
+) {
 	const administered = new Set(
 		await projectIdsWith(actor, "ADMINISTER_PROJECTS"),
 	);
+	const scope = options.projectId
+		? eq(boards.projectId, options.projectId)
+		: or(
+				isNull(boards.projectId),
+				inArray(boards.projectId, await viewerProjectIds(actor)),
+			);
 	const rows = await db
 		.select({
 			id: boards.id,
@@ -1375,12 +1384,7 @@ export async function listBoards(actor: CurrentUser) {
 		.from(boards)
 		.leftJoin(projects, eq(projects.id, boards.projectId))
 		.leftJoin(users, eq(users.id, boards.ownerId))
-		.where(
-			or(
-				isNull(boards.projectId),
-				inArray(boards.projectId, await viewerProjectIds(actor)),
-			),
-		)
+		.where(scope)
 		.orderBy(asc(boards.name));
 	const access = await Promise.all(
 		rows.map((row) =>

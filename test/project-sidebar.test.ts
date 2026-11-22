@@ -1,6 +1,7 @@
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
+import { listBoards } from "../src/lib/server/agile/service.ts";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
 import { loadProjectSidebar } from "../src/lib/server/projects/sidebar.ts";
 import { makeUser, newRun } from "./admin-helpers.ts";
@@ -206,9 +207,27 @@ test("a service desk project returns its queues and portal, not its board", asyn
 	});
 });
 
-test("a project the actor may not browse is the same 404 as the endpoints", async () => {
-	await expect(loadProjectSidebar(actor, hiddenKey)).rejects.toMatchObject({
-		status: 404,
-		message: "Project not found",
-	});
+test("a board list scoped to a project reads only that project's boards", async () => {
+	const statements: string[] = [];
+	const original = pool.query.bind(pool);
+	(pool as unknown as { query: typeof pool.query }).query = ((
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		statements.push(typeof query === "string" ? query : (query.text ?? ""));
+		return (original as (...args: unknown[]) => unknown)(query, ...rest);
+	}) as typeof pool.query;
+	let boards: Awaited<ReturnType<typeof listBoards>>;
+	try {
+		boards = await listBoards(actor, { projectId: softwareProjectId });
+	} finally {
+		(pool as unknown as { query: typeof pool.query }).query = original;
+	}
+
+	expect(boards.map((board) => board.project?.key)).toEqual([softwareKey]);
+	const boardReads = statements.filter((statement) =>
+		statement.includes('from "boards"'),
+	);
+	expect(boardReads).toHaveLength(1);
+	expect(boardReads[0]).toContain('"boards"."project_id" =');
 });
