@@ -22,12 +22,16 @@ export function plainTextToHtml(text: string) {
 }
 
 export function truncate(text: string, limit: number) {
-	const chars = [...text];
-	return chars.length <= limit ? text : `${chars.slice(0, limit).join("")}…`;
+	if (text.length <= limit) return text;
+	if (limit <= 0) return "";
+	const cut = text.slice(0, limit - 1);
+	// Keep the last code point whole, so the result never exceeds the limit.
+	const whole = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+	return `${whole}…`;
 }
 
 export function appOrigin() {
-	return (process.env.ORIGIN ?? env.APP_URL).replace(/\/+$/, "");
+	return (env.ORIGIN ?? env.APP_URL).replace(/\/+$/, "");
 }
 
 export function portalRequestLink(deskId: string, key: string) {

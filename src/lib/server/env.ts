@@ -26,6 +26,7 @@ const envSchema = z
 			.url()
 			.refine(isAppUrl, "APP_URL must be an http or https URL")
 			.default("http://localhost:3000"),
+		ORIGIN: z.url().optional(),
 		APP_TIME_ZONE: z
 			.string()
 			.refine(isTimeZone, "APP_TIME_ZONE must be an IANA time zone")
