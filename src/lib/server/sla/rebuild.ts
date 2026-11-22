@@ -158,28 +158,30 @@ async function goalMatches(
 ): Promise<Map<string, Set<string>>> {
 	const catalog = await loadCatalog();
 	const matches = new Map<string, Set<string>>();
-	for (const goal of goals) {
-		if (goal.jql.trim() === "") {
-			matches.set(goal.id, new Set(issueIds));
-			continue;
-		}
-		const compiled = await compileJql(parseJql(goal.jql), {
-			user: null,
-			catalog,
-			visibleProjectIds: ALL_PROJECTS,
-		});
-		if (!compiled.where) {
-			matches.set(goal.id, new Set(issueIds));
-			continue;
-		}
-		const result = await db.execute(
-			sql`select issues.id from issues where ${compiled.where}`,
-		);
-		matches.set(
-			goal.id,
-			new Set((result.rows as { id: string }[]).map((row) => String(row.id))),
-		);
-	}
+	await Promise.all(
+		goals.map(async (goal) => {
+			if (goal.jql.trim() === "") {
+				matches.set(goal.id, new Set(issueIds));
+				return;
+			}
+			const compiled = await compileJql(parseJql(goal.jql), {
+				user: null,
+				catalog,
+				visibleProjectIds: ALL_PROJECTS,
+			});
+			if (!compiled.where) {
+				matches.set(goal.id, new Set(issueIds));
+				return;
+			}
+			const result = await db.execute(
+				sql`select issues.id from issues where ${compiled.where} and ${inArray(issues.id, issueIds)}`,
+			);
+			matches.set(
+				goal.id,
+				new Set((result.rows as { id: string }[]).map((row) => String(row.id))),
+			);
+		}),
+	);
 	return matches;
 }
 

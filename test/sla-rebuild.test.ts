@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { pool, runMigrations } from "../src/importer/db.ts";
+import { pool as serverPool } from "../src/lib/server/db.ts";
 import { rebuildSlaCycles } from "../src/lib/server/sla/rebuild.ts";
 
 const workingHours = JSON.stringify(
@@ -135,4 +136,66 @@ test("two goals of one metric may use the default sequence", async () => {
 		"select sequence from sla_goals where source_id in ('slarb-g3', 'slarb-g4') order by source_id",
 	);
 	expect(rows.map((row) => row.sequence)).toEqual([0, 0]);
+});
+
+test("goal JQL is restricted to the issues being rebuilt and runs in parallel", async () => {
+	const { rows: metrics } = await pool.query<{ id: string }>(
+		"select id from sla_metrics where source_id = 'slarb-m1'",
+	);
+	const { rows: calendars } = await pool.query<{ id: string }>(
+		"select id from sla_calendars where source_id = 'slarb-cal'",
+	);
+	const { rows: issues } = await pool.query<{ id: string }>(
+		"select id from issues where key like 'SLARB%' order by key",
+	);
+	if (!metrics[0] || !calendars[0] || issues.length < 2) {
+		throw new Error("fixture missing");
+	}
+	await pool.query(
+		`insert into sla_goals (source_id, metric_id, jql, goal_minutes, calendar_id)
+		 values ('slarb-g5', $1, 'project = SLARB1', 60, $2),
+		        ('slarb-g6', $1, 'project = SLARB2', 60, $2)`,
+		[metrics[0].id, calendars[0].id],
+	);
+
+	const original = serverPool.query.bind(serverPool);
+	const goalQueries: string[] = [];
+	let active = 0;
+	let maxActive = 0;
+	(serverPool as unknown as { query: typeof serverPool.query }).query = (async (
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		const text = typeof query === "string" ? query : (query.text ?? "");
+		const isGoal = text.includes("select issues.id from issues");
+		if (isGoal) {
+			goalQueries.push(text);
+			active += 1;
+			maxActive = Math.max(maxActive, active);
+			await new Promise((resolve) => setTimeout(resolve, 30));
+		}
+		try {
+			return await (original as (...args: unknown[]) => Promise<unknown>)(
+				query,
+				...rest,
+			);
+		} finally {
+			if (isGoal) active -= 1;
+		}
+	}) as typeof pool.query;
+	try {
+		await rebuildSlaCycles({
+			issueIds: issues.map((issue) => issue.id),
+			now: new Date("2026-01-05T10:00:00Z"),
+		});
+	} finally {
+		(serverPool as unknown as { query: typeof serverPool.query }).query =
+			original;
+	}
+
+	expect(goalQueries).toHaveLength(2);
+	expect(maxActive).toBeGreaterThan(1);
+	for (const statement of goalQueries) {
+		expect(statement).toContain('"issues"."id" in');
+	}
 });
