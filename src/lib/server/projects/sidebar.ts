@@ -8,8 +8,15 @@ import type {
 import { listBoards } from "../agile/service.ts";
 import type { CurrentUser } from "../auth.ts";
 import { HttpError } from "../http.ts";
-import { deskQueues, listPortals } from "../servicedesk/service.ts";
+import { canRaiseRequests, deskByProjectId } from "../servicedesk/access.ts";
+import { deskQueues } from "../servicedesk/service.ts";
 import { getProject } from "./service.ts";
+
+type LoadedProject = Awaited<ReturnType<typeof getProject>>;
+type SidebarProject = Pick<
+	LoadedProject,
+	"id" | "key" | "name" | "avatarUrl" | "type" | "archived" | "permissions"
+>;
 
 function boardRef(board: BoardRef): ProjectSidebarBoard {
 	return {
@@ -45,6 +52,16 @@ async function queuesFor(actor: CurrentUser, projectKey: string) {
 	}
 }
 
+/** The current project's portal, when the viewer may raise requests there. */
+async function portalFor(
+	actor: CurrentUser,
+	projectId: string,
+): Promise<ProjectSidebarPortal[]> {
+	const desk = await deskByProjectId(projectId);
+	if (!desk || !(await canRaiseRequests(actor, desk))) return [];
+	return [{ id: desk.id, name: desk.portalName, projectKey: desk.projectKey }];
+}
+
 /**
  * The one prop of the project sidebar: the project, its boards, the settings
  * permission, the viewer, and the service desk navigation for a desk project.
@@ -52,7 +69,7 @@ async function queuesFor(actor: CurrentUser, projectKey: string) {
 export async function loadProjectSidebar(
 	actor: CurrentUser,
 	projectKey: string,
-	loaded?: Awaited<ReturnType<typeof getProject>>,
+	loaded?: SidebarProject,
 ): Promise<ProjectSidebarData> {
 	const project = loaded ?? (await getProject(actor, projectKey));
 	const isDesk = project.type === "service_desk";
@@ -60,22 +77,14 @@ export async function loadProjectSidebar(
 	const [boards, queues, portals] = await Promise.all([
 		isDesk
 			? Promise.resolve([] as BoardRef[])
-			: listBoards(actor).then((all) =>
-					all
-						.filter((board) => board.project?.key === project.key)
-						.map(boardRef),
+			: listBoards(actor, { projectId: project.id }).then((all) =>
+					all.map(boardRef),
 				),
 		isDesk
 			? queuesFor(actor, project.key)
 			: Promise.resolve([] as ProjectSidebarQueue[]),
 		isDesk
-			? listPortals(actor).then((all) =>
-					all.map((portal) => ({
-						id: portal.id,
-						name: portal.name,
-						projectKey: portal.projectKey,
-					})),
-				)
+			? portalFor(actor, project.id)
 			: Promise.resolve([] as ProjectSidebarPortal[]),
 	]);
 
