@@ -93,6 +93,21 @@ type AutomationPermission =
 	| "WORK_ON_ISSUES"
 	| "TRANSITION_ISSUES";
 
+const EVENT_KIND = {
+	comment: "smart_commit_comment",
+	time: "smart_commit_time",
+	transition: "smart_commit_transition",
+} as const;
+
+const PERMISSION_BY_KIND: Record<
+	SmartCommitCommand["kind"],
+	AutomationPermission
+> = {
+	comment: "ADD_COMMENTS",
+	time: "WORK_ON_ISSUES",
+	transition: "TRANSITION_ISSUES",
+};
+
 async function linkedProjectIds(repositoryId: string) {
 	const rows = await db
 		.select({ projectId: gitlabProjectRepositories.projectId })
@@ -445,7 +460,6 @@ export async function applySmartCommits(input: {
 		userByEmail(input.authorEmail),
 		linkedProjectIds(input.repositoryId),
 	]);
-	const issueById = new Map(enabled.map((issue) => [issue.id, issue]));
 	const commandNames = new Set<string>();
 	for (const issue of enabled) {
 		const context = await transitionContext(issue.id);
@@ -469,38 +483,23 @@ export async function applySmartCommits(input: {
 			.map((key) => enabled.find((issue) => issue.key === key))
 			.filter((issue): issue is IssueRef => issue !== undefined);
 		for (const issue of targets) {
-			if (!issueById.has(issue.id)) continue;
 			for (const command of line.commands) {
+				const kind = EVENT_KIND[command.kind];
 				if (!author) {
 					await recordEvent({
 						deliveryId: input.deliveryId,
 						repositoryId: input.repositoryId,
 						issueId: issue.id,
-						kind:
-							command.kind === "comment"
-								? "smart_commit_comment"
-								: command.kind === "time"
-									? "smart_commit_time"
-									: "smart_commit_transition",
+						kind,
 						status: "ignored",
 						reason: `author email ${input.authorEmail ?? "(none)"} matches no active user`,
 					});
 					continue;
 				}
-				const kind =
-					command.kind === "comment"
-						? "smart_commit_comment"
-						: command.kind === "time"
-							? "smart_commit_time"
-							: "smart_commit_transition";
 				const denial = await automationDenial(
 					author,
 					issue,
-					command.kind === "comment"
-						? "ADD_COMMENTS"
-						: command.kind === "time"
-							? "WORK_ON_ISSUES"
-							: "TRANSITION_ISSUES",
+					PERMISSION_BY_KIND[command.kind],
 					linkedProjects,
 				);
 				if (denial) {

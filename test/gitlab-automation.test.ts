@@ -149,6 +149,16 @@ describe("smart commits", () => {
 		expect(events.filter((event) => event.status === "applied")).toHaveLength(
 			3,
 		);
+		expect(
+			events
+				.filter((event) => event.status === "applied")
+				.map((event) => event.kind)
+				.sort(),
+		).toEqual([
+			"smart_commit_comment",
+			"smart_commit_time",
+			"smart_commit_transition",
+		]);
 	});
 
 	test("two concurrent worklogs keep both increments", async () => {
