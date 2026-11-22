@@ -1147,8 +1147,14 @@ async function requireSprintBoard(user: CurrentUser, boardId: string) {
 	return requireBoard(user, row?.rapidViewId ?? 0);
 }
 
-async function deriveColumns(boardId: string, projectId: string) {
-	const rows = await db
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function deriveColumns(
+	tx: Transaction,
+	boardId: string,
+	projectId: string,
+) {
+	const rows = await tx
 		.selectDistinct({
 			id: statuses.id,
 			name: statuses.name,
@@ -1165,7 +1171,7 @@ async function deriveColumns(boardId: string, projectId: string) {
 	const list =
 		rows.length > 0
 			? rows
-			: await db
+			: await tx
 					.selectDistinct({
 						id: statuses.id,
 						name: statuses.name,
@@ -1183,7 +1189,7 @@ async function deriveColumns(boardId: string, projectId: string) {
 	];
 	let sequence = 0;
 	for (const group of groups) {
-		const [column] = await db
+		const [column] = await tx
 			.insert(boardColumns)
 			.values({ boardId, name: group.name, sequence })
 			.returning({ id: boardColumns.id });
@@ -1192,7 +1198,7 @@ async function deriveColumns(boardId: string, projectId: string) {
 			(status) => status.category === group.category,
 		);
 		if (matching.length > 0) {
-			await db.insert(boardColumnStatuses).values(
+			await tx.insert(boardColumnStatuses).values(
 				matching.map((status, index) => ({
 					columnId: column.id,
 					statusId: status.id,
@@ -1202,8 +1208,6 @@ async function deriveColumns(boardId: string, projectId: string) {
 		}
 	}
 }
-
-type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Serialize writes that change the board's sprint list or issue ranks. */
 async function lockBoard(tx: Transaction, boardId: string) {
@@ -1435,9 +1439,9 @@ export async function createBoard(
 	if (!project) throw new HttpError(404, "Project not found");
 	await requireBrowseProject(actor, project.id);
 
-	const boardId = await db.transaction(async (tx) => {
+	const created = await db.transaction(async (tx) => {
 		const rapidViewId = await nextRapidViewId(tx);
-		const [created] = await tx
+		const [row] = await tx
 			.insert(boards)
 			.values({
 				rapidViewId,
@@ -1448,19 +1452,12 @@ export async function createBoard(
 				estimationField: body.estimationField ?? "story_points",
 				ownerId: actor.id,
 			})
-			.returning({ id: boards.id });
-		return created.id;
+			.returning({ id: boards.id, rapidViewId: boards.rapidViewId });
+		if (!row) throw new HttpError(404, "Board not found");
+		await deriveColumns(tx, row.id, project.id);
+		return row;
 	});
-	await deriveColumns(boardId, project.id);
-	const config = await loadBoardConfig(
-		(
-			await db
-				.select({ rapidViewId: boards.rapidViewId })
-				.from(boards)
-				.where(eq(boards.id, boardId))
-				.limit(1)
-		)[0].rapidViewId,
-	);
+	const config = await loadBoardConfig(created.rapidViewId);
 	if (!config) throw new HttpError(404, "Board not found");
 	return boardConfig(config.board, config);
 }

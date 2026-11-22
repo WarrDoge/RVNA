@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
+	boards,
 	issueSprints,
 	issues,
 	issueTypes,
@@ -446,6 +447,41 @@ describe("boards", () => {
 			project: projectKey,
 		});
 		expect(response.statusCode).toBe(400);
+	});
+
+	test("a column derivation failure does not leave a board behind", async () => {
+		const name = `Failing board ${run}`;
+		await pool.query(`
+			create or replace function test_fail_board_columns() returns trigger
+			language plpgsql as $$
+			begin
+				if exists (select 1 from boards where id = new.board_id and name = '${name}') then
+					raise exception 'column derivation failed';
+				end if;
+				return new;
+			end $$`);
+		await pool.query(
+			"create trigger test_fail_board_columns before insert on board_columns for each row execute function test_fail_board_columns()",
+		);
+		try {
+			const response = await inject("POST", "/api/boards", ownerSession, {
+				name,
+				type: "scrum",
+				filterJql: `project = ${projectKey}`,
+				project: projectKey,
+			});
+			expect(response.statusCode).toBe(500);
+			const rows = await db
+				.select({ id: boards.id })
+				.from(boards)
+				.where(eq(boards.name, name));
+			expect(rows).toHaveLength(0);
+		} finally {
+			await pool.query(
+				"drop trigger if exists test_fail_board_columns on board_columns",
+			);
+			await pool.query("drop function if exists test_fail_board_columns()");
+		}
 	});
 });
 
