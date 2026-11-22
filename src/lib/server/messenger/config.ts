@@ -51,23 +51,29 @@ async function ensureRow() {
 		.from(messengerConfig)
 		.where(eq(messengerConfig.id, 1))
 		.limit(1);
+	if (!existing) throw new Error("The Messenger settings row is missing");
 	return existing;
 }
 
-function decode(value: string | null): string | null {
-	if (!value) return null;
+function decode(value: string | null) {
+	if (!value) return { token: null, error: null };
 	try {
-		return decryptSecret(value);
+		return { token: decryptSecret(value), error: null };
 	} catch {
-		return null;
+		return {
+			token: null,
+			error:
+				"The stored Messenger access token could not be decrypted. Save it again.",
+		};
 	}
 }
 
 export async function messengerSettings(): Promise<MessengerSettings> {
 	const row = await ensureRow();
+	const accessToken = decode(row.accessToken);
 	return {
 		homeserverUrl: row.homeserverUrl,
-		accessToken: decode(row.accessToken),
+		accessToken: accessToken.token,
 		serviceDeskId: row.serviceDeskId,
 		requestTypeId: row.requestTypeId,
 		enabled: row.enabled,
@@ -75,7 +81,7 @@ export async function messengerSettings(): Promise<MessengerSettings> {
 		botMatrixId: row.botMatrixId,
 		serverName: row.serverName,
 		lastSyncAt: row.lastSyncAt,
-		lastError: row.lastError,
+		lastError: accessToken.error ?? row.lastError,
 	};
 }
 
