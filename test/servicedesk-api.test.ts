@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Pool } from "pg";
 
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
@@ -11,6 +11,7 @@ import {
 	components,
 	fieldOptions,
 	fields,
+	issueComponents,
 	issues,
 	issueTypes,
 	priorities,
@@ -37,10 +38,12 @@ import {
 import {
 	canViewRequest,
 	deskByProjectId,
+	deskByProjectKey,
 	isParticipant,
 	participatingIssueIds,
 } from "../src/lib/server/servicedesk/access.ts";
 import { applyCreateAutomation } from "../src/lib/server/servicedesk/automation.ts";
+import { runQueue } from "../src/lib/server/servicedesk/queues.ts";
 import { issueSla } from "../src/lib/server/servicedesk/sla.ts";
 import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page.server.ts";
 import { load as loadQueue } from "../src/routes/projects/[key]/queues/custom/[queueId]/+page.server.ts";
@@ -1525,6 +1528,261 @@ describe("queues", () => {
 			customerSession,
 		);
 		expect(response.statusCode).toBe(403);
+	});
+
+	test("a column named after an Object.prototype property falls back to text", async () => {
+		const [queue] = await db
+			.insert(queues)
+			.values({
+				sourceId: `${tag}:queue:prototype-columns`,
+				deskId,
+				name: "Prototype columns",
+				jql: `project = ${projectKey}`,
+				columns: ["constructor", "toString"],
+				issueCount: 0,
+				sequence: 20,
+			})
+			.returning();
+		try {
+			const response = await inject(
+				"GET",
+				`/api/servicedesk/projects/${projectKey}/queues/${queue.id}`,
+				agentSession,
+			);
+			expect(response.statusCode).toBe(200);
+			expect(response.json().columns).toEqual([
+				{ id: "constructor", label: "constructor", kind: "text" },
+				{ id: "toString", label: "toString", kind: "text" },
+			]);
+		} finally {
+			await db.delete(queues).where(eq(queues.id, queue.id));
+		}
+	});
+
+	test("component names are returned in name order", async () => {
+		const [zeta] = await db
+			.insert(components)
+			.values({
+				sourceId: `${tag}:component:zeta`,
+				projectId,
+				name: `${tag} Zeta`,
+			})
+			.returning();
+		const [alpha] = await db
+			.insert(components)
+			.values({
+				sourceId: `${tag}:component:alpha`,
+				projectId,
+				name: `${tag} Alpha`,
+			})
+			.returning();
+		await db.insert(issueComponents).values([
+			{
+				sourceId: `${tag}:issue-component:zeta`,
+				issueId: seededIssueId,
+				componentId: zeta.id,
+			},
+			{
+				sourceId: `${tag}:issue-component:alpha`,
+				issueId: seededIssueId,
+				componentId: alpha.id,
+			},
+		]);
+		const [queue] = await db
+			.insert(queues)
+			.values({
+				sourceId: `${tag}:queue:components`,
+				deskId,
+				name: "Components",
+				jql: `key = ${projectKey}-1`,
+				columns: ["issuekey", "components"],
+				issueCount: 0,
+				sequence: 21,
+			})
+			.returning();
+		try {
+			const response = await inject(
+				"GET",
+				`/api/servicedesk/projects/${projectKey}/queues/${queue.id}`,
+				agentSession,
+			);
+			expect(response.statusCode).toBe(200);
+			const row = response
+				.json()
+				.issues.find(
+					(issue: { key: string }) => issue.key === `${projectKey}-1`,
+				);
+			expect(row.cells.components).toMatchObject({
+				text: `${tag} Alpha, ${tag} Zeta`,
+				names: [`${tag} Alpha`, `${tag} Zeta`],
+			});
+		} finally {
+			await db.delete(queues).where(eq(queues.id, queue.id));
+			await db
+				.delete(components)
+				.where(inArray(components.id, [zeta.id, alpha.id]));
+		}
+	});
+
+	test("resolving SLA columns shares the metric lookup", async () => {
+		const [secondField] = await db
+			.insert(fields)
+			.values({
+				sourceId: `${tag}:customfield:sla-response`,
+				name: `${tag} Time to first response`,
+				type: "sd-servicelevelagreement",
+			})
+			.returning();
+		const columns = [
+			"issuekey",
+			`${tag}:customfield:sla`,
+			`${tag}:customfield:sla-response`,
+		];
+		const queueRows = await db
+			.insert(queues)
+			.values([
+				{
+					sourceId: `${tag}:queue:two-sla`,
+					deskId,
+					name: "Two SLA columns",
+					jql: `key = ${projectKey}-1`,
+					columns,
+					issueCount: 0,
+					sequence: 22,
+				},
+				{
+					sourceId: `${tag}:queue:no-issues`,
+					deskId,
+					name: "No issues",
+					jql: `key = ${projectKey}-999999`,
+					columns,
+					issueCount: 0,
+					sequence: 23,
+				},
+			])
+			.returning();
+		const desk = await deskByProjectKey(projectKey);
+		if (!desk) throw new Error("fixture desk missing");
+		const actor = await userFor(agentSession);
+		const runWithQueryCount = async (queueId: string) => {
+			const querySpy = vi.spyOn(Pool.prototype, "query");
+			try {
+				const page = await runQueue(desk, queueId, actor, {
+					startAt: 0,
+					maxResults: 50,
+				});
+				const queries = querySpy.mock.calls
+					.map((call) =>
+						typeof call[0] === "string"
+							? call[0]
+							: ((call[0] as { text?: string }).text ?? ""),
+					)
+					.filter((text) => text.includes('from "sla_metrics"')).length;
+				return { page, queries };
+			} finally {
+				querySpy.mockRestore();
+			}
+		};
+		try {
+			const full = await runWithQueryCount(queueRows[0].id);
+			expect(full.queries).toBe(1);
+			expect(full.page?.columns).toEqual([
+				{ id: "issuekey", label: "Key", kind: "key" },
+				{
+					id: `${tag}:customfield:sla`,
+					label: `${tag} Time to resolution`,
+					kind: "sla",
+				},
+				{
+					id: `${tag}:customfield:sla-response`,
+					label: `${tag} Time to first response`,
+					kind: "sla",
+				},
+			]);
+
+			const empty = await runWithQueryCount(queueRows[1].id);
+			expect(empty.queries).toBe(1);
+			expect(empty.page?.issues).toEqual([]);
+		} finally {
+			await db.delete(queues).where(
+				inArray(
+					queues.id,
+					queueRows.map((queue) => queue.id),
+				),
+			);
+			await db.delete(fields).where(eq(fields.id, secondField.id));
+		}
+	});
+
+	test("a later paused cycle does not replace a running one", async () => {
+		const [goal] = await db
+			.select()
+			.from(slaGoals)
+			.where(eq(slaGoals.metricId, resolutionMetricId))
+			.limit(1);
+		if (!goal) throw new Error("fixture SLA goal missing");
+		const now = Date.now();
+		await db.insert(slaCycles).values([
+			{
+				issueId: seededIssueId,
+				metricId: resolutionMetricId,
+				cycleNumber: 1,
+				startedAt: new Date(now - 10 * 60_000),
+				pausedIntervals: [],
+				goalId: goal.id,
+				goalMinutes: 60,
+				elapsedMinutes: 0,
+				breached: false,
+			},
+			{
+				issueId: seededIssueId,
+				metricId: resolutionMetricId,
+				cycleNumber: 2,
+				startedAt: new Date(now - 5 * 60_000),
+				pausedIntervals: [],
+				pausedAt: new Date(now - 2 * 60_000),
+				goalId: goal.id,
+				goalMinutes: 60,
+				elapsedMinutes: 0,
+				breached: false,
+			},
+		]);
+		const [queue] = await db
+			.insert(queues)
+			.values({
+				sourceId: `${tag}:queue:cycle-precedence`,
+				deskId,
+				name: "Cycle precedence",
+				jql: `key = ${projectKey}-1`,
+				columns: ["issuekey", `${tag}:customfield:sla`],
+				issueCount: 0,
+				sequence: 24,
+			})
+			.returning();
+		try {
+			const response = await inject(
+				"GET",
+				`/api/servicedesk/projects/${projectKey}/queues/${queue.id}`,
+				agentSession,
+			);
+			expect(response.statusCode).toBe(200);
+			const row = response
+				.json()
+				.issues.find(
+					(issue: { key: string }) => issue.key === `${projectKey}-1`,
+				);
+			expect(row.cells[`${tag}:customfield:sla`].state).toBe("ongoing");
+		} finally {
+			await db.delete(queues).where(eq(queues.id, queue.id));
+			await db
+				.delete(slaCycles)
+				.where(
+					and(
+						eq(slaCycles.issueId, seededIssueId),
+						eq(slaCycles.metricId, resolutionMetricId),
+					),
+				);
+		}
 	});
 });
 

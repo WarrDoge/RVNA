@@ -107,8 +107,10 @@ function emptyCell(kind: CellKind): QueueCell {
 async function columnSpecs(
 	desk: Desk,
 	columnIds: string[],
-): Promise<QueueColumn[]> {
-	const customIds = columnIds.filter((id) => !(id in builtinColumns));
+): Promise<{ columns: QueueColumn[]; metricIds: Map<string, string> }> {
+	const customIds = columnIds.filter(
+		(id) => !Object.hasOwn(builtinColumns, id),
+	);
 	const [fieldRows, metricRows] = await Promise.all([
 		customIds.length === 0
 			? []
@@ -128,13 +130,19 @@ async function columnSpecs(
 	const fieldsBySource = new Map(fieldRows.map((row) => [row.sourceId, row]));
 	const metricsByName = new Map(metricRows.map((row) => [row.name, row]));
 
-	return columnIds.map((id) => {
-		const builtin = builtinColumns[id];
+	const metricIds = new Map<string, string>();
+	const columns = columnIds.map((id) => {
+		const builtin = Object.hasOwn(builtinColumns, id)
+			? builtinColumns[id]
+			: undefined;
 		if (builtin) return { id, ...builtin };
 		const field = fieldsBySource.get(id);
 		const metric = field ? metricsByName.get(field.name) : undefined;
-		if (metric) return { id, label: metric.name, kind: "sla" };
-		if (!field) return { id, label: id, kind: "text" };
+		if (metric) {
+			metricIds.set(id, metric.id);
+			return { id, label: metric.name, kind: "sla" as const };
+		}
+		if (!field) return { id, label: id, kind: "text" as const };
 		const kind: CellKind =
 			field.type === "datetime"
 				? "date"
@@ -143,22 +151,7 @@ async function columnSpecs(
 					: "text";
 		return { id, label: field.name, kind };
 	});
-}
-
-/** SLA columns are custom fields whose name is the metric name. */
-async function metricForColumn(
-	desk: Desk,
-	column: QueueColumn,
-): Promise<string | null> {
-	if (column.kind !== "sla") return null;
-	const [metric] = await db
-		.select({ id: slaMetrics.id })
-		.from(slaMetrics)
-		.where(
-			and(eq(slaMetrics.deskId, desk.id), eq(slaMetrics.name, column.label)),
-		)
-		.limit(1);
-	return metric?.id ?? null;
+	return { columns, metricIds };
 }
 
 interface QueueIssue {
@@ -237,7 +230,8 @@ async function loadQueueIssues(
 							components,
 							eq(components.id, issueComponents.componentId),
 						)
-						.where(inArray(issueComponents.issueId, ids)),
+						.where(inArray(issueComponents.issueId, ids))
+						.orderBy(asc(components.name)),
 			ids.length === 0
 				? []
 				: db
@@ -323,18 +317,18 @@ async function loadQueueIssues(
 }
 
 async function slaCells(
-	desk: Desk,
 	columns: QueueColumn[],
+	metricIds: Map<string, string>,
 	issueRows: Map<string, QueueIssue>,
 	now: Date,
 ): Promise<Map<string, Map<string, QueueCell>>> {
 	const result = new Map<string, Map<string, QueueCell>>();
-	const metricColumns: { column: QueueColumn; metricId: string }[] = [];
-	for (const column of columns) {
-		const metricId = await metricForColumn(desk, column);
-		if (metricId) metricColumns.push({ column, metricId });
-	}
-	if (metricColumns.length === 0 || issueRows.size === 0) return result;
+	if (issueRows.size === 0) return result;
+	const metricColumns = columns.flatMap((column) => {
+		const metricId = metricIds.get(column.id);
+		return metricId ? [{ column, metricId }] : [];
+	});
+	if (metricColumns.length === 0) return result;
 
 	const issueIds = [...issueRows.values()].map((row) => row.id);
 	const cycleRows = await db
@@ -412,12 +406,7 @@ async function slaCells(
 					: String(display.remainingMinutes),
 		};
 		// The latest cycle wins; a running cycle always wins.
-		if (
-			!existing ||
-			display.state === "ongoing" ||
-			display.state === "paused" ||
-			existing.state === "completed"
-		) {
+		if (existing?.state !== "ongoing" || display.state === "ongoing") {
 			cells.set(column.column.id, cell);
 		}
 		result.set(key, cells);
@@ -568,13 +557,13 @@ export async function runQueue(
 		},
 		user,
 	);
-	const columns = await columnSpecs(desk, queue.columns);
+	const { columns, metricIds } = await columnSpecs(desk, queue.columns);
 	const issueRows = await loadQueueIssues(
 		result.issues.map((issue) => issue.key),
 	);
 	const sla = await slaCells(
-		desk,
 		columns,
+		metricIds,
 		issueRows,
 		options.now ?? new Date(),
 	);
