@@ -54,6 +54,8 @@ function base(baseUrl: string) {
 	return baseUrl.replace(/\/+$/, "");
 }
 
+const API_PATH = "/api/v4";
+
 export class GitlabApi {
 	readonly baseUrl: string;
 	readonly token: string;
@@ -86,6 +88,9 @@ export class GitlabApi {
 		const result = await this.get(
 			`${path}${separator}per_page=100&page=${page}`,
 		);
+		if (!Array.isArray(result.body)) {
+			throw new Error(`GitLab returned a non-list response for ${path}`);
+		}
 		return {
 			items: result.body as T[],
 			nextPage: Number.isFinite(result.nextPage) ? result.nextPage : null,
@@ -93,28 +98,28 @@ export class GitlabApi {
 	}
 
 	project(path: string) {
-		return this.get(`/api/v4/projects/${encodeURIComponent(path)}`).then(
+		return this.get(`${API_PATH}/projects/${encodeURIComponent(path)}`).then(
 			(result) => result.body as GitlabProject,
 		);
 	}
 
 	branches(projectId: number, page = 1) {
 		return this.paged<GitlabBranch>(
-			`/api/v4/projects/${projectId}/repository/branches`,
+			`${API_PATH}/projects/${projectId}/repository/branches`,
 			page,
 		);
 	}
 
 	commits(projectId: number, since: string, page = 1) {
 		return this.paged<GitlabCommit>(
-			`/api/v4/projects/${projectId}/repository/commits?since=${encodeURIComponent(since)}&all=true`,
+			`${API_PATH}/projects/${projectId}/repository/commits?since=${encodeURIComponent(since)}&all=true`,
 			page,
 		);
 	}
 
-	mergeRequests(projectId: number, page = 1) {
+	mergeRequests(projectId: number, since: string, page = 1) {
 		return this.paged<GitlabMergeRequest>(
-			`/api/v4/projects/${projectId}/merge_requests?state=all&order_by=updated_at&sort=desc`,
+			`${API_PATH}/projects/${projectId}/merge_requests?state=all&order_by=updated_at&sort=desc&updated_after=${encodeURIComponent(since)}`,
 			page,
 		);
 	}
@@ -125,7 +130,7 @@ export async function testConnection(
 	token: string,
 	fetchImpl: FetchLike = fetch,
 ) {
-	const response = await fetchImpl(`${base(baseUrl)}/api/v4/version`, {
+	const response = await fetchImpl(`${base(baseUrl)}${API_PATH}/version`, {
 		headers: { "PRIVATE-TOKEN": token },
 	});
 	if (!response.ok) {
