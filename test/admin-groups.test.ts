@@ -4,7 +4,7 @@ import { effectiveGroups } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { auditLog, groups, userGroups } from "../src/lib/server/schema.ts";
 import { injectAs, makeUser, newRun, type TestUser } from "./admin-helpers.ts";
-import { buildServer, cleanupTestData } from "./helpers.ts";
+import { buildServer, cleanupTestData, swapTransaction } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = newRun();
@@ -76,6 +76,58 @@ test("creates a local group and refuses a duplicate name", async () => {
 	expect(audits.map((entry) => entry.action)).toEqual(["group.create"]);
 	expect(audits[0].actorId).toBe(admin.id);
 	expect(audits[0].summary).toContain(name("team"));
+});
+
+test("concurrent identical group names answer 409", async () => {
+	const groupName = name("race");
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	const fn = `group_delay_${run}`;
+	await pool.query(`drop trigger if exists ${fn} on groups`);
+	await pool.query(`drop function if exists ${fn}()`);
+	await pool.query(
+		`create function ${fn}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.4); return new; end $$`,
+	);
+	await pool.query(
+		`create trigger ${fn} before insert on groups for each row execute function ${fn}()`,
+	);
+	try {
+		const first = createGroup(groupName);
+		const second = createGroup(groupName);
+		await both;
+		restore();
+		release();
+		const responses = await Promise.all([first, second]);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			201, 409,
+		]);
+		const rows = await db
+			.select({ id: groups.id })
+			.from(groups)
+			.where(sql`lower(${groups.name}) = ${groupName.toLowerCase()}`);
+		expect(rows).toHaveLength(1);
+	} finally {
+		restore();
+		await pool.query(`drop trigger if exists ${fn} on groups`);
+		await pool.query(`drop function if exists ${fn}()`);
+		await db
+			.delete(groups)
+			.where(sql`lower(${groups.name}) = ${groupName.toLowerCase()}`);
+	}
 });
 
 test("a name that an SSO group already uses is refused", async () => {

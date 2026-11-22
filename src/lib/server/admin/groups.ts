@@ -91,12 +91,14 @@ async function groupDetail(id: string) {
 }
 
 function isUniqueViolation(error: unknown) {
-	return (
-		typeof error === "object" &&
-		error !== null &&
-		"code" in error &&
-		(error as { code?: unknown }).code === "23505"
-	);
+	for (
+		let cause = error as { code?: unknown; cause?: unknown } | undefined;
+		cause;
+	) {
+		if (cause.code === "23505") return true;
+		cause = cause.cause as typeof cause;
+	}
+	return false;
 }
 
 export async function listGroups(
