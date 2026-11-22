@@ -549,8 +549,9 @@ export async function processGitlabDelivery(deliveryId: string) {
 		.returning();
 	if (!delivery) return;
 
+	let result: DeliveryResult;
 	try {
-		const result = await handleGitlabEvent(
+		result = await handleGitlabEvent(
 			delivery.event,
 			delivery.payload,
 			delivery.id,
@@ -563,14 +564,16 @@ export async function processGitlabDelivery(deliveryId: string) {
 				processedAt: new Date(),
 			})
 			.where(eq(gitlabDeliveries.id, delivery.id));
-		await recordDelivery(`${delivery.event}: ${result.status}`);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		await db
 			.update(gitlabDeliveries)
 			.set({ status: "failed", reason: message, processedAt: new Date() })
 			.where(eq(gitlabDeliveries.id, delivery.id));
-		await recordDelivery(`${delivery.event}: failed`);
+		await recordDelivery(`${delivery.event}: failed`).catch(() => undefined);
 		throw error;
 	}
+	await recordDelivery(`${delivery.event}: ${result.status}`).catch(
+		() => undefined,
+	);
 }
