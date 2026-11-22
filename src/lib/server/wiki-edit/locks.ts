@@ -6,10 +6,11 @@ import { userAvatarSql } from "../avatars.ts";
 import { db } from "../db.ts";
 import { users } from "../schema.ts";
 import { pageLocks } from "../schema-wiki-edit.ts";
-import { pageAccess, requireAccess } from "./access.ts";
+import { requireAccess } from "./access.ts";
 import { type Executor, fail, loadPage } from "./common.ts";
 import { lockPage } from "./content.ts";
 
+/** The editor heartbeats every 30 seconds; keep that well below this lease. */
 export const LOCK_SECONDS = 120;
 
 export type LockState = { userId: string; live: boolean; info: LockInfo };
@@ -90,11 +91,15 @@ export const lockBody = z
 	.object({ takeOver: z.boolean().optional() })
 	.nullish();
 
-async function readableLockPage(actor: CurrentUser, id: string) {
+async function readableLockPage(
+	actor: CurrentUser,
+	id: string,
+	need: "read" | "edit" = "read",
+) {
 	const { page } = await loadPage(db, id);
 	if (page.status === "trashed") fail(404, "Page not found");
-	await requireAccess(actor, page, "read");
-	return page;
+	const access = await requireAccess(actor, page, need);
+	return { page, access };
 }
 
 export async function acquireLock(
@@ -102,12 +107,12 @@ export async function acquireLock(
 	id: string,
 	input: z.infer<typeof lockBody>,
 ) {
-	const page = await readableLockPage(actor, id);
-	await requireAccess(actor, page, "edit");
+	const { page } = await readableLockPage(actor, id, "edit");
 	const takeOver = input?.takeOver === true;
 
 	const outcome = await db.transaction(async (tx) => {
-		await lockPage(tx, page.id);
+		const fresh = await lockPage(tx, page.id);
+		if (fresh.status === "trashed") fail(404, "Page not found");
 		const state = await lockState(tx, page.id);
 		if (state?.live && state.userId !== actor.id && !takeOver) {
 			return { acquired: false as const, lock: state.info };
@@ -132,13 +137,17 @@ export async function acquireLock(
 }
 
 export async function heartbeatLock(actor: CurrentUser, id: string) {
-	const page = await readableLockPage(actor, id);
+	const { page, access } = await readableLockPage(actor, id);
 
 	return db.transaction(async (tx) => {
-		await lockPage(tx, page.id);
+		const fresh = await lockPage(tx, page.id);
+		if (fresh.status === "trashed") fail(404, "Page not found");
 		const state = await lockState(tx, page.id);
 		if (state?.live && state.userId !== actor.id) {
 			return { status: "lost" as const, lock: state.info };
+		}
+		if (!access.edit) {
+			return { status: "expired" as const, lock: null };
 		}
 		if (state?.userId === actor.id && state.live) {
 			await tx
@@ -146,10 +155,6 @@ export async function heartbeatLock(actor: CurrentUser, id: string) {
 				.set({ heartbeatAt: sql`now()` })
 				.where(eq(pageLocks.pageId, page.id));
 		} else {
-			const access = await pageAccess(actor, page);
-			if (!access.edit || page.status === "trashed") {
-				return { status: "expired" as const, lock: null };
-			}
 			await claim(tx, page.id, actor.id, state);
 		}
 		return {

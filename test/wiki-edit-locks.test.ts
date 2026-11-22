@@ -6,6 +6,7 @@ import {
 	rows,
 	setupWiki,
 	type TestSpace,
+	waitForBlockedPages,
 } from "./wiki-edit-support.ts";
 
 let wiki: Awaited<ReturnType<typeof setupWiki>>;
@@ -110,6 +111,64 @@ describe("edit locks", () => {
 		expect(lost.status).toBe(200);
 		expect(lost.body.status).toBe("lost");
 		expect(lost.body.lock.holder.id).toBe(alice.id);
+	});
+
+	test("a lock is refused when the page is trashed while the request waits", async () => {
+		const page = await wiki.page(alice, space.key, "Lock trashed race");
+		const holder = await pool.connect();
+		try {
+			await holder.query("begin");
+			await holder.query("select id from pages where id = $1 for update", [
+				page.id,
+			]);
+			const pending = alice.post(`/api/wiki/pages/${page.id}/lock`);
+			await waitForBlockedPages(1);
+			await holder.query("update pages set status = 'trashed' where id = $1", [
+				page.id,
+			]);
+			await holder.query("commit");
+			expect((await pending).status).toBe(404);
+		} finally {
+			await holder.query("rollback").catch(() => undefined);
+			holder.release();
+		}
+	});
+
+	test("a heartbeat is refused when the page is trashed while it waits", async () => {
+		const page = await wiki.page(alice, space.key, "Heartbeat trashed race");
+		await alice.post(`/api/wiki/pages/${page.id}/lock`);
+		const holder = await pool.connect();
+		try {
+			await holder.query("begin");
+			await holder.query("select id from pages where id = $1 for update", [
+				page.id,
+			]);
+			const pending = alice.post(`/api/wiki/pages/${page.id}/lock/heartbeat`);
+			await waitForBlockedPages(1);
+			await holder.query("update pages set status = 'trashed' where id = $1", [
+				page.id,
+			]);
+			await holder.query("commit");
+			expect((await pending).status).toBe(404);
+		} finally {
+			await holder.query("rollback").catch(() => undefined);
+			holder.release();
+		}
+	});
+
+	test("a heartbeat expires the lock when its holder lost edit permission", async () => {
+		const hidden = await wiki.space("P");
+		await wiki.grant(hidden.id, { userId: alice.id }, ["read", "create"]);
+		const page = await wiki.page(alice, hidden.key, "Lock permission loss");
+		expect(
+			(await alice.post(`/api/wiki/pages/${page.id}/lock`)).body.acquired,
+		).toBe(true);
+		await pool.query(
+			"delete from space_permissions where space_id = $1 and user_id = $2 and permission = 'create'",
+			[hidden.id, alice.id],
+		);
+		const beat = await alice.post(`/api/wiki/pages/${page.id}/lock/heartbeat`);
+		expect(beat.body).toEqual({ status: "expired", lock: null });
 	});
 
 	test("lock routes answer 404 for a page the caller cannot read", async () => {

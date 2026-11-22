@@ -223,3 +223,16 @@ export async function setupWiki() {
 export async function rows<T = any>(text: string, params: unknown[] = []) {
 	return (await pool.query(text, params)).rows as T[];
 }
+
+/** Waits until `count` requests are blocked on a row lock. */
+export async function waitForBlockedPages(count: number) {
+	for (let attempt = 0; attempt < 300; attempt++) {
+		const { rows: waiting } = await pool.query<{ n: string }>(
+			`select count(*)::text as n from pg_stat_activity
+			 where wait_event_type = 'Lock' and query ilike '%for update%'`,
+		);
+		if (Number(waiting[0].n) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	throw new Error("timed out waiting for blocked page locks");
+}
