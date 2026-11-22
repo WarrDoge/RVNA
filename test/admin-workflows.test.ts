@@ -1400,6 +1400,106 @@ describe("workflow administration API", () => {
 		);
 	});
 
+	test("publication waits for an assignment that is moving an issue into its workflow", async () => {
+		const old = await fixtureWorkflow(
+			"publish-assign-old",
+			["open", "work", "done"],
+			baseTransitions,
+			"open",
+		);
+		const next = await fixtureWorkflow(
+			"publish-assign-next",
+			["open", "review", "spare"],
+			[
+				{ name: "Review", from: "open", to: "review" },
+				{ name: "Spare", from: "review", to: "spare" },
+			],
+			"open",
+		);
+		const project = await fixtureProject("PA", old.id, ["task"]);
+		const issue = await createIssue(project.key, "task");
+		await db
+			.update(issues)
+			.set({ statusId: statusId.done })
+			.where(eq(issues.key, issue.key));
+
+		await putDraft(
+			next.id,
+			definitionOf(
+				"open",
+				["open", "spare"],
+				[{ name: "Spare", from: "open", to: "spare" }],
+			),
+		);
+
+		const original = db.transaction.bind(db);
+		let releaseInsert = () => {};
+		let enteredInsert = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseInsert = resolve;
+		});
+		const inserting = new Promise<void>((resolve) => {
+			enteredInsert = resolve;
+		});
+		const restore = swapTransaction(async (callback) => {
+			return original(async (tx) => {
+				const proxy = new Proxy(tx, {
+					get(target, property, receiver) {
+						if (property === "insert") {
+							return (table: unknown) => {
+								if (table === projectWorkflows) {
+									enteredInsert();
+									const query = target.insert(table as never) as {
+										values: (...args: unknown[]) => unknown;
+									};
+									return {
+										values: (...args: unknown[]) =>
+											gate.then(() => query.values(...args)),
+									};
+								}
+								return target.insert(table as never);
+							};
+						}
+						const value = Reflect.get(target, property, receiver);
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				});
+				return callback(proxy as typeof tx);
+			});
+		});
+
+		try {
+			const assignment = adminCall(
+				"PUT",
+				`/api/admin/workflow-assignments/${project.key}`,
+				{
+					defaultWorkflowId: next.id,
+					perType: [],
+					statusMapping: {
+						[`${typeId.task}:${statusId.done}`]: statusId.review,
+					},
+				},
+			);
+			await inserting;
+			restore();
+			const publishing = adminCall(
+				"POST",
+				`/api/admin/workflows/${next.id}/publish`,
+				{ statusMapping: { [statusId.review]: statusId.spare } },
+			);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			releaseInsert();
+			const [assigned, published] = await Promise.all([assignment, publishing]);
+			expect(assigned.statusCode, assigned.body).toBe(200);
+			expect(published.statusCode, published.body).toBe(200);
+			const row = await statusOfIssue(issue.key);
+			expect(row.id).toBe(statusId.spare);
+		} finally {
+			restore();
+			releaseInsert();
+		}
+	});
+
 	test("an issue created after an assignment starts in the configured initial status", async () => {
 		const configured = await fixtureWorkflow(
 			"initial",

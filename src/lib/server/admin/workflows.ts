@@ -1076,6 +1076,14 @@ export async function setWorkflowAssignment(
 						.filter((workflowId): workflowId is string => Boolean(workflowId)),
 				),
 			];
+			if (involvedWorkflows.length > 0) {
+				await tx
+					.select({ id: workflows.id })
+					.from(workflows)
+					.where(inArray(workflows.id, involvedWorkflows))
+					.orderBy(asc(workflows.id))
+					.for("update");
+			}
 			const statusesOf = new Map<string, StatusRef[]>();
 			if (involvedWorkflows.length > 0) {
 				const statusRows = await tx
