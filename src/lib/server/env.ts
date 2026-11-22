@@ -1,5 +1,20 @@
 import { z } from "zod";
 
+const APP_URL_PROTOCOLS = new Set(["http:", "https:"]);
+
+function isAppUrl(value: string) {
+	return APP_URL_PROTOCOLS.has(new URL(value).protocol);
+}
+
+function isTimeZone(value: string) {
+	try {
+		new Intl.DateTimeFormat("en", { timeZone: value });
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 const envSchema = z
 	.object({
 		DATABASE_URL: z.url(),
@@ -7,8 +22,14 @@ const envSchema = z
 		NODE_ENV: z
 			.enum(["development", "test", "production"])
 			.default("development"),
-		APP_URL: z.url().default("http://localhost:3000"),
-		APP_TIME_ZONE: z.string().default("UTC"),
+		APP_URL: z
+			.url()
+			.refine(isAppUrl, "APP_URL must be an http or https URL")
+			.default("http://localhost:3000"),
+		APP_TIME_ZONE: z
+			.string()
+			.refine(isTimeZone, "APP_TIME_ZONE must be an IANA time zone")
+			.default("UTC"),
 		OIDC_ISSUER: z.url().optional(),
 		OIDC_CLIENT_ID: z.string().optional(),
 		OIDC_CLIENT_SECRET: z.string().optional(),
@@ -24,7 +45,7 @@ const envSchema = z
 		AVATARS_DIR: z.string().default("./data/avatars"),
 		MAX_ATTACHMENT_MB: z.coerce.number().int().positive().default(100),
 		MAX_UPLOAD_REQUEST_MB: z.coerce.number().int().positive().default(250),
-		SMTP_URL: z.string().optional(),
+		SMTP_URL: z.url().optional(),
 		MAIL_FROM: z.string().default("rvna <rvna@localhost>"),
 		MAIL_REDIRECT_TO: z.email().optional(),
 		SECRETS_KEY: z.string().min(16).optional(),
@@ -40,6 +61,7 @@ const envSchema = z
 		if (configured > 0 && configured < oidcValues.length) {
 			ctx.addIssue({
 				code: "custom",
+				path: ["OIDC_ISSUER"],
 				message:
 					"OIDC_ISSUER, OIDC_CLIENT_ID and OIDC_CLIENT_SECRET must be set together",
 			});
@@ -47,6 +69,7 @@ const envSchema = z
 		if (value.DEV_LOGIN_USER && value.NODE_ENV === "production") {
 			ctx.addIssue({
 				code: "custom",
+				path: ["DEV_LOGIN_USER"],
 				message: "DEV_LOGIN_USER must not be set when NODE_ENV=production",
 			});
 		}
@@ -59,6 +82,7 @@ const envSchema = z
 		) {
 			ctx.addIssue({
 				code: "custom",
+				path: ["APP_URL"],
 				message:
 					"DEV_LOGIN_USER signs every visitor in as an administrator; it needs an APP_URL on localhost",
 			});
@@ -69,8 +93,16 @@ const envSchema = z
 		) {
 			ctx.addIssue({
 				code: "custom",
+				path: ["BOOTSTRAP_ADMIN_PASSWORD"],
 				message:
 					"BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD must be set together",
+			});
+		}
+		if (value.MAX_ATTACHMENT_MB > value.MAX_UPLOAD_REQUEST_MB) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["MAX_ATTACHMENT_MB"],
+				message: "MAX_ATTACHMENT_MB must not exceed MAX_UPLOAD_REQUEST_MB",
 			});
 		}
 	});
@@ -92,23 +124,24 @@ export function parseEnv(raw: Record<string, string | undefined>) {
 
 let cached: Env | undefined;
 
+function load(): Env {
+	cached ??= parseEnv(process.env);
+	return cached;
+}
+
 /** Validation is deferred until a value is actually read, so importing a module has no side effect. */
 export const env: Env = new Proxy({} as Env, {
 	get(_target, property) {
-		cached ??= parseEnv(process.env);
-		return cached[property as keyof Env];
+		return load()[property as keyof Env];
 	},
 	has(_target, property) {
-		cached ??= parseEnv(process.env);
-		return property in cached;
+		return property in load();
 	},
 	ownKeys() {
-		cached ??= parseEnv(process.env);
-		return Reflect.ownKeys(cached);
+		return Reflect.ownKeys(load());
 	},
 	getOwnPropertyDescriptor(_target, property) {
-		cached ??= parseEnv(process.env);
-		return Reflect.getOwnPropertyDescriptor(cached, property);
+		return Reflect.getOwnPropertyDescriptor(load(), property);
 	},
 });
 

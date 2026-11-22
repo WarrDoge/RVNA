@@ -20,8 +20,9 @@ delete process.env.DEV_LOGIN_USER;
 const attachmentsDir = await mkdtemp(join(tmpdir(), "rvna-test-"));
 process.env.ATTACHMENTS_DIR = attachmentsDir;
 process.env.AVATARS_DIR = join(attachmentsDir, "avatars");
-// Keep the request-wide upload cap reachable in a test without a 250 MB body.
+// Keep both upload caps reachable in a test without a 250 MB body.
 process.env.MAX_UPLOAD_REQUEST_MB = "1";
+process.env.MAX_ATTACHMENT_MB = "1";
 
 const issuer = await startMockIssuer({ clientId, clientSecret });
 process.env.OIDC_ISSUER = issuer.issuer;
