@@ -41,6 +41,19 @@ const childrenOf = async (parentId: string) =>
 		)
 	).map((row) => row.title);
 
+async function waitForLockWaiters(count: number) {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const result = await pool.query<{ n: number }>(
+			`select count(*)::int as n from pg_stat_activity
+			 where datname = current_database() and wait_event_type = 'Lock'`,
+		);
+		if ((result.rows[0]?.n ?? 0) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	throw new Error(`timed out waiting for ${count} lock waiters`);
+}
+
 describe("move", () => {
 	test("repositions among siblings and under a new parent", async () => {
 		const parent = await mk("Move parent");
@@ -149,6 +162,32 @@ describe("move", () => {
 		expect(refused.status).toBe(403);
 	});
 
+	test("a child created while a cross-space move waits moves too", async () => {
+		const top = await mk("Late move top");
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select pg_advisory_xact_lock(hashtext($1))", [
+				`rvna.wiki.siblings:${target.id}:${target.homeId}`,
+			]);
+			const move = editor.post(`/api/wiki/pages/${top.id}/move`, {
+				spaceKey: target.key,
+				parentId: target.homeId,
+			});
+			await waitForLockWaiters(1);
+			const late = await mk("Late move child", top.id);
+			await locker.query("commit");
+			expect((await move).status).toBe(200);
+			const [row] = await rows("select space_id from pages where id = $1", [
+				late.id,
+			]);
+			expect(row.space_id).toBe(target.id);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	});
+
 	test("moving under a page whose edit restriction excludes the mover works", async () => {
 		const parent = await mk("Restricted parent");
 		const page = await mk("Move under restricted");
@@ -202,6 +241,46 @@ describe("concurrent position writes", () => {
 		expect(await positionsUnder(parent.id)).toEqual(
 			Array.from({ length: 10 }, (_, index) => index),
 		);
+	});
+
+	test("trashing a page while a child is created keeps positions unique", async () => {
+		const parent = await mk("Trash race parent");
+		await mk("Trash race sibling", parent.id);
+		const victim = await mk("Trash race victim", parent.id);
+		await mk("Trash race kid 1", victim.id);
+		await mk("Trash race kid 2", victim.id);
+		await mk("Trash race kid 3", victim.id);
+		await pool.query(`
+			create or replace function test_slow_page_update() returns trigger
+			language plpgsql as $$
+			begin
+				perform pg_advisory_xact_lock(987654326);
+				return new;
+			end $$`);
+		await pool.query(
+			"create trigger test_slow_page_update before update on pages for each row execute function test_slow_page_update()",
+		);
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select pg_advisory_xact_lock(987654326)");
+			const trashed = editor.post(`/api/wiki/pages/${victim.id}/trash`);
+			await waitForLockWaiters(1);
+			const created = mk("Trash race late", parent.id);
+			await Promise.race([
+				created.then(() => "created"),
+				waitForLockWaiters(2).then(() => "blocked"),
+			]);
+			await locker.query("commit");
+			expect((await trashed).status).toBe(200);
+			await created;
+			expect(await positionsUnder(parent.id)).toEqual([0, 1, 2, 3, 4]);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+			await pool.query("drop trigger if exists test_slow_page_update on pages");
+			await pool.query("drop function if exists test_slow_page_update()");
+		}
 	});
 });
 
@@ -259,6 +338,54 @@ describe("copy", () => {
 			[copied.body.id],
 		);
 		expect(versions).toHaveLength(1);
+	});
+
+	test("copied attachments rewrite references but not page text", async () => {
+		const top = await mk("Attachment copy source");
+		const upload = multipart({
+			name: "ref.png",
+			type: "image/png",
+			content: "png-bytes",
+		});
+		const uploaded = await editor.raw(
+			"POST",
+			`/api/wiki/pages/${top.id}/attachments`,
+			upload.payload,
+			upload.contentType,
+		);
+		expect(uploaded.status).toBe(201);
+		const attachmentId = uploaded.body[0].id as string;
+		const updated = await editor.put(`/api/wiki/pages/${top.id}`, {
+			bodyDoc: {
+				type: "doc",
+				content: [
+					{
+						type: "paragraph",
+						content: [{ type: "text", text: `Reference ${attachmentId}` }],
+					},
+					{ type: "image", attrs: { fileName: "ref.png", alt: "ref" } },
+				],
+			},
+		});
+		expect(updated.status).toBe(200);
+
+		const copied = await editor.post(`/api/wiki/pages/${top.id}/copy`, {
+			title: "Attachment copy",
+			withAttachments: true,
+		});
+		expect(copied.status).toBe(201);
+		const [copiedRow] = await rows<{ body_doc: unknown; body_html: string }>(
+			"select body_doc, body_html from pages where id = $1",
+			[copied.body.id],
+		);
+		const [newAttachment] = await rows<{ id: string }>(
+			"select id from page_attachments where page_id = $1",
+			[copied.body.id],
+		);
+		expect(JSON.stringify(copiedRow.body_doc)).toContain(attachmentId);
+		expect(JSON.stringify(copiedRow.body_doc)).toContain(newAttachment.id);
+		expect(copiedRow.body_html).toContain(attachmentId);
+		expect(copiedRow.body_html).toContain(newAttachment.id);
 	});
 
 	test("carries the source page restrictions to the copy", async () => {

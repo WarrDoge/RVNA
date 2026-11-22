@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
+import { type DocNode, walkDoc } from "../../shared/wiki/index.ts";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import {
@@ -24,6 +25,7 @@ import {
 	pageRef,
 	titleSchema,
 } from "./common.ts";
+import { attachmentUrl } from "./content.ts";
 import { removeOrphanFiles } from "./files.ts";
 import {
 	assertTitleFree,
@@ -91,43 +93,42 @@ export async function movePage(
 		return pageRef(page, space.key);
 	}
 
-	const subtree = await descendantIds(db, page.id);
-	if (parentId && (parentId === page.id || subtree.includes(parentId))) {
-		fail(400, "A page cannot be moved under itself");
-	}
 	await checkParent(db, actor, target, parentId);
-
-	const moving = [page.id, ...subtree];
-	if (crossSpace) {
-		const titles = await db
-			.select({ title: pages.title })
-			.from(pages)
-			.where(and(inArray(pages.id, moving), eq(pages.status, "current")));
-		const [clash] = await db
-			.select({ title: pages.title })
-			.from(pages)
-			.where(
-				and(
-					eq(pages.spaceId, target.id),
-					eq(pages.status, "current"),
-					inArray(
-						pages.title,
-						titles.map((row) => row.title),
-					),
-				),
-			)
-			.limit(1);
-		if (clash) {
-			fail(
-				409,
-				`A page titled "${clash.title}" already exists in the target space`,
-			);
-		}
-	}
 
 	const moved = await titleClash(page.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, target.id, parentId);
+			const subtree = await descendantIds(tx, page.id);
+			if (parentId && (parentId === page.id || subtree.includes(parentId))) {
+				fail(400, "A page cannot be moved under itself");
+			}
+			const moving = [page.id, ...subtree];
+			if (crossSpace) {
+				const titles = await tx
+					.select({ title: pages.title })
+					.from(pages)
+					.where(and(inArray(pages.id, moving), eq(pages.status, "current")));
+				const [clash] = await tx
+					.select({ title: pages.title })
+					.from(pages)
+					.where(
+						and(
+							eq(pages.spaceId, target.id),
+							eq(pages.status, "current"),
+							inArray(
+								pages.title,
+								titles.map((row) => row.title),
+							),
+						),
+					)
+					.limit(1);
+				if (clash) {
+					fail(
+						409,
+						`A page titled "${clash.title}" already exists in the target space`,
+					);
+				}
+			}
 			if (crossSpace) {
 				await tx
 					.update(pages)
@@ -250,9 +251,31 @@ export async function copyPage(
 	const attachmentIdMap = new Map(
 		attachmentRows.map((row) => [row.id, randomUUID()]),
 	);
-	const rewrite = (value: string) => {
+	const attachmentRefs = new Map(
+		attachmentRows.map((row) => [
+			attachmentUrl(row.id),
+			attachmentUrl(attachmentIdMap.get(row.id) as string),
+		]),
+	);
+	const rewriteDoc = (doc: Record<string, unknown>) => {
+		const copy = JSON.parse(JSON.stringify(doc)) as Record<string, unknown>;
+		walkDoc(copy as DocNode, (node) => {
+			if (node.attrs && typeof node.attrs.src === "string") {
+				const src = attachmentRefs.get(node.attrs.src);
+				if (src) node.attrs = { ...node.attrs, src };
+			}
+			for (const mark of node.marks ?? []) {
+				const href = mark.attrs?.href;
+				if (typeof href !== "string") continue;
+				const mapped = attachmentRefs.get(href);
+				if (mapped) mark.attrs = { ...mark.attrs, href: mapped };
+			}
+		});
+		return copy;
+	};
+	const rewriteHtml = (value: string) => {
 		let out = value;
-		for (const [from, to] of attachmentIdMap) out = out.replaceAll(from, to);
+		for (const [from, to] of attachmentRefs) out = out.replaceAll(from, to);
 		return out;
 	};
 
@@ -276,13 +299,8 @@ export async function copyPage(
 				status: "current" as const,
 				versionNumber: 1,
 				bodyStorage: node.row.bodyStorage,
-				bodyHtml: node.row.bodyHtml && rewrite(node.row.bodyHtml),
-				bodyDoc:
-					node.row.bodyDoc &&
-					(JSON.parse(rewrite(JSON.stringify(node.row.bodyDoc))) as Record<
-						string,
-						unknown
-					>),
+				bodyHtml: node.row.bodyHtml && rewriteHtml(node.row.bodyHtml),
+				bodyDoc: node.row.bodyDoc && rewriteDoc(node.row.bodyDoc),
 				creatorId: actor.id,
 				created: now,
 				lastModifierId: actor.id,
@@ -362,6 +380,7 @@ export async function trashPage(actor: CurrentUser, id: string) {
 	}
 
 	const trashed = await db.transaction(async (tx) => {
+		await lockSiblings(tx, space.id, page.parentId);
 		const kids = await siblingIds(tx, space.id, page.id);
 		const existing = await siblingIds(tx, space.id, page.parentId, page.id);
 		await tx
@@ -471,7 +490,7 @@ export async function reorderChildren(
 	if (
 		listed.size !== childIds.length ||
 		listed.size !== current.length ||
-		!current.every((id) => listed.has(id))
+		!current.every((childId) => listed.has(childId))
 	) {
 		fail(400, "childIds must list every current child exactly once");
 	}
