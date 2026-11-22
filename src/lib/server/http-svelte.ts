@@ -11,7 +11,9 @@ import { isHttpError, prepareWrite } from "./http.ts";
 import { requireAdminActor } from "./permissions.ts";
 import { resolvePreviousKeysFor } from "./project-keys.ts";
 
-const passwordPage = "/secure/ViewProfile.jspa?selectedTab=password";
+const passwordPagePath = "/secure/ViewProfile.jspa";
+const passwordTab = "password";
+const passwordPage = `${passwordPagePath}?selectedTab=${passwordTab}`;
 
 /** One sign-in redirect for every moved page and action, keeping the return address. */
 export function requirePageUser(event: {
@@ -36,7 +38,7 @@ export type ActionError = { error: string; [detail: string]: unknown };
 /** Map a domain error to a form action failure, leaving unknown errors for handleError. */
 export function actionFailure(cause: unknown) {
 	if (isHttpError(cause)) {
-		const data: ActionError = { error: cause.message, ...cause.details };
+		const data: ActionError = { ...cause.details, error: cause.message };
 		return fail(cause.status, data);
 	}
 	throw cause;
@@ -54,6 +56,7 @@ function withKey(routeId: string, url: URL, key: string) {
 	const index = template.findIndex((segment) =>
 		/^\[key(=\w+)?\]$/.test(segment),
 	);
+	if (index === -1) return null;
 	segments[index] = encodeURIComponent(key);
 	return `${segments.join("/")}${url.search}`;
 }
@@ -67,7 +70,8 @@ async function redirectPreviousKey(event: ServerLoadEvent) {
 	const params: Record<string, unknown> = { ...event.params };
 	await resolvePreviousKeysFor(params, undefined);
 	if (params.key !== event.params.key) {
-		redirect(302, withKey(event.route.id, event.url, params.key as string));
+		const location = withKey(event.route.id, event.url, params.key as string);
+		if (location) redirect(302, location);
 	}
 }
 
@@ -145,4 +149,4 @@ export function adminAction<E extends RequestEvent, T>(
 	return wrapAction(handler, true);
 }
 
-export { passwordPage };
+export { passwordPage, passwordPagePath, passwordTab };

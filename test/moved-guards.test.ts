@@ -9,6 +9,7 @@ import { HttpError, prepareWrite } from "../src/lib/server/http.ts";
 import {
 	actionFailure,
 	loadError,
+	pageLoad,
 	passwordPage,
 	requirePageUser,
 } from "../src/lib/server/http-svelte.ts";
@@ -33,6 +34,7 @@ import type { TestApp } from "./server.ts";
 
 const run = fixtureRun();
 const key = fixtureKey(run);
+const previousKey = `BACK${run.slice(0, 4).toUpperCase()}`;
 let app: TestApp;
 let client: Client;
 let projectId: string;
@@ -58,6 +60,10 @@ beforeAll(async () => {
 	});
 	projectId = fixture.projectId;
 	issueKey = fixture.issueKeys[0] as string;
+	await client.query(
+		"insert into project_previous_keys (project_id, key) values ($1, $2)",
+		[projectId, previousKey],
+	);
 });
 
 afterAll(async () => {
@@ -126,6 +132,31 @@ test("loads and actions recognise the same @sveltejs/kit error classes", () => {
 	expect(failure.data).toEqual({ error: "Bad input" });
 });
 
+test("a failure keeps its message when details carry an error field", () => {
+	const failure = actionFailure(
+		new HttpError(413, "reach files limit", {
+			details: { error: "Payload Too Large", code: "FST_FILES_LIMIT" },
+		}),
+	);
+	expect(isActionFailure(failure)).toBe(true);
+	expect(failure.data).toEqual({
+		error: "reach files limit",
+		code: "FST_FILES_LIMIT",
+	});
+});
+
+test("a moved key on a route shape without a key segment does not redirect to itself", async () => {
+	const load = pageLoad(() => ({ ok: true }));
+	const event = {
+		locals: { user: {} },
+		url: new URL(`http://127.0.0.1/browse/${previousKey}`),
+		params: { key: previousKey },
+		route: { id: "/browse/[[key]]" },
+		request: new Request(`http://127.0.0.1/browse/${previousKey}`),
+	};
+	await expect(load(event as never)).resolves.toEqual({ ok: true });
+});
+
 test("handle redirects a forced password change on a moved page", async () => {
 	const [user] = await db
 		.insert(users)
@@ -142,14 +173,26 @@ test("handle redirects a forced password change on a moved page", async () => {
 		cookies: { get: (name: string) => (name === "sid" ? sid : undefined) },
 		locals: {},
 		route: { id: "/secure/ViewProfile.jspa" },
-	} as never;
+	};
 
-	try {
-		await handle({ event, resolve: async () => new Response("ok") });
-	} catch (cause) {
-		expect(isRedirect(cause)).toBe(true);
-		expect((cause as { location: string }).location).toBe(passwordPage);
-	}
+	await expect(
+		handle({ event: event as never, resolve: async () => new Response("ok") }),
+	).rejects.toSatisfy(
+		(cause: unknown) =>
+			isRedirect(cause) &&
+			(cause as { location: string }).location === passwordPage,
+	);
+
+	const passwordEvent = {
+		...event,
+		request: new Request(`http://127.0.0.1:3000${passwordPage}`),
+		url: new URL(`http://127.0.0.1:3000${passwordPage}`),
+	};
+	const response = await handle({
+		event: passwordEvent as never,
+		resolve: async () => new Response("ok"),
+	});
+	expect(response.status).toBe(200);
 });
 
 test("the page helper is the only sign-in redirect and keeps the return address", () => {

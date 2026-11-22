@@ -10,7 +10,11 @@ import {
 } from "#lib/server/auth.ts";
 import { env } from "#lib/server/env.ts";
 import { jsonResponse } from "#lib/server/http.ts";
-import { passwordPage } from "#lib/server/http-svelte.ts";
+import {
+	passwordPage,
+	passwordPagePath,
+	passwordTab,
+} from "#lib/server/http-svelte.ts";
 import { withPermissionData } from "#lib/server/permissions.ts";
 import { skipsSessionGuard } from "#lib/server/public-routes.ts";
 import {
@@ -134,13 +138,11 @@ export const securityHeadersHandle: Handle = async ({ event, resolve }) => {
 
 const mutating = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const passwordChangeAllowed = new Set(["GET /api/me", "POST /api/me/password"]);
-const profilePage = new URL(passwordPage, "http://localhost").pathname;
-
 /** The forced-change target itself must stay reachable instead of redirecting to itself. */
 function isPasswordPage(url: URL) {
 	return (
-		requestPath(url.pathname) === profilePage &&
-		url.searchParams.get("selectedTab") === "password"
+		requestPath(url.pathname) === passwordPagePath &&
+		url.searchParams.get("selectedTab") === passwordTab
 	);
 }
 
