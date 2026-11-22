@@ -457,6 +457,34 @@ describe("wiki fetch concurrency", () => {
 			}),
 		).rejects.toThrow(/p3/);
 	});
+
+	test("stops taking pages after the first failure", async () => {
+		const directory = await temporaryDirectory();
+		const pages = Array.from({ length: 8 }, (_, index) =>
+			content(String(200 + index)),
+		);
+		let comments = 0;
+		const client = fakeClient({
+			listSpaces: async (status) => (status === "current" ? [space()] : []),
+			listContent: async (_spaceKey, type, status) =>
+				type === "page" && status === "current" ? pages : [],
+			listSpaceRootContent: async () => ({ page: [], blogpost: [] }),
+			listComments: async (id) => {
+				comments += 1;
+				if (id === "200") throw new Error("boom");
+				return [];
+			},
+		});
+
+		await expect(
+			fetchWikiDataset(client, {
+				attachmentsDir: directory,
+				skipAttachments: true,
+			}),
+		).rejects.toThrow(/200/);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(comments).toBeLessThanOrEqual(4);
+	});
 });
 
 describe("wiki attachment version errors", () => {

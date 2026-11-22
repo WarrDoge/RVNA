@@ -57,17 +57,29 @@ async function mapLimit<T, R>(
 ): Promise<R[]> {
 	const results = new Array<R>(values.length);
 	let index = 0;
+	let failure: unknown;
+	let failed = false;
 	const workers = Array.from(
 		{ length: Math.min(FETCH_CONCURRENCY, values.length) },
 		async () => {
 			for (;;) {
+				if (failed) return;
 				const current = index++;
 				if (current >= values.length) return;
-				results[current] = await fn(values[current] as T);
+				try {
+					results[current] = await fn(values[current] as T);
+				} catch (error) {
+					if (!failed) {
+						failed = true;
+						failure = error;
+					}
+					return;
+				}
 			}
 		},
 	);
 	await Promise.all(workers);
+	if (failed) throw failure;
 	return results;
 }
 
