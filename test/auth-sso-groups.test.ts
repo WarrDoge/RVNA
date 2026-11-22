@@ -315,3 +315,41 @@ test("a membership of the administrator group from an import or the app survives
 		);
 	expect(await isAdminAfterLogin(username, [])).toBe(false);
 });
+
+test("an identity token without a groups claim leaves the memberships alone", async () => {
+	const user = `t-${run}-no-claim`;
+	const first = await login(app, {
+		sub: `${run}-${user}`,
+		username: user,
+		name: "No Claim",
+		groups: [claimGroup, adminGroup()],
+	});
+	expect(first.callback.statusCode).toBe(303);
+	const firstMe = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		cookies: { sid: first.sessionId as string },
+	});
+	expect(firstMe.json().isAdmin).toBe(true);
+
+	const second = await login(app, {
+		sub: `${run}-${user}`,
+		username: user,
+		name: "No Claim",
+	});
+	expect(second.callback.statusCode).toBe(303);
+	const secondMe = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		cookies: { sid: second.sessionId as string },
+	});
+	expect(secondMe.json().isAdmin).toBe(true);
+	const projects = await app.inject({
+		method: "GET",
+		url: "/api/projects",
+		cookies: { sid: second.sessionId as string },
+	});
+	expect(
+		(projects.json() as { key: string }[]).map((row) => row.key),
+	).toContain(claimKey);
+});

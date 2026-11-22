@@ -82,7 +82,9 @@ function stringClaim(claims: Record<string, unknown>, key: string) {
 
 function groupNamesFromClaims(claims: Record<string, unknown>) {
 	const value = claims[env.OIDC_GROUPS_CLAIM];
-	if (!Array.isArray(value)) return [];
+	// A provider that omits the claim says nothing about groups; it does not say
+	// the user has none, so the memberships must stay as they are.
+	if (!Array.isArray(value)) return null;
 	return [
 		...new Set(
 			value.filter((item): item is string => typeof item === "string"),
@@ -371,7 +373,8 @@ export async function completeLogin(input: CallbackInput) {
 	}
 	const { user } = result;
 
-	await syncGroups(user.id, groupNamesFromClaims(claims));
+	const groupNames = groupNamesFromClaims(claims);
+	if (groupNames) await syncGroups(user.id, groupNames);
 
 	const session = await createSession(user.id, tokens.id_token ?? null);
 	await db

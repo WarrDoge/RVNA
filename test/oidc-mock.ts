@@ -67,7 +67,7 @@ export async function startMockIssuer(options: {
 			email_verified: user.emailVerified ?? false,
 			name: user.name ?? user.username,
 			picture: user.picture,
-			groups: user.groups ?? [],
+			...(user.groups === undefined ? {} : { groups: user.groups }),
 		});
 		const data = `${header}.${payload}`;
 		const signature = createSign("sha256")
