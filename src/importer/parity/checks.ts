@@ -28,7 +28,8 @@ export function check(
 		name,
 		live,
 		database,
-		status: status ?? (unique.length === 0 ? "OK" : "MISMATCH"),
+		status:
+			status ?? (unique.length === 0 && live === database ? "OK" : "MISMATCH"),
 		details: unique,
 	};
 }
@@ -57,34 +58,6 @@ export function compareSets(
 		databaseValues.length,
 		symmetricDifference(liveValues, databaseValues),
 	);
-}
-
-export function compareCount(
-	name: string,
-	live: number,
-	database: number,
-	details: string[] = [],
-): CheckResult {
-	return check(name, live, database, details);
-}
-
-export function compareMaps(
-	name: string,
-	live: Map<string, number>,
-	database: Map<string, number>,
-): CheckResult {
-	const keys = new Set([...live.keys(), ...database.keys()]);
-	const details: string[] = [];
-	let liveTotal = 0;
-	let databaseTotal = 0;
-	for (const key of keys) {
-		const liveValue = live.get(key) ?? 0;
-		const databaseValue = database.get(key) ?? 0;
-		liveTotal += liveValue;
-		databaseTotal += databaseValue;
-		if (liveValue !== databaseValue) details.push(key);
-	}
-	return check(name, liveTotal, databaseTotal, details);
 }
 
 export function compareSetsByKey(
