@@ -437,7 +437,41 @@ describe("parity checks", () => {
 				"parity-test-large-attachment",
 				"parity-test-small-attachment",
 			]);
+			await pool.query(
+				"update issues set locally_changed_at = null where id = $1",
+				[issueId],
+			);
 		}
+	});
+
+	test("an unparsable update date does not disable changed-since detection", async () => {
+		const tables = await loadTableSet(pool);
+		const database = await loadJiraSnapshot(pool, tables, {
+			projectKeys: [projectKey],
+		});
+		const live = liveJiraFromDatabase(database);
+		const issue = live.issues.get(`${projectKey}-1`);
+		if (!issue) throw new Error("seeded issue was not loaded");
+		const databaseWithBadDate = {
+			...database,
+			issues: new Map([
+				["BAD-1", { ...issue, key: "BAD-1", updated: "not a date" }],
+				[`${projectKey}-1`, { ...issue, updated: "2026-01-02T03:04:05.000Z" }],
+			]),
+		};
+		const liveWithChanges = {
+			...live,
+			issues: new Map([
+				[
+					"BAD-1",
+					{ ...issue, key: "BAD-1", updated: "2026-01-02T03:04:05.000Z" },
+				],
+				[`${projectKey}-1`, { ...issue, updated: "2026-03-01T00:00:00.000Z" }],
+			]),
+		};
+		const result = jiraChecks(liveWithChanges, databaseWithBadDate);
+		expect(result.watermark).toBe("2026-01-02T03:04:05.000Z");
+		expect(result.changedSinceImport).toContain(`${projectKey}-1`);
 	});
 
 	test("workflow resolution screens are compared per workflow", async () => {

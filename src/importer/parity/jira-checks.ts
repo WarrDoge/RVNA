@@ -209,8 +209,9 @@ export function jiraChecks(
 
 	let watermark: string | null = null;
 	for (const issue of dbIssues.values()) {
-		if (!issue.updated) continue;
-		if (!watermark || Date.parse(issue.updated) > Date.parse(watermark)) {
+		const time = updatedTime(issue.updated);
+		if (time === null) continue;
+		if (watermark === null || time > Date.parse(watermark)) {
 			watermark = issue.updated;
 		}
 	}
