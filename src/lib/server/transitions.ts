@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "./db.ts";
 import { type Executor, type HistoryItem, writeHistory } from "./history.ts";
@@ -23,7 +22,9 @@ export type TransitionRef = {
 };
 
 export type TransitionIssue = TransitionableIssue;
-export type TransitionTarget = TransitionRef;
+
+const DEFAULT_RESOLUTION_NAME = "Done";
+const DEFAULT_RESOLUTION_SOURCE_ID = "local:done";
 
 /**
  * Moves an issue through a workflow transition inside the caller's transaction,
@@ -38,22 +39,6 @@ export async function applyTransition(
 	requestedResolutionId?: string | null,
 	via: string | null = null,
 ): Promise<HistoryItem[] | null> {
-	const [locked] = await tx
-		.select({ statusId: issues.statusId })
-		.from(issues)
-		.where(eq(issues.id, issue.id))
-		.for("update");
-	if (!locked || locked.statusId !== issue.statusId) return null;
-
-	if (requestedResolutionId) {
-		const [resolution] = await tx
-			.select({ id: resolutions.id })
-			.from(resolutions)
-			.where(eq(resolutions.id, requestedResolutionId))
-			.limit(1);
-		if (!resolution) return null;
-	}
-
 	const [current] = await tx
 		.select({
 			statusId: issues.statusId,
@@ -66,8 +51,18 @@ export async function applyTransition(
 		.from(issues)
 		.innerJoin(statuses, eq(statuses.id, issues.statusId))
 		.leftJoin(resolutions, eq(resolutions.id, issues.resolutionId))
-		.where(eq(issues.id, issue.id));
-	if (!current) return null;
+		.where(eq(issues.id, issue.id))
+		.for("update", { of: issues });
+	if (!current || current.statusId !== issue.statusId) return null;
+
+	if (requestedResolutionId) {
+		const [resolution] = await tx
+			.select({ id: resolutions.id })
+			.from(resolutions)
+			.where(eq(resolutions.id, requestedResolutionId))
+			.limit(1);
+		if (!resolution) return null;
+	}
 
 	const fromDone = current.statusCategory === "done";
 	const toDone = transition.to.category === "done";
@@ -83,16 +78,32 @@ export async function applyTransition(
 			const [done] = await tx
 				.select({ id: resolutions.id })
 				.from(resolutions)
-				.where(eq(resolutions.name, "Done"))
+				.where(eq(resolutions.name, DEFAULT_RESOLUTION_NAME))
 				.limit(1);
 			if (done) {
 				resolutionId = done.id;
 			} else {
 				const [created] = await tx
 					.insert(resolutions)
-					.values({ sourceId: `local:${randomUUID()}`, name: "Done" })
+					.values({
+						sourceId: DEFAULT_RESOLUTION_SOURCE_ID,
+						name: DEFAULT_RESOLUTION_NAME,
+					})
+					.onConflictDoNothing({ target: resolutions.sourceId })
 					.returning({ id: resolutions.id });
-				resolutionId = created.id;
+				if (created) {
+					resolutionId = created.id;
+				} else {
+					const [existing] = await tx
+						.select({ id: resolutions.id })
+						.from(resolutions)
+						.where(eq(resolutions.sourceId, DEFAULT_RESOLUTION_SOURCE_ID))
+						.limit(1);
+					if (!existing) {
+						throw new Error("The default resolution could not be created");
+					}
+					resolutionId = existing.id;
+				}
 			}
 		}
 		resolved = fromDone ? (current.resolved ?? new Date()) : new Date();

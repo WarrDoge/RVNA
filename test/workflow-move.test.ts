@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray, type SQL } from "drizzle-orm";
+import pg from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	issues,
 	issueTypes,
 	projects,
+	resolutions,
 	statuses,
 	users,
 } from "../src/lib/server/schema.ts";
@@ -199,5 +201,189 @@ test("moving many issues uses one update and two history inserts", async () => {
 		expect(moved.every((row) => row.statusId === toStatusId)).toBe(true);
 	} finally {
 		await db.delete(issues).where(inArray(issues.id, ids));
+	}
+});
+
+test("a transition reads the issue row once before updating it", async () => {
+	const [issue] = await db
+		.insert(issues)
+		.values({
+			sourceId: `move-read-${run}`,
+			projectId,
+			number: 60,
+			key: `${key}-60`,
+			typeId,
+			statusId: fromStatusId,
+			summary: "Read once",
+		})
+		.returning();
+	let selects = 0;
+	try {
+		const items = await db.transaction(async (tx) => {
+			const counted = new Proxy(tx, {
+				get(target, property) {
+					if (property === "select") {
+						return (...args: Parameters<typeof tx.select>) => {
+							selects += 1;
+							return target.select(...args);
+						};
+					}
+					const value = Reflect.get(target, property);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			return applyTransition(
+				counted,
+				{
+					id: issue.id,
+					statusId: fromStatusId,
+					statusName: "Open",
+					statusCategory: "new",
+					resolutionId: null,
+					resolutionName: null,
+					resolved: null,
+				},
+				{
+					id: randomUUID(),
+					name: "Finish",
+					to: { id: toStatusId, name: "Done", category: "done" },
+				},
+				authorId,
+			);
+		});
+		expect(items).not.toBeNull();
+		expect(selects).toBeLessThanOrEqual(3);
+
+		const [after] = await db
+			.select()
+			.from(issues)
+			.where(eq(issues.id, issue.id));
+		expect(after.statusId).toBe(toStatusId);
+		expect(after.resolutionId).not.toBeNull();
+	} finally {
+		await db.delete(issues).where(eq(issues.id, issue.id));
+	}
+});
+
+test("concurrent transitions share one default resolution", async () => {
+	const before = new Set(
+		(await db.select({ id: resolutions.id }).from(resolutions)).map(
+			(row) => row.id,
+		),
+	);
+	const doneRows = await db
+		.select({ id: resolutions.id, name: resolutions.name })
+		.from(resolutions)
+		.where(eq(resolutions.name, "Done"));
+	const renamed = `Done ${randomUUID().slice(0, 8)}`;
+	const ids: string[] = [];
+	const client = pg.Client.prototype as {
+		query: (...args: unknown[]) => unknown;
+	};
+	const original = client.query;
+	try {
+		for (const row of doneRows) {
+			await db
+				.update(resolutions)
+				.set({ name: renamed })
+				.where(eq(resolutions.id, row.id));
+		}
+		const rows = await db
+			.insert(issues)
+			.values([
+				{
+					sourceId: `move-done-a-${run}`,
+					projectId,
+					number: 70,
+					key: `${key}-70`,
+					typeId,
+					statusId: fromStatusId,
+					summary: "Done race A",
+				},
+				{
+					sourceId: `move-done-b-${run}`,
+					projectId,
+					number: 71,
+					key: `${key}-71`,
+					typeId,
+					statusId: fromStatusId,
+					summary: "Done race B",
+				},
+			])
+			.returning({ id: issues.id });
+		ids.push(...rows.map((row) => row.id));
+
+		let arrivals = 0;
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		client.query = async function (
+			this: unknown,
+			query: { text?: string } | string,
+			...rest: unknown[]
+		) {
+			const text = typeof query === "string" ? query : (query.text ?? "");
+			if (
+				text.includes('from "resolutions"') &&
+				text.includes('"resolutions"."name"')
+			) {
+				arrivals += 1;
+				if (arrivals >= 2) release();
+				await gate;
+			}
+			return original.apply(this, [query, ...rest]);
+		} as unknown as typeof client.query;
+
+		const transition = {
+			id: randomUUID(),
+			name: "Finish",
+			to: { id: toStatusId, name: "Done", category: "done" as const },
+		};
+		const results = await Promise.all(
+			ids.map((id) =>
+				db.transaction((tx) =>
+					applyTransition(
+						tx,
+						{
+							id,
+							statusId: fromStatusId,
+							statusName: "Open",
+							statusCategory: "new",
+							resolutionId: null,
+							resolutionName: null,
+							resolved: null,
+						},
+						transition,
+						authorId,
+					),
+				),
+			),
+		);
+		expect(results.every((items) => items !== null)).toBe(true);
+
+		const after = await db
+			.select({ resolutionId: issues.resolutionId })
+			.from(issues)
+			.where(inArray(issues.id, ids));
+		expect(after[0]?.resolutionId).not.toBeNull();
+		expect(after[1]?.resolutionId).toBe(after[0]?.resolutionId);
+	} finally {
+		client.query = original;
+		if (ids.length > 0) {
+			await db.delete(issues).where(inArray(issues.id, ids));
+		}
+		const added = (await db.select({ id: resolutions.id }).from(resolutions))
+			.map((row) => row.id)
+			.filter((id) => !before.has(id));
+		if (added.length > 0) {
+			await db.delete(resolutions).where(inArray(resolutions.id, added));
+		}
+		for (const row of doneRows) {
+			await db
+				.update(resolutions)
+				.set({ name: row.name })
+				.where(eq(resolutions.id, row.id));
+		}
 	}
 });
