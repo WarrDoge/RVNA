@@ -1180,6 +1180,23 @@ describe("configuration", () => {
 		);
 		expect(empty.statusCode).toBe(400);
 
+		const badLimits = await inject(
+			"PUT",
+			`/api/boards/${configBoard.rapidViewId}/columns`,
+			ownerSession,
+			{
+				columns: [
+					{
+						name: "Impossible limits",
+						statuses: [todoStatusId],
+						minIssues: 5,
+						maxIssues: 2,
+					},
+				],
+			},
+		);
+		expect(badLimits.statusCode).toBe(400);
+
 		const columns = await inject(
 			"PUT",
 			`/api/boards/${configBoard.rapidViewId}/columns`,

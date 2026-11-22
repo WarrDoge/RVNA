@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
 	boolean,
+	check,
 	index,
 	integer,
 	pgTable,
@@ -82,6 +83,14 @@ export const boardColumns = pgTable(
 	},
 	(table) => [
 		index("board_columns_board_idx").on(table.boardId, table.sequence),
+		check(
+			"board_columns_wip_non_negative",
+			sql`(${table.minIssues} is null or ${table.minIssues} >= 0) and (${table.maxIssues} is null or ${table.maxIssues} >= 0)`,
+		),
+		check(
+			"board_columns_wip_order",
+			sql`${table.minIssues} is null or ${table.maxIssues} is null or ${table.minIssues} <= ${table.maxIssues}`,
+		),
 	],
 );
 
