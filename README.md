@@ -1464,8 +1464,8 @@ on the same writable claim) and is exported as `AVATARS_DIR`; an `extraEnv` entr
 attachment; the second must not exceed the first. `terminationGracePeriodSeconds` defaults to 120
 and `shutdownTimeoutSeconds` to 110, which sets adapter-node's `SHUTDOWN_TIMEOUT` a little below
 the pod grace period so an in-flight upload can finish during a roll-out; `sveltekit:shutdown` then
-closes the mail queue, the GitLab queue, the SMTP transport and the database pool. `extraEnv` and `extraEnvFrom` append
-environment variables and ConfigMap/Secret sources to the container, and
+closes the mail queue, the GitLab queue, the SMTP transport and the database pool. `extraEnv` and
+`extraEnvFrom` append environment variables and ConfigMap/Secret sources to the container, and
 `startupProbe.failureThreshold`, `startupProbe.periodSeconds` and `progressDeadlineSeconds` tune
 slow first starts (30 attempts 10s apart, 600s rollout deadline by default).
 
