@@ -165,6 +165,8 @@ export interface WikiLiveSnapshot {
 	watchersSkipped?: boolean;
 	pageLikes: Map<string, number>;
 	pageLikesSkipped?: boolean;
+	/** Top-level keys of watcher/like responses that did not have the expected shape. */
+	socialShapeKeys?: Set<string>;
 }
 
 export interface WikiDatabaseSnapshot {
