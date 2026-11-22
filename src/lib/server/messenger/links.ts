@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { and, eq, isNull, lt } from "drizzle-orm";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
@@ -57,6 +57,11 @@ export function generateLinkCode() {
 		.join("");
 }
 
+/** Only the hash is stored; a database reader cannot redeem the code. */
+function hashLinkCode(code: string) {
+	return createHash("sha256").update(code).digest("hex");
+}
+
 export async function messengerProfileInfo(actor: CurrentUser) {
 	const settings = await messengerSettings();
 	const [row] = await db
@@ -79,7 +84,7 @@ export async function createMessengerLinkCode(actor: CurrentUser) {
 	}
 	const now = new Date();
 	const expiresAt = new Date(now.getTime() + CODE_TTL_MS);
-	const [row] = await db.transaction(async (tx) => {
+	const { code, row } = await db.transaction(async (tx) => {
 		await tx
 			.update(messengerLinkCodes)
 			.set({ usedAt: now })
@@ -91,20 +96,18 @@ export async function createMessengerLinkCode(actor: CurrentUser) {
 			);
 		// A collision on the code keeps the transaction open, so the retry cannot lose the old codes.
 		for (let attempt = 0; attempt < CODE_ATTEMPTS; attempt += 1) {
+			const code = generateLinkCode();
 			const [inserted] = await tx
 				.insert(messengerLinkCodes)
-				.values({ userId: actor.id, code: generateLinkCode(), expiresAt })
+				.values({ userId: actor.id, code: hashLinkCode(code), expiresAt })
 				.onConflictDoNothing()
-				.returning({
-					code: messengerLinkCodes.code,
-					expiresAt: messengerLinkCodes.expiresAt,
-				});
-			if (inserted) return [inserted];
+				.returning({ expiresAt: messengerLinkCodes.expiresAt });
+			if (inserted) return { code, row: inserted };
 		}
 		throw new HttpError(500, "Could not generate a link code");
 	});
 	return {
-		code: row.code,
+		code,
 		expiresAt: row.expiresAt.toISOString(),
 		botMatrixId: settings.botMatrixId,
 	};
@@ -137,7 +140,7 @@ export async function redeemMessengerLinkCode(
 		recordWrongCode(matrixId);
 		return { ok: false, message };
 	};
-	const code = rawCode.trim().toUpperCase();
+	const code = hashLinkCode(rawCode.trim().toUpperCase());
 	const [row] = await db
 		.select({
 			id: messengerLinkCodes.id,

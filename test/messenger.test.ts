@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import * as htmlModule from "../src/lib/server/html.ts";
@@ -705,6 +705,41 @@ describe("sync worker", () => {
 		expect(issue.reporterId).toBe(bobId);
 	});
 
+	test("the stored link code is a hash", async () => {
+		const carol = await login(app, {
+			sub: `${tag}-carol`,
+			username: `t-${run}-carol`,
+			name: "Carol Sender",
+			groups: [],
+		});
+		const carolSession = carol.sessionId as string;
+		const carolId = (await inject("GET", "/api/me", carolSession)).json()
+			.id as string;
+		const codeResponse = await inject(
+			"POST",
+			"/api/profile/messenger",
+			carolSession,
+		);
+		expect(codeResponse.statusCode).toBe(200);
+		const code = codeResponse.json().code as string;
+
+		const [row] = await db
+			.select({ code: messengerLinkCodes.code })
+			.from(messengerLinkCodes)
+			.where(
+				and(
+					eq(messengerLinkCodes.userId, carolId),
+					isNull(messengerLinkCodes.usedAt),
+				),
+			)
+			.limit(1);
+		expect(row?.code).toMatch(/^[0-9a-f]{64}$/);
+		expect(row?.code).not.toBe(code);
+
+		const linked = await command(`@carol-${run}:other.test`, `!link ${code}`);
+		expect(String(linked[0].content.body)).toContain("Connected");
+	});
+
 	test("!link refuses a wrong and an expired code", async () => {
 		const wrong = await command(`@nobody-${run}:other.test`, "!link WRONGCODE");
 		expect(String(wrong[0].content.body)).toContain("not valid");
@@ -718,7 +753,12 @@ describe("sync worker", () => {
 		await db
 			.update(messengerLinkCodes)
 			.set({ expiresAt: new Date(Date.now() - 1000) })
-			.where(eq(messengerLinkCodes.code, code));
+			.where(
+				and(
+					eq(messengerLinkCodes.userId, aliceId),
+					isNull(messengerLinkCodes.usedAt),
+				),
+			);
 		const expired = await command(
 			`@alice-other-${run}:other.test`,
 			`!link ${code}`,
@@ -1253,7 +1293,12 @@ describe("sync worker", () => {
 		const [stillOpen] = await db
 			.select({ usedAt: messengerLinkCodes.usedAt })
 			.from(messengerLinkCodes)
-			.where(eq(messengerLinkCodes.code, code));
+			.where(
+				and(
+					eq(messengerLinkCodes.userId, aliceId),
+					isNull(messengerLinkCodes.usedAt),
+				),
+			);
 		expect(stillOpen.usedAt).toBeNull();
 
 		const other = await command(
