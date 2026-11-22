@@ -84,7 +84,6 @@ const dashboard: JiraDashboard = {
 };
 
 const lookups = {
-	userIdByUsername: new Map<string, string>(),
 	projectKeyBySourceId: new Map([["10000", "TEST"]]),
 	filterIdBySourceId: new Map([["10100", "filter-uuid"]]),
 	fallbackUserId: "user-uuid",
@@ -162,6 +161,29 @@ test("gadget preferences become our gadget configuration", () => {
 	expect(activity).toEqual({ projects: ["ABC"], users: [], days: 7, rows: 5 });
 });
 
+test("a two-dimensional gadget keeps its two statistics different after mapping", () => {
+	const mapped = mapGadgetConfig(
+		gadget("g", "Two Dimensional Filter Statistics", 0, {
+			xstat: "versions",
+			ystat: "fixfor",
+		}),
+		"two-dimensional",
+		lookups,
+	) as { xStatistic: string; yStatistic: string };
+	expect(mapped.xStatistic).toBe("fixVersion");
+	expect(mapped.yStatistic).not.toBe(mapped.xStatistic);
+
+	const same = mapGadgetConfig(
+		gadget("g", "Two Dimensional Filter Statistics", 0, {
+			xstat: "statuses",
+			ystat: "statuses",
+		}),
+		"two-dimensional",
+		lookups,
+	) as { xStatistic: string; yStatistic: string };
+	expect(same.yStatistic).not.toBe(same.xStatistic);
+});
+
 test("gadgets keep Jira's column order and their refresh interval", () => {
 	const mapped = mapGadgets(dashboard, lookups);
 	expect(
@@ -177,6 +199,17 @@ test("gadgets keep Jira's column order and their refresh interval", () => {
 	expect(mapped[2]?.refreshSeconds).toBe(0);
 	expect(mapped[4]?.title).toBe("Agile Wallboard Gadget");
 	expect(mapped[0]?.title).toBeNull();
+});
+
+test("a malformed gadget column falls back to the first column", () => {
+	const mapped = mapGadgets(
+		{
+			...dashboard,
+			gadgets: [{ ...gadget("g", "Introduction", 0), column: Number.NaN }],
+		},
+		lookups,
+	);
+	expect(mapped[0]?.columnIndex).toBe(0);
 });
 
 test("a dashboard and a filter map to rows with their Jira id", () => {
@@ -411,6 +444,30 @@ test("Jira share permissions map to the app's shares", () => {
 			},
 		]),
 	).toMatchObject({ filters: 2, project: 1, ownerOnly: 1, everyone: 0 });
+});
+
+test("a role share on an unknown project does not count as a project", () => {
+	const summary = summarizeFilterShares([
+		{
+			...filterBase,
+			id: "6",
+			name: "Unknown role",
+			sharePermissions: [
+				{
+					type: "project",
+					project: { id: "999" },
+					role: { id: "1", name: "Developers" },
+				},
+			],
+		},
+	]);
+	expect(summary).toMatchObject({
+		filters: 1,
+		project: 0,
+		projectRole: 0,
+		ignored: 1,
+		ownerOnly: 1,
+	});
 });
 
 describe("shares of imported filters and dashboards", () => {

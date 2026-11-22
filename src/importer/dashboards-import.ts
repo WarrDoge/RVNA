@@ -1,7 +1,9 @@
-import { inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+	dashboardFavourites,
 	dashboardGadgets,
 	dashboards as dashboardsTable,
+	filterFavourites,
 	filterShares,
 	filters as filtersTable,
 	groups,
@@ -75,7 +77,6 @@ const STATISTICS: Record<string, string> = {
 };
 
 export interface DashboardLookups {
-	userIdByUsername: Map<string, string>;
 	projectKeyBySourceId: Map<string, string>;
 	filterIdBySourceId: Map<string, string>;
 	fallbackUserId: string;
@@ -154,6 +155,13 @@ function scope(
 	};
 }
 
+function ruleValues(value: unknown): string[] {
+	if (Array.isArray(value)) {
+		return value.filter((item): item is string => typeof item === "string");
+	}
+	return typeof value === "string" ? [value] : [];
+}
+
 function activityFilters(rules: string | null) {
 	const decoded = decode(rules);
 	if (!decoded) return { projects: [] as string[], users: [] as string[] };
@@ -175,13 +183,7 @@ function activityFilters(rules: string | null) {
 	for (const provider of parsed.providers ?? []) {
 		if (provider.disabled) continue;
 		for (const rule of provider.rules ?? []) {
-			const values = Array.isArray(rule.value)
-				? rule.value.filter(
-						(value): value is string => typeof value === "string",
-					)
-				: typeof rule.value === "string"
-					? [rule.value]
-					: [];
+			const values = ruleValues(rule.value);
 			if (provider.provider === "streams" && rule.rule === "key") {
 				projects.push(...values);
 			}
@@ -253,9 +255,14 @@ export function mapGadgetConfig(
 				values.projectOrFilterId ?? null,
 				lookups,
 			);
+			const xStatistic = statistic(values.xstat ?? null, "status");
+			let yStatistic = statistic(values.ystat ?? null, "priority");
+			if (yStatistic === xStatistic) {
+				yStatistic = xStatistic === "priority" ? "status" : "priority";
+			}
 			return {
-				xStatistic: statistic(values.xstat ?? null, "status"),
-				yStatistic: statistic(values.ystat ?? null, "priority"),
+				xStatistic,
+				yStatistic,
 				filterId,
 				project,
 			};
@@ -364,9 +371,12 @@ export function mapFilterShares(
 				(share.project?.id
 					? projectKeyBySourceId.get(String(share.project.id))
 					: undefined);
-			if (key) result.projectKeys.push(key);
-			else result.ignored.push(share.type);
-			if (share.role) result.roleShares++;
+			if (key) {
+				result.projectKeys.push(key);
+				if (share.role) result.roleShares++;
+			} else {
+				result.ignored.push(share.type);
+			}
 		} else if (share.type === "group" && share.group?.name) {
 			result.groupNames.push(share.group.name);
 		} else {
@@ -475,6 +485,13 @@ async function syncFilterShares(
 					.onConflictDoNothing()
 					.returning({ id: groups.id });
 				groupId = created?.id;
+				if (!groupId) {
+					const [existing] = await tx
+						.select({ id: groups.id })
+						.from(groups)
+						.where(eq(groups.name, name));
+					groupId = existing?.id;
+				}
 				if (groupId) groupIdByName.set(name.toLowerCase(), groupId);
 			}
 			if (groupId) {
@@ -521,37 +538,52 @@ async function syncFilterShares(
 }
 
 async function upsertFavourites(
-	tx: typeof db,
-	table: "filter_favourites" | "dashboard_favourites",
+	tx: Executor,
+	table: typeof filterFavourites | typeof dashboardFavourites,
 	pairs: { userId: string; targetId: string }[],
 ): Promise<RowCounts> {
 	const counts = { inserted: 0, updated: 0, unchanged: 0 };
 	if (pairs.length === 0) return counts;
-	const rows = await tx.execute(
-		sql`select user_id, ${sql.raw(table === "filter_favourites" ? "filter_id" : "dashboard_id")} as target_id
-			from ${sql.raw(table)}`,
-	);
-	const existing = new Set(
-		(rows.rows as { user_id: string; target_id: string }[]).map(
-			(row) => `${row.user_id}:${row.target_id}`,
-		),
-	);
+	const userIds = [...new Set(pairs.map((pair) => pair.userId))];
+	const targetIds = [...new Set(pairs.map((pair) => pair.targetId))];
+	const targetColumn =
+		table === filterFavourites
+			? filterFavourites.filterId
+			: dashboardFavourites.dashboardId;
+	const rows = await tx
+		.select({ userId: table.userId, targetId: targetColumn })
+		.from(table)
+		.where(
+			and(inArray(table.userId, userIds), inArray(targetColumn, targetIds)),
+		);
+	const existing = new Set(rows.map((row) => `${row.userId}:${row.targetId}`));
 	const missing = pairs.filter(
 		(pair) => !existing.has(`${pair.userId}:${pair.targetId}`),
 	);
 	counts.unchanged = pairs.length - missing.length;
 	if (missing.length === 0) return counts;
 
-	await tx.execute(
-		sql`insert into ${sql.raw(table)} (user_id, ${sql.raw(table === "filter_favourites" ? "filter_id" : "dashboard_id")})
-			values ${sql.join(
-				missing.map(
-					(pair) => sql`(${pair.userId}::uuid, ${pair.targetId}::uuid)`,
-				),
-				sql`, `,
-			)}
-			on conflict do nothing`,
-	);
+	if (table === filterFavourites) {
+		await tx
+			.insert(filterFavourites)
+			.values(
+				missing.map((pair) => ({
+					userId: pair.userId,
+					filterId: pair.targetId,
+				})),
+			)
+			.onConflictDoNothing();
+	} else {
+		await tx
+			.insert(dashboardFavourites)
+			.values(
+				missing.map((pair) => ({
+					userId: pair.userId,
+					dashboardId: pair.targetId,
+				})),
+			)
+			.onConflictDoNothing();
+	}
 	counts.inserted = missing.length;
 	return counts;
 }
@@ -593,7 +625,6 @@ export async function importDashboardDataset(
 	}
 
 	const lookups: DashboardLookups = {
-		userIdByUsername,
 		projectKeyBySourceId,
 		filterIdBySourceId,
 		fallbackUserId: ownerId,
@@ -642,11 +673,11 @@ export async function importDashboardDataset(
 					)
 			: [];
 		const known = new Set(knownDashboards.map((row) => row.sourceId));
-		const dashboardInput = dataset.dashboards.map((dashboard) => {
-			const row = mapDashboard(
-				dashboard,
-				lookups.fallbackUserId,
-			) as unknown as Record<string, unknown>;
+		const dashboardInput: (Omit<DashboardRowInput, "shared"> & {
+			shared?: boolean;
+		})[] = dataset.dashboards.map((dashboard) => {
+			const row: Omit<DashboardRowInput, "shared"> & { shared?: boolean } =
+				mapDashboard(dashboard, lookups.fallbackUserId);
 			if (known.has(dashboard.id) && dashboard.id !== SYSTEM_DASHBOARD_ID) {
 				row.shared = undefined;
 			}
@@ -680,8 +711,8 @@ export async function importDashboardDataset(
 			counts,
 			"filter_favourites",
 			await upsertFavourites(
-				tx as unknown as typeof db,
-				"filter_favourites",
+				executor,
+				filterFavourites,
 				dataset.favouriteFilters
 					.map((sourceId) => filterIdBySourceId.get(sourceId))
 					.filter((id): id is string => id !== undefined)
@@ -696,8 +727,8 @@ export async function importDashboardDataset(
 			counts,
 			"dashboard_favourites",
 			await upsertFavourites(
-				tx as unknown as typeof db,
-				"dashboard_favourites",
+				executor,
+				dashboardFavourites,
 				dataset.favouriteDashboards
 					.map((sourceId) => dashboards.ids.get(sourceId))
 					.filter((id): id is string => id !== undefined)
