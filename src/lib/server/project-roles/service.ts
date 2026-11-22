@@ -367,17 +367,22 @@ export async function addRoleActor(
 		return { created: false, role: current ?? role };
 	}
 
-	await db.transaction(async (tx) => {
-		await tx.insert(projectRoleActors).values({
-			sourceId: `local:${randomUUID()}`,
-			projectId: project.id,
-			roleId: role.id,
-			roleName: role.name,
-			actorType: body.actorType,
-			actorParameter: parameter,
-			actorDisplayName: displayName,
-			raw: { role: role.name, actor: parameter },
-		});
+	const created = await db.transaction(async (tx) => {
+		const [inserted] = await tx
+			.insert(projectRoleActors)
+			.values({
+				sourceId: `local:${randomUUID()}`,
+				projectId: project.id,
+				roleId: role.id,
+				roleName: role.name,
+				actorType: body.actorType,
+				actorParameter: parameter,
+				actorDisplayName: displayName,
+				raw: { role: role.name, actor: parameter },
+			})
+			.onConflictDoNothing()
+			.returning({ id: projectRoleActors.id });
+		if (!inserted) return false;
 		await audit(tx, actor, {
 			action: "project.role.actor.add",
 			entityType: "project",
@@ -393,10 +398,12 @@ export async function addRoleActor(
 				},
 			},
 		});
+		return true;
 	});
 
 	const refreshed = await loadRoleData(project.id);
 	const current = roleByParameter(refreshed.roles, role.id);
+	if (!created) return { created: false, role: current ?? role };
 	if (!current) throw new Error("Added role actor disappeared");
 	return { created: true, role: current };
 }

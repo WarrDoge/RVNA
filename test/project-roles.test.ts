@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, like } from "drizzle-orm";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import {
@@ -577,4 +577,33 @@ test("reads one scheme for the project instead of every scheme and its payload",
 	await db
 		.delete(permissionSchemes)
 		.where(eq(permissionSchemes.id, earlier.id));
+});
+
+test("the database refuses a duplicate actor for one role", async () => {
+	const prefix = `test:${run}:unique:`;
+	const actor = {
+		projectId: project.projectId,
+		roleId: "viewer",
+		roleName: "viewer",
+		actorType: "user",
+		actorParameter: alice.username,
+		actorDisplayName: "Alice",
+		raw: {},
+	};
+	try {
+		await db
+			.insert(projectRoleActors)
+			.values({ ...actor, sourceId: `${prefix}1` });
+		await expect(
+			db.insert(projectRoleActors).values({
+				...actor,
+				sourceId: `${prefix}2`,
+				actorParameter: alice.username.toUpperCase(),
+			}),
+		).rejects.toThrow();
+	} finally {
+		await db
+			.delete(projectRoleActors)
+			.where(like(projectRoleActors.sourceId, `${prefix}%`));
+	}
 });

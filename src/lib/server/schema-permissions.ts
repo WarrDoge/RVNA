@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
 	index,
 	jsonb,
@@ -5,6 +6,7 @@ import {
 	text,
 	timestamp,
 	unique,
+	uniqueIndex,
 	uuid,
 } from "drizzle-orm/pg-core";
 import { filters, groups, projects } from "./schema.ts";
@@ -64,6 +66,12 @@ export const projectRoleActors = pgTable(
 	(table) => [
 		index("project_role_actors_project_idx").on(table.projectId),
 		index("project_role_actors_role_idx").on(table.projectId, table.roleId),
+		uniqueIndex("project_role_actors_identity_unique").on(
+			table.projectId,
+			sql`lower(${table.roleId})`,
+			table.actorType,
+			sql`lower(${table.actorParameter})`,
+		),
 	],
 );
 
