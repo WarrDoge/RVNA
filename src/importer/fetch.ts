@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathSegment } from "./client.ts";
 import { type JiraClient, JiraRequestError } from "./jira.ts";
@@ -112,7 +112,7 @@ async function fetchResolutionScreens(
 ): Promise<Map<number, boolean>> {
 	const screenIds = new Set<number>();
 	for (const workflow of workflows) {
-		for (const transition of workflow.layout.transitions) {
+		for (const transition of workflow.layout.transitions ?? []) {
 			if (typeof transition.screenId === "number") {
 				screenIds.add(transition.screenId);
 			}
@@ -152,16 +152,22 @@ export async function fetchWorkflows(
 	);
 	const withLayouts = await Promise.all(
 		workflows.map(async (workflow) => {
-			const layout = await client.getJson<JiraWorkflowLayout>(
+			const layout = await client.getJson<Partial<JiraWorkflowLayout> | null>(
 				"/rest/workflowDesigner/1.0/workflows",
 				{ name: workflow.name },
 			);
-			return { ...workflow, layout: layout.layout };
+			return {
+				...workflow,
+				layout: {
+					statuses: layout?.layout?.statuses ?? [],
+					transitions: layout?.layout?.transitions ?? [],
+				},
+			};
 		}),
 	);
 	const resolutionScreens = await fetchResolutionScreens(client, withLayouts);
 	for (const workflow of withLayouts) {
-		for (const transition of workflow.layout.transitions) {
+		for (const transition of workflow.layout.transitions ?? []) {
 			transition.hasResolutionField =
 				typeof transition.screenId === "number" &&
 				resolutionScreens.get(transition.screenId) === true;
@@ -170,13 +176,22 @@ export async function fetchWorkflows(
 	return withLayouts;
 }
 
-async function fetchProjects(client: JiraClient): Promise<JiraProjectData[]> {
+async function fetchProjects(
+	client: JiraClient,
+	projectKeys?: string[],
+): Promise<JiraProjectData[]> {
 	const projects = await client.getJson<JiraProject[]>("/rest/api/2/project", {
 		expand: "description,lead",
 	});
+	const wanted = projectKeys
+		? new Set(projectKeys.map((key) => key.toUpperCase()))
+		: undefined;
+	const selected = wanted
+		? projects.filter((project) => wanted.has(project.key.toUpperCase()))
+		: projects;
 
 	return Promise.all(
-		projects.map(async (listed) => {
+		selected.map(async (listed) => {
 			const [detail, components, versions, statusesByIssueType] =
 				await Promise.all([
 					client.getJson<JiraProjectDetail>(
@@ -253,49 +268,73 @@ function mergeOptions(
 	return [...byId.values()];
 }
 
+interface FieldOptionEntry {
+	options: Map<string, JiraFieldOption>;
+	childIds: Set<string>;
+}
+
+async function fetchProjectFieldOptions(
+	client: JiraClient,
+	project: JiraProjectData,
+): Promise<Map<string, FieldOptionEntry>> {
+	const fields = new Map<string, FieldOptionEntry>();
+	for (const issueType of project.issueTypes) {
+		let startAt = 0;
+		for (;;) {
+			const page = await client.getJson<{
+				values?: JiraCreateMetaField[];
+				isLast?: boolean;
+			}>(
+				`/rest/api/2/issue/createmeta/${encodeURIComponent(project.project.key)}/issuetypes/${encodeURIComponent(issueType.id)}`,
+				{ maxResults: pageSize, startAt },
+			);
+			const values = page.values ?? [];
+
+			for (const field of values) {
+				if (
+					!field.fieldId.startsWith("customfield_") ||
+					!field.allowedValues ||
+					field.allowedValues.length === 0
+				) {
+					continue;
+				}
+				const entry = fields.get(field.fieldId) ?? {
+					options: new Map<string, JiraFieldOption>(),
+					childIds: new Set<string>(),
+				};
+				for (const option of field.allowedValues) {
+					addOption(entry.options, entry.childIds, option);
+				}
+				fields.set(field.fieldId, entry);
+			}
+
+			if (page.isLast || values.length === 0) break;
+			startAt += values.length;
+		}
+	}
+	return fields;
+}
+
 async function fetchFieldOptions(
 	client: JiraClient,
 	projects: JiraProjectData[],
 ): Promise<JiraFieldOptions[]> {
-	const fields = new Map<
-		string,
-		{ options: Map<string, JiraFieldOption>; childIds: Set<string> }
-	>();
-
-	for (const project of projects) {
-		for (const issueType of project.issueTypes) {
-			let startAt = 0;
-			for (;;) {
-				const page = await client.getJson<{
-					values?: JiraCreateMetaField[];
-					isLast?: boolean;
-				}>(
-					`/rest/api/2/issue/createmeta/${encodeURIComponent(project.project.key)}/issuetypes/${encodeURIComponent(issueType.id)}`,
-					{ maxResults: pageSize, startAt },
-				);
-				const values = page.values ?? [];
-
-				for (const field of values) {
-					if (
-						!field.fieldId.startsWith("customfield_") ||
-						!field.allowedValues ||
-						field.allowedValues.length === 0
-					) {
-						continue;
-					}
-					const entry = fields.get(field.fieldId) ?? {
-						options: new Map<string, JiraFieldOption>(),
-						childIds: new Set<string>(),
-					};
-					for (const option of field.allowedValues) {
-						addOption(entry.options, entry.childIds, option);
-					}
-					fields.set(field.fieldId, entry);
+	const perProject = await Promise.all(
+		projects.map((project) => fetchProjectFieldOptions(client, project)),
+	);
+	const fields = new Map<string, FieldOptionEntry>();
+	for (const projectFields of perProject) {
+		for (const [fieldId, entry] of projectFields) {
+			const target = fields.get(fieldId) ?? {
+				options: new Map<string, JiraFieldOption>(),
+				childIds: new Set<string>(),
+			};
+			for (const option of entry.options.values()) {
+				if (!entry.childIds.has(option.id)) {
+					addOption(target.options, target.childIds, option);
 				}
-
-				if (page.isLast || values.length === 0) break;
-				startAt += values.length;
 			}
+			fields.set(fieldId, target);
 		}
 	}
 
@@ -382,15 +421,18 @@ async function downloadAttachment(
 	const existing = options.existingAttachments?.get(attachment.id);
 	if (existing) {
 		try {
-			const info = await stat(
-				join(options.attachmentsDir, existing.storagePath),
-			);
+			const path = join(options.attachmentsDir, existing.storagePath);
+			const info = await stat(path);
 			if (info.size === (attachment.size ?? info.size)) {
-				return {
-					...attachment,
-					storagePath: existing.storagePath,
-					sha256: existing.sha256,
-				};
+				const bytes = await readFile(path);
+				const sha256 = createHash("sha256").update(bytes).digest("hex");
+				if (sha256 === existing.sha256) {
+					return {
+						...attachment,
+						storagePath: existing.storagePath,
+						sha256: existing.sha256,
+					};
+				}
 			}
 		} catch {
 			// Download the missing file again.
@@ -407,10 +449,16 @@ async function downloadAttachment(
 	const storagePath = join(sha256, pathSegment(attachment.id));
 	const target = join(options.attachmentsDir, storagePath);
 	await mkdir(dirname(target), { recursive: true });
+	const temporary = join(
+		dirname(target),
+		`.${pathSegment(attachment.id)}-${randomUUID()}.tmp`,
+	);
 	try {
-		await writeFile(target, bytes, { flag: "wx" });
+		await writeFile(temporary, bytes, { flag: "wx" });
+		await rename(temporary, target);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		await rm(temporary, { force: true });
+		throw error;
 	}
 	return { ...attachment, storagePath, sha256 };
 }
@@ -506,6 +554,7 @@ export async function fetchDataset(
 	client: JiraClient,
 	options: FetchOptions,
 ): Promise<JiraDataset> {
+	const requested = options.projectKeys?.map((key) => key.toUpperCase());
 	const [
 		users,
 		issueTypes,
@@ -515,7 +564,7 @@ export async function fetchDataset(
 		linkTypes,
 		fields,
 		workflows,
-		allProjects,
+		projects,
 	] = await Promise.all([
 		fetchUsers(client),
 		client.getJson<JiraIssueType[]>("/rest/api/2/issuetype"),
@@ -527,15 +576,8 @@ export async function fetchDataset(
 			.then((response) => response.issueLinkTypes),
 		client.getJson<JiraField[]>("/rest/api/2/field"),
 		fetchWorkflows(client, options),
-		fetchProjects(client),
+		fetchProjects(client, requested),
 	]);
-
-	const requested = options.projectKeys?.map((key) => key.toUpperCase());
-	const projects = requested
-		? allProjects.filter((project) =>
-				requested.includes(project.project.key.toUpperCase()),
-			)
-		: allProjects;
 
 	if (requested) {
 		const missing = requested.filter(
@@ -555,14 +597,13 @@ export async function fetchDataset(
 	);
 	const issues: JiraIssueData[] = [];
 	for (const project of projects) {
-		issues.push(
-			...(await fetchProjectIssues(
-				client,
-				project.project.key,
-				options,
-				serviceDeskKeys.has(project.project.key),
-			)),
+		const fetched = await fetchProjectIssues(
+			client,
+			project.project.key,
+			options,
+			serviceDeskKeys.has(project.project.key),
 		);
+		for (const issue of fetched) issues.push(issue);
 	}
 
 	let serviceDesks: Awaited<ReturnType<typeof fetchServiceDesks>> = [];

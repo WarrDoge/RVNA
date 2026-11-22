@@ -121,4 +121,49 @@ describe("workflow transition screens", () => {
 		expect(warn.mock.calls[0]?.[0]).toContain("screen 103");
 		expect(warn.mock.calls[1]?.[0]).toContain("screen 104");
 	});
+
+	test("keeps a workflow whose designer response has no layout", async () => {
+		const fetchImpl = (async (input: string | URL | Request) => {
+			const url = new URL(String(input));
+			if (url.pathname === "/rest/api/2/workflow") {
+				return Response.json([
+					{ name: "No Layout" },
+					{ name: "Null Layout" },
+					{ name: "Partial Layout" },
+				]);
+			}
+			if (url.pathname === "/rest/workflowDesigner/1.0/workflows") {
+				const name = url.searchParams.get("name");
+				if (name === "Null Layout") return Response.json(null);
+				if (name === "Partial Layout") {
+					return Response.json({ layout: { transitions: [] } });
+				}
+				return Response.json({});
+			}
+			return new Response("missing", { status: 404 });
+		}) as typeof fetch;
+
+		const client = new JiraClient({
+			baseUrl: "https://jira.example.test",
+			token: "fixture-token",
+			fetchImpl,
+		});
+
+		await expect(
+			fetchWorkflows(client, { privateApis: true }),
+		).resolves.toEqual([
+			{
+				name: "No Layout",
+				layout: { statuses: [], transitions: [] },
+			},
+			{
+				name: "Null Layout",
+				layout: { statuses: [], transitions: [] },
+			},
+			{
+				name: "Partial Layout",
+				layout: { statuses: [], transitions: [] },
+			},
+		]);
+	});
 });
