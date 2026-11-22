@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { pathSegment } from "./client.ts";
 import type { ConfluenceClient } from "./confluence.ts";
@@ -343,7 +343,17 @@ export async function fetchAttachments(
 					const info = await stat(
 						join(options.attachmentsDir, existing.storagePath),
 					);
-					if (info.isFile() && info.size === existing.size) {
+					const cached =
+						info.isFile() && info.size === existing.size
+							? await readFile(
+									join(options.attachmentsDir, existing.storagePath),
+								)
+							: null;
+					if (
+						cached &&
+						createHash("sha256").update(cached).digest("hex") ===
+							existing.sha256
+					) {
 						result.push({
 							sourceId,
 							attachmentId: attachment.id,

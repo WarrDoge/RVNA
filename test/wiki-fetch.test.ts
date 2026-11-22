@@ -126,11 +126,57 @@ describe("wiki attachment reuse", () => {
 			existingAttachments: new Map([
 				[
 					"attachment-1:1",
-					{ storagePath: "valid/file", sha256: "old", size: 5 },
+					{
+						storagePath: "valid/file",
+						sha256: createHash("sha256").update("hello").digest("hex"),
+						size: 5,
+					},
 				],
 			]),
 		});
 
 		expect(result[0]?.storagePath).toBe("valid/file");
 	});
+});
+
+test("re-downloads a cached attachment whose bytes no longer match the digest", async () => {
+	const directory = await temporaryDirectory();
+	await mkdir(join(directory, "stale"), { recursive: true });
+	await writeFile(join(directory, "stale", "file"), "world");
+	const downloads: string[] = [];
+	const client = {
+		listAttachments: async () => [
+			{
+				id: "attachment-1",
+				title: "notes.txt",
+				version: { number: 1 },
+				_links: { download: "/download/attachments/1/notes.txt" },
+			},
+		],
+		listAttachmentVersions: async () => [{ number: 1 }],
+		download: async (path: string) => {
+			downloads.push(path);
+			return Buffer.from("hello");
+		},
+	} as unknown as ConfluenceClient;
+
+	const result = await fetchAttachments(client, "page-1", {
+		attachmentsDir: directory,
+		skipAttachments: false,
+		existingAttachments: new Map([
+			[
+				"attachment-1:1",
+				{
+					storagePath: "stale/file",
+					sha256: createHash("sha256").update("hello").digest("hex"),
+					size: 5,
+				},
+			],
+		]),
+	});
+
+	expect(downloads).toHaveLength(1);
+	expect(result[0]?.sha256).toBe(
+		createHash("sha256").update("hello").digest("hex"),
+	);
 });
