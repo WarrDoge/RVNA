@@ -391,7 +391,11 @@ export function wikiChecks(
 		checks.push(
 			live.pageLikesSkipped
 				? skipped("wiki.page_likes", "likes are skipped without --private-apis")
-				: socialCheck("wiki.page_likes", live.pageLikes, database.pageLikes),
+				: socialCheck(
+						"wiki.page_likes",
+						withoutLocal(live.pageLikes, localPages),
+						withoutLocal(database.pageLikes, localPages),
+					),
 		);
 	} else {
 		checks.push(
