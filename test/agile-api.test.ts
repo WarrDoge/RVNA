@@ -581,6 +581,15 @@ describe("board data and moves", () => {
 		expect(keys(quickData)).toEqual([`${projectKey}-1`]);
 	});
 
+	test("rejects an over-long quick filter value", async () => {
+		const response = await inject(
+			"GET",
+			`/api/boards/${scrumBoard.rapidViewId}/data?quickFilter=${"x".repeat(2001)}`,
+			ownerSession,
+		);
+		expect(response.statusCode).toBe(400);
+	});
+
 	test("reorders and ranks issues without writing history", async () => {
 		const before = await historyCount(`${projectKey}-3`);
 		const response = await move(ownerSession, {
@@ -768,6 +777,27 @@ describe("board data and moves", () => {
 });
 
 describe("sprints", () => {
+	test("rejects an inverted sprint date range on create and update", async () => {
+		const start = new Date().toISOString();
+		const end = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+		const created = await inject(
+			"POST",
+			`/api/boards/${scrumBoard.rapidViewId}/sprints`,
+			ownerSession,
+			{ name: "Inverted sprint", startDate: start, endDate: end },
+		);
+		expect(created.statusCode).toBe(400);
+
+		const sprint = await createSprint("Patchable sprint");
+		const patched = await inject(
+			"PATCH",
+			`/api/sprints/${sprint.id}`,
+			ownerSession,
+			{ startDate: start, endDate: end },
+		);
+		expect(patched.statusCode).toBe(400);
+	});
+
 	test("starts one sprint at a time and completes with counts", async () => {
 		const second = await createSprint("Agile Sprint Two");
 		sprint2Id = second.id;
@@ -1056,6 +1086,14 @@ describe("configuration", () => {
 			},
 		);
 		expect(duplicate.statusCode).toBe(400);
+
+		const empty = await inject(
+			"PUT",
+			`/api/boards/${configBoard.rapidViewId}/columns`,
+			ownerSession,
+			{ columns: [] },
+		);
+		expect(empty.statusCode).toBe(400);
 
 		const columns = await inject(
 			"PUT",

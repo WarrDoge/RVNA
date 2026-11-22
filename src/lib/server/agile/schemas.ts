@@ -1,6 +1,5 @@
 import { z } from "zod";
 import {
-	errorSchema,
 	issueTypeRefSchema,
 	priorityRefSchema,
 	statusRefSchema,
@@ -169,27 +168,38 @@ export const moveBody = z.object({
 
 export const moveResponse = z.object({ moved: z.number().int() });
 
-export const conflictSchema = errorSchema.extend({
-	validColumns: z
-		.array(z.object({ id: z.uuid(), name: z.string() }))
-		.optional(),
-	statuses: z.array(statusRefSchema).optional(),
-});
+const sprintDatesInOrder = (body: {
+	startDate?: string | null;
+	endDate?: string | null;
+}) =>
+	body.startDate == null ||
+	body.endDate == null ||
+	new Date(body.endDate) > new Date(body.startDate);
 
-export const sprintCreateBody = z.object({
-	name: z.string().trim().min(1).max(200),
-	goal: z.string().trim().max(2000).nullable().optional(),
-	startDate: z.iso.datetime().nullable().optional(),
-	endDate: z.iso.datetime().nullable().optional(),
-});
+export const sprintCreateBody = z
+	.object({
+		name: z.string().trim().min(1).max(200),
+		goal: z.string().trim().max(2000).nullable().optional(),
+		startDate: z.iso.datetime().nullable().optional(),
+		endDate: z.iso.datetime().nullable().optional(),
+	})
+	.refine(sprintDatesInOrder, {
+		message: "The end date must be after the start date",
+		path: ["endDate"],
+	});
 
-export const sprintPatchBody = z.object({
-	name: z.string().trim().min(1).max(200).optional(),
-	goal: z.string().trim().max(2000).nullable().optional(),
-	startDate: z.iso.datetime().nullable().optional(),
-	endDate: z.iso.datetime().nullable().optional(),
-	sequence: z.number().int().optional(),
-});
+export const sprintPatchBody = z
+	.object({
+		name: z.string().trim().min(1).max(200).optional(),
+		goal: z.string().trim().max(2000).nullable().optional(),
+		startDate: z.iso.datetime().nullable().optional(),
+		endDate: z.iso.datetime().nullable().optional(),
+		sequence: z.number().int().optional(),
+	})
+	.refine(sprintDatesInOrder, {
+		message: "The end date must be after the start date",
+		path: ["endDate"],
+	});
 
 export const sprintStartBody = z.object({
 	name: z.string().trim().min(1).max(200).optional(),
@@ -220,9 +230,10 @@ export const columnsBody = z.object({
 				name: z.string().trim().min(1).max(200),
 				minIssues: z.number().int().min(0).nullable().optional(),
 				maxIssues: z.number().int().min(0).nullable().optional(),
-				statuses: z.array(z.uuid()),
+				statuses: z.array(z.uuid()).max(500),
 			}),
 		)
+		.min(1)
 		.max(20),
 });
 
@@ -274,7 +285,7 @@ export const boardPatchBody = z.object({
 });
 
 export const searchQuery = z.object({
-	quickFilter: z.string().optional(),
+	quickFilter: z.string().max(2000).optional(),
 	text: z.string().max(500).optional(),
 	epic: z.string().max(200).optional(),
 	version: z.uuid().optional(),
