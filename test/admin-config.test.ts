@@ -466,6 +466,10 @@ describe("issue types", () => {
 				),
 			);
 		expect(history?.count).toBe(total);
+
+		// Keep the 8200 rows from slowing every later test in this file.
+		await db.delete(issues).where(inArray(issues.id, created.issues));
+		created.issues.length = 0;
 	}, 120_000);
 
 	test("a concurrent create with the same name returns a conflict", async () => {
@@ -1105,10 +1109,7 @@ describe("statuses", () => {
 		}
 	});
 
-	// The delete makes many sequential reads and writes; a loaded host can push it past five seconds.
-	test("refuses to delete a used status and migrates its issues", {
-		timeout: 30_000,
-	}, async () => {
+	test("refuses to delete a used status and migrates its issues", async () => {
 		const source = await createRow<StatusRow>(
 			"/api/admin/statuses",
 			{ name: name("Source status"), category: "indeterminate" },
