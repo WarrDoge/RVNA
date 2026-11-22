@@ -56,7 +56,6 @@ export const requestTypeGroups = pgTable(
 			table.deskId,
 			table.sourceId,
 		),
-		index("request_type_groups_desk_idx").on(table.deskId),
 	],
 );
 
@@ -80,7 +79,6 @@ export const requestTypes = pgTable(
 	},
 	(table) => [
 		unique("request_types_desk_source_unique").on(table.deskId, table.sourceId),
-		index("request_types_desk_idx").on(table.deskId),
 	],
 );
 
@@ -148,7 +146,6 @@ export const queues = pgTable(
 	},
 	(table) => [
 		unique("queues_desk_source_unique").on(table.deskId, table.sourceId),
-		index("queues_desk_idx").on(table.deskId),
 	],
 );
 
@@ -183,7 +180,6 @@ export const slaMetrics = pgTable(
 	},
 	(table) => [
 		unique("sla_metrics_desk_source_unique").on(table.deskId, table.sourceId),
-		index("sla_metrics_desk_idx").on(table.deskId),
 	],
 );
 
@@ -242,7 +238,6 @@ export const slaCycles = pgTable(
 			table.metricId,
 			table.cycleNumber,
 		),
-		index("sla_cycles_issue_idx").on(table.issueId),
 	],
 );
 
@@ -272,7 +267,6 @@ export const slaImportedCycles = pgTable(
 			table.metricId,
 			table.cycleNumber,
 		),
-		index("sla_imported_cycles_issue_idx").on(table.issueId),
 	],
 );
 
