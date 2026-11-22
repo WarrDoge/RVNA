@@ -20,6 +20,7 @@ import {
 import {
 	cleanupGitlabFixture,
 	createGitlabFixture,
+	deliverDirect,
 	delivery,
 	type GitlabFixture,
 	mergeRequestPayload,
@@ -487,6 +488,41 @@ describe("webhook delivery", () => {
 			"OPEN",
 		);
 		expect(dominantMergeRequestState([])).toBeNull();
+	});
+
+	test("an edited merge request title drops links it no longer references", async () => {
+		const edited = await createGitlabFixture(`${tag}m`);
+		await deliverDirect(
+			"Merge Request Hook",
+			mergeRequestPayload(edited, {
+				iid: 41,
+				title: `${edited.issueKey} first title`,
+				state: "opened",
+				action: "open",
+				sourceBranch: "no-issue-key",
+			}),
+			`${tag}:mr-link-first`,
+		);
+		expect(
+			(await issueDevelopment(edited.issueKey))?.counts.mergeRequests,
+		).toBe(1);
+
+		await deliverDirect(
+			"Merge Request Hook",
+			mergeRequestPayload(edited, {
+				iid: 41,
+				title: "unrelated title",
+				state: "opened",
+				action: "update",
+				sourceBranch: "no-issue-key",
+			}),
+			`${tag}:mr-link-update`,
+		);
+		expect(
+			(await issueDevelopment(edited.issueKey))?.counts.mergeRequests,
+		).toBe(0);
+
+		await cleanupGitlabFixture(edited);
 	});
 
 	test("records a pipeline status for the issue", async () => {

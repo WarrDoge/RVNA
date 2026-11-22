@@ -1,3 +1,4 @@
+import { and, eq, notInArray } from "drizzle-orm";
 import { db } from "../db.ts";
 import {
 	gitlabBranches,
@@ -131,6 +132,17 @@ export async function linkMergeRequest(
 	mergeRequestId: string,
 	linked: IssueRef[],
 ) {
+	const issueIds = linked.map((issue) => issue.id);
+	await db
+		.delete(gitlabMergeRequestIssues)
+		.where(
+			issueIds.length === 0
+				? eq(gitlabMergeRequestIssues.mergeRequestId, mergeRequestId)
+				: and(
+						eq(gitlabMergeRequestIssues.mergeRequestId, mergeRequestId),
+						notInArray(gitlabMergeRequestIssues.issueId, issueIds),
+					),
+		);
 	if (linked.length === 0) return;
 	await db
 		.insert(gitlabMergeRequestIssues)
