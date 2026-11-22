@@ -59,3 +59,22 @@ test("an explicitly paused cycle stays paused when its interval is older", () =>
 	expect(display.state).toBe("paused");
 	expect(display.elapsedMinutes).toBe(60);
 });
+
+test("an open cycle without a calendar still counts up to now", () => {
+	const stored = cycle({ goalMinutes: 60, elapsedMinutes: 0 });
+	const display = displayCycle(stored, null, new Date("2026-01-05T11:00:00Z"));
+	expect(display.elapsedMinutes).toBe(120);
+	expect(display.remainingMinutes).toBe(-60);
+	expect(display.state).toBe("breached");
+});
+
+test("a live breach reports the instant the goal was crossed", () => {
+	const stored = cycle({ goalMinutes: 60, elapsedMinutes: 0 });
+	const display = displayCycle(
+		stored,
+		calendar,
+		new Date("2026-01-05T11:00:00Z"),
+	);
+	expect(display.state).toBe("breached");
+	expect(display.breachTime).toBe("2026-01-05T10:00:00.000Z");
+});

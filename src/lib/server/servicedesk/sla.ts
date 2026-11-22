@@ -67,6 +67,36 @@ function pausedMinutes(
 	return total;
 }
 
+/** A cycle whose goal or calendar is gone still advances in wall-clock time. */
+const aroundTheClock: SlaCalendar = {
+	timezone: "UTC",
+	workingHours: Array.from({ length: 7 }, () => [{ start: 0, end: 1440 }]),
+	holidays: [],
+};
+
+function firstBreachInstant(
+	calendar: SlaCalendar,
+	startedAt: number,
+	pauses: { from: number; to: number }[],
+	end: number,
+	goalMinutes: number,
+): number | null {
+	if (goalMinutes <= 0) return startedAt;
+	const elapsedAt = (at: number) =>
+		workingMinutesBetween(calendar, new Date(startedAt), new Date(at)) -
+		pausedMinutes(calendar, startedAt, pauses, at);
+	if (elapsedAt(end) < goalMinutes) return null;
+
+	let low = startedAt;
+	let high = end;
+	while (high - low > 1) {
+		const middle = Math.floor((low + high) / 2);
+		if (elapsedAt(middle) >= goalMinutes) high = middle;
+		else low = middle;
+	}
+	return high;
+}
+
 /**
  * Remaining and elapsed time at `now`, from the stored cycle and its calendar.
  * An open cycle counts working time up to the moment it is read; a cycle that
@@ -80,9 +110,11 @@ export function displayCycle(
 	const goal = cycle.goalMinutes;
 	let elapsed = cycle.elapsedMinutes;
 	let remaining = goal === null ? null : goal - elapsed;
+	let breachTime = cycle.breachTime;
 	const pausedAt = cycle.stoppedAt ? null : cycle.pausedAt;
+	const clock = calendar ?? (cycle.stoppedAt ? null : aroundTheClock);
 
-	if (!cycle.stoppedAt && calendar) {
+	if (!cycle.stoppedAt && clock) {
 		const pauses = cycle.pausedIntervals
 			.map((pause) => ({
 				from: Date.parse(pause.from),
@@ -91,13 +123,23 @@ export function displayCycle(
 			.filter((pause) => !Number.isNaN(pause.from) && !Number.isNaN(pause.to));
 		const end = pausedAt?.getTime() ?? now.getTime();
 		elapsed =
-			workingMinutesBetween(calendar, cycle.startedAt, new Date(end)) -
-			pausedMinutes(calendar, cycle.startedAt.getTime(), pauses, end);
+			workingMinutesBetween(clock, cycle.startedAt, new Date(end)) -
+			pausedMinutes(clock, cycle.startedAt.getTime(), pauses, end);
 		elapsed = Math.max(0, Math.round(elapsed));
 		remaining = goal === null ? null : Math.round(goal - elapsed);
+		if (breachTime === null && goal !== null) {
+			const instant = firstBreachInstant(
+				clock,
+				cycle.startedAt.getTime(),
+				pauses,
+				end,
+				goal,
+			);
+			if (instant !== null) breachTime = new Date(instant);
+		}
 	}
 
-	const overGoal = goal !== null && (remaining === null || remaining < 0);
+	const overGoal = remaining !== null && remaining < 0;
 	let state: SlaState;
 	if (cycle.stoppedAt) {
 		state = overGoal || cycle.breached ? "breached" : "completed";
@@ -118,7 +160,7 @@ export function displayCycle(
 		elapsedMinutes: elapsed,
 		remainingMinutes: remaining,
 		breached: state === "breached",
-		breachTime: cycle.breachTime?.toISOString() ?? null,
+		breachTime: breachTime?.toISOString() ?? null,
 	};
 }
 
