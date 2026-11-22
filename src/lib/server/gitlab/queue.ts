@@ -6,6 +6,7 @@ export const GITLAB_QUEUE = "gitlab-webhook";
 
 let boss: PgBoss | null = null;
 let starting: Promise<PgBoss> | null = null;
+let generation = 0;
 
 async function start() {
 	const instance = await getBoss();
@@ -30,13 +31,14 @@ async function start() {
 export async function startGitlabQueue() {
 	if (boss) return boss;
 	if (!starting) {
+		const current = generation;
 		starting = start()
 			.then((instance) => {
-				boss = instance;
+				if (current === generation) boss = instance;
 				return instance;
 			})
 			.catch((error) => {
-				starting = null;
+				if (current === generation) starting = null;
 				throw error;
 			});
 	}
@@ -44,8 +46,11 @@ export async function startGitlabQueue() {
 }
 
 export async function stopGitlabQueue() {
+	generation += 1;
+	const pending = starting;
 	boss = null;
 	starting = null;
+	await pending?.catch(() => undefined);
 	await stopBoss();
 }
 
