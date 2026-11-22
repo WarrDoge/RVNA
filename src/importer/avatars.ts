@@ -229,11 +229,21 @@ async function saveAvatar(
 	}
 }
 
-async function saveUserSource(id: string, sourceUrl: string | null) {
+async function saveUserSource(
+	id: string,
+	sourceUrl: string | null,
+	file: string | null,
+	avatarsDir: string,
+) {
 	await db
 		.update(users)
-		.set({ avatarUrl: sourceUrl, updatedAt: new Date() })
+		.set({
+			avatarUrl: sourceUrl,
+			avatarFile: file ? null : undefined,
+			updatedAt: new Date(),
+		})
 		.where(eq(users.id, id));
+	if (file) await deleteAvatarFileIfUnused(avatarsDir, file);
 }
 
 async function saveProjectSource(id: string, sourceUrl: string | null) {
@@ -353,7 +363,9 @@ async function importJiraUsers(
 		const url = largestAvatarUrl(detail.avatarUrls);
 		const id = avatarIdFromUrl(url, baseUrl);
 		if (!url || !sameOrigin(url, baseUrl) || (id && system.ids.has(id))) {
-			if (url !== row.avatarUrl) await saveUserSource(row.id, url);
+			if (url !== row.avatarUrl || row.avatarFile) {
+				await saveUserSource(row.id, url, row.avatarFile, options.avatarsDir);
+			}
 			counts.skipped++;
 			continue;
 		}
@@ -384,7 +396,9 @@ async function importJiraUsers(
 				systemHashes: await system.hashes(),
 			})
 		) {
-			if (url !== row.avatarUrl) await saveUserSource(row.id, url);
+			if (url !== row.avatarUrl || row.avatarFile) {
+				await saveUserSource(row.id, url, row.avatarFile, options.avatarsDir);
+			}
 			counts.skipped++;
 			continue;
 		}

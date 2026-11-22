@@ -629,3 +629,26 @@ describe("jira avatar import", () => {
 		).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });
+
+test("falling back to a default user avatar clears the stored custom image", async () => {
+	const staleFile = `${"d".repeat(64)}.png`;
+	await writeFile(join(avatarsDir, staleFile), customPng);
+	await pool.query(
+		"update users set avatar_file = $1, avatar_url = $2 where id = $3",
+		[staleFile, customUserUrl, userIds[2]],
+	);
+
+	await importJiraAvatars(client as never, {
+		baseUrl,
+		avatarsDir,
+		scope: scope(),
+	});
+
+	const stored = await rows();
+	expect(
+		stored.users.find((row) => row.id === userIds[2])?.avatar_file,
+	).toBeNull();
+	await expect(readFile(join(avatarsDir, staleFile))).rejects.toMatchObject({
+		code: "ENOENT",
+	});
+});
