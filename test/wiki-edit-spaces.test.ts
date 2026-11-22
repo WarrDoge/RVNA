@@ -36,6 +36,19 @@ afterAll(async () => {
 	await pool.end();
 });
 
+async function waitForLockWaiters(count: number) {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const result = await pool.query<{ n: number }>(
+			`select count(*)::int as n from pg_stat_activity
+			 where datname = current_database() and wait_event_type = 'Lock'`,
+		);
+		if ((result.rows[0]?.n ?? 0) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	throw new Error(`timed out waiting for ${count} lock waiters`);
+}
+
 const fileExists = (path: string) =>
 	access(join(process.env.ATTACHMENTS_DIR as string, path)).then(
 		() => true,
@@ -306,6 +319,65 @@ describe("uploads", () => {
 				url: `/api/wiki/attachments/${second.body[0].id}`,
 			},
 		]);
+	});
+
+	test("concurrent uploads of one file name get distinct versions", async () => {
+		const page = await wiki.page(editor, space.key, "Attachment race");
+		await pool.query(`
+			create or replace function test_slow_attachment_insert() returns trigger
+			language plpgsql as $$
+			begin
+				perform pg_advisory_xact_lock(987654321);
+				return new;
+			end $$`);
+		await pool.query(
+			"create trigger test_slow_attachment_insert before insert on page_attachments for each row execute function test_slow_attachment_insert()",
+		);
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select pg_advisory_xact_lock(987654321)");
+			const one = multipart({
+				name: "race.txt",
+				type: "text/plain",
+				content: "first race",
+			});
+			const two = multipart({
+				name: "race.txt",
+				type: "text/plain",
+				content: "second race",
+			});
+			const first = editor.raw(
+				"POST",
+				`/api/wiki/pages/${page.id}/attachments`,
+				one.payload,
+				one.contentType,
+			);
+			const second = editor.raw(
+				"POST",
+				`/api/wiki/pages/${page.id}/attachments`,
+				two.payload,
+				two.contentType,
+			);
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const responses = await Promise.all([first, second]);
+			expect(responses.map((response) => response.status).sort()).toEqual([
+				201, 201,
+			]);
+			const stored = await rows<{ version: number }>(
+				"select version from page_attachments where page_id = $1 and file_name = 'race.txt' order by version",
+				[page.id],
+			);
+			expect(stored.map((row) => row.version)).toEqual([1, 2]);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+			await pool.query(
+				"drop trigger if exists test_slow_attachment_insert on page_attachments",
+			);
+			await pool.query("drop function if exists test_slow_attachment_insert()");
+		}
 	});
 
 	test("refuses readers, non-multipart bodies and trashed pages", async () => {

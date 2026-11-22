@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
 	attachmentUploadLimits,
@@ -812,33 +812,40 @@ export async function uploadPageAttachments(
 				file.path = join(root, sha256, uploadId);
 
 				const fileName = safeFileName(file.fileName);
-				const [latest] = await tx
-					.select({ version: pageAttachments.version })
-					.from(pageAttachments)
-					.where(
-						and(
-							eq(pageAttachments.pageId, page.id),
-							eq(pageAttachments.fileName, fileName),
-						),
-					)
-					.orderBy(desc(pageAttachments.version))
-					.limit(1);
-
-				const [row] = await tx
-					.insert(pageAttachments)
-					.values({
-						sourceId: `local:${uploadId}`,
-						pageId: page.id,
-						fileName,
-						mimeType: file.mimeType,
-						size: file.size,
-						version: (latest?.version ?? 0) + 1,
-						authorId: actor.id,
-						created: new Date(),
-						storagePath: join(sha256, uploadId),
-						sha256,
-					})
-					.returning();
+				let row: typeof pageAttachments.$inferSelect | undefined;
+				for (let attempt = 0; attempt < 5 && !row; attempt++) {
+					const [inserted] = await tx
+						.insert(pageAttachments)
+						.values({
+							sourceId: `local:${uploadId}`,
+							pageId: page.id,
+							fileName,
+							mimeType: file.mimeType,
+							size: file.size,
+							version: sql`(
+								select coalesce(max(${pageAttachments.version}), 0) + 1
+								from ${pageAttachments}
+								where ${pageAttachments.pageId} = ${page.id}
+									and ${pageAttachments.fileName} = ${fileName}
+							)`,
+							authorId: actor.id,
+							created: new Date(),
+							storagePath: join(sha256, uploadId),
+							sha256,
+						})
+						.onConflictDoNothing({
+							target: [
+								pageAttachments.pageId,
+								pageAttachments.fileName,
+								pageAttachments.version,
+							],
+						})
+						.returning();
+					row = inserted;
+				}
+				if (!row) {
+					throw new HttpError(500, "Could not store the attachment");
+				}
 				created.push(row);
 			}
 		});
