@@ -216,24 +216,30 @@ async function session(
 		connectionString: env.DATABASE_URL,
 		application_name: "rvna-messenger",
 	});
+	// The advisory lock lives on this connection: when it drops, stop syncing so
+	// another worker can take the lock without two workers processing at once.
+	const lost = new AbortController();
+	const onError = (error: Error) => lost.abort(error);
+	client.on("error", onError);
 	await client.connect();
+	const combined = AbortSignal.any([signal, lost.signal]);
 	let locked = false;
 	try {
-		while (!signal.aborted) {
+		while (!combined.aborted) {
 			const result = await client.query<{ locked: boolean }>(LOCK_SQL);
 			if (result.rows[0]?.locked) {
 				locked = true;
 				break;
 			}
-			await wait(LOCK_RETRY_MS, signal);
+			await wait(LOCK_RETRY_MS, combined);
 		}
-		if (!locked) return;
-		await syncLoop(signal, markRunning);
+		if (locked) await syncLoop(combined, markRunning);
 	} finally {
 		markRunning(false);
 		if (locked) await client.query(UNLOCK_SQL).catch(() => undefined);
 		await client.end().catch(() => undefined);
 	}
+	if (lost.signal.aborted && !signal.aborted) throw lost.signal.reason;
 }
 
 async function run(signal: AbortSignal, markRunning: (value: boolean) => void) {
