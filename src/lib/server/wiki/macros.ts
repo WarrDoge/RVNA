@@ -1,4 +1,5 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { attachmentUrl, formatSize } from "#lib/wiki/format.ts";
 import { JqlError } from "../../shared/jql/index.ts";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
@@ -114,22 +115,28 @@ async function spaceIdsForParameter(
 		const rows = await db
 			.select({ id: spaces.id })
 			.from(spaces)
-			.where(and(inArray(spaces.key, keys), inArray(spaces.id, readable)));
+			.where(
+				and(
+					inArray(
+						sql`lower(${spaces.key})`,
+						keys.map((key) => key.toLowerCase()),
+					),
+					inArray(spaces.id, readable),
+				),
+			);
 		for (const row of rows) selected.add(row.id);
 	}
 	if (tokens.includes("@self")) selected.add(ctx.space.id);
 
 	const types = tokens
 		.filter((token) => token === "@global" || token === "@personal")
-		.map((token) => token.slice(1));
+		.map((token) => token.slice(1) as "global" | "personal");
 	if (types.length > 0) {
 		const rows = await db
-			.select({ id: spaces.id, type: spaces.type })
+			.select({ id: spaces.id })
 			.from(spaces)
-			.where(inArray(spaces.id, readable));
-		for (const row of rows) {
-			if (types.includes(row.type)) selected.add(row.id);
-		}
+			.where(and(inArray(spaces.id, readable), inArray(spaces.type, types)));
+		for (const row of rows) selected.add(row.id);
 	}
 
 	if (selected.size > 0) return [...selected];
@@ -289,38 +296,22 @@ const jira: MacroRenderer = async (macro, ctx) => {
 	return `<div class="wiki-macro wiki-jira-table" data-macro="jira"><table class="wiki-table"><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`;
 };
 
-function fileSize(bytes: number) {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function attachmentDownloadUrl(
-	pageSourceId: string,
-	fileName: string,
-	version: number,
-	inline = false,
-) {
-	const base = `/download/attachments/${pageSourceId}/${encodeURIComponent(fileName)}?version=${version}`;
-	return inline ? `${base}&inline=1` : base;
-}
-
 function fileCard(
 	pageSourceId: string,
 	attachment: Pick<AttachmentRow, "fileName" | "size" | "version" | "mimeType">,
 ) {
-	const url = attachmentDownloadUrl(
+	const url = attachmentUrl(
 		pageSourceId,
 		attachment.fileName,
 		attachment.version,
 	);
-	return `<div class="wiki-file"><span class="wiki-file-icon" aria-hidden="true">\u{1f4ce}</span><a class="wiki-file-name" href="${escapeHtml(url)}">${escapeHtml(attachment.fileName)}</a><span class="wiki-file-size">${escapeHtml(fileSize(attachment.size))}</span></div>`;
+	return `<div class="wiki-file"><span class="wiki-file-icon" aria-hidden="true">\u{1f4ce}</span><a class="wiki-file-name" href="${escapeHtml(url)}">${escapeHtml(attachment.fileName)}</a><span class="wiki-file-size">${escapeHtml(formatSize(attachment.size))}</span></div>`;
 }
 
 const viewFile: MacroRenderer = async (macro, ctx) => {
 	const name =
-		macro.params.name?.trim() ??
-		macro.params.title?.trim() ??
+		macro.params.name?.trim() ||
+		macro.params.title?.trim() ||
 		macro.params.filename?.trim();
 	if (!name) {
 		return `<div class="wiki-unknown-macro" data-macro="view-file">The view-file macro needs a file name.</div>`;
@@ -333,7 +324,7 @@ const viewFile: MacroRenderer = async (macro, ctx) => {
 	const height = integerParam(macro.params.height, 480, 120, 2000);
 	const mime = (attachment.mimeType ?? "").toLowerCase();
 	if (mime.startsWith("image/")) {
-		const url = attachmentDownloadUrl(
+		const url = attachmentUrl(
 			ctx.page.sourceId,
 			name,
 			attachment.version,
@@ -342,13 +333,13 @@ const viewFile: MacroRenderer = async (macro, ctx) => {
 		return `<figure class="wiki-file-preview" data-macro="view-file"><img src="${escapeHtml(url)}" alt="${escapeHtml(name)}" /><figcaption>${escapeHtml(name)}</figcaption></figure>`;
 	}
 	if (mime === "application/pdf") {
-		const url = attachmentDownloadUrl(
+		const url = attachmentUrl(
 			ctx.page.sourceId,
 			name,
 			attachment.version,
 			true,
 		);
-		return `<div class="wiki-file-preview wiki-file-pdf" data-macro="view-file"><iframe src="${escapeHtml(url)}" title="${escapeHtml(name)}" height="${height}" loading="lazy"></iframe><div class="wiki-file-caption"><a href="${escapeHtml(attachmentDownloadUrl(ctx.page.sourceId, name, attachment.version))}">${escapeHtml(name)}</a></div></div>`;
+		return `<div class="wiki-file-preview wiki-file-pdf" data-macro="view-file"><iframe src="${escapeHtml(url)}" title="${escapeHtml(name)}" height="${height}" loading="lazy"></iframe><div class="wiki-file-caption"><a href="${escapeHtml(attachmentUrl(ctx.page.sourceId, name, attachment.version))}">${escapeHtml(name)}</a></div></div>`;
 	}
 	return `<div class="wiki-macro" data-macro="view-file">${fileCard(ctx.page.sourceId, { ...attachment, fileName: name })}</div>`;
 };
@@ -356,10 +347,14 @@ const viewFile: MacroRenderer = async (macro, ctx) => {
 const recentlyUpdated: MacroRenderer = async (macro, ctx) => {
 	const limit = integerParam(macro.params.max, 15, 1, 100);
 	const spaceIds = await spaceIdsForParameter(ctx, macro.params.spaces);
+	const requestedTypes = (macro.params.types ?? "")
+		.split(",")
+		.map((type) => type.trim().toLowerCase())
+		.filter(Boolean);
+	const wantsPage = requestedTypes.includes("page");
+	const wantsBlogpost = requestedTypes.includes("blogpost");
 	const type =
-		macro.params.types && !macro.params.types.includes("blogpost")
-			? ("page" as const)
-			: undefined;
+		wantsPage === wantsBlogpost ? undefined : wantsPage ? "page" : "blogpost";
 	const links = await recentPageLinks(ctx.access, spaceIds, { limit, type });
 	const hideHeading = booleanParam(macro.params.hideHeading);
 	const heading = hideHeading
@@ -394,7 +389,8 @@ const contentByLabel: MacroRenderer = async (macro, ctx) => {
 				showSpace: booleanParam(macro.params.showSpace, spaceIds.length > 1),
 			});
 			if (!showLabels) return base;
-			const labelList = labels
+			const labelList = [...(link.labels ?? [])]
+				.sort((left, right) => left.localeCompare(right))
 				.map(
 					(label) =>
 						`<a class="wiki-label" href="/label/${encodeURIComponent(label)}">${escapeHtml(label)}</a>`,
@@ -473,14 +469,19 @@ const contributors: MacroRenderer = async (macro, ctx) => {
 	return `<div class="wiki-contributors" data-macro="contributors"><ul class="wiki-list wiki-list-inline">${items || '<li class="wiki-list-empty">No contributors yet.</li>'}</ul></div>`;
 };
 
-function allowedIframeUrl(value: string): boolean {
+function httpUrl(value: string): URL | null {
 	try {
 		const url = new URL(value);
-		if (url.protocol !== "https:" && url.protocol !== "http:") return false;
-		return iframeHosts.includes(url.hostname);
+		if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+		return url;
 	} catch {
-		return false;
+		return null;
 	}
+}
+
+function allowedIframeUrl(value: string): boolean {
+	const url = httpUrl(value);
+	return url !== null && iframeHosts.includes(url.hostname);
 }
 
 const widget: MacroRenderer = (macro) => {
@@ -493,30 +494,34 @@ const widget: MacroRenderer = (macro) => {
 	if (allowedIframeUrl(url)) {
 		return `<div class="wiki-widget" data-macro="widget"><iframe src="${escapeHtml(url)}" title="Embedded content" width="${width}" height="${height}" loading="lazy" allowfullscreen></iframe></div>`;
 	}
-	let label = url;
-	try {
-		const parsed = new URL(url);
-		label = parsed.hostname;
-	} catch {
-		label = url;
+	const parsed = httpUrl(url);
+	const relative = url.startsWith("/") || url.startsWith("#");
+	if (!parsed && !relative) {
+		return `<div class="wiki-widget wiki-widget-link" data-macro="widget"><span class="wiki-widget-url">${escapeHtml(url)}</span></div>`;
 	}
+	const label = parsed?.hostname ?? url;
 	return `<div class="wiki-widget wiki-widget-link" data-macro="widget"><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a><span class="wiki-widget-url">${escapeHtml(url)}</span></div>`;
 };
 
 const attachments: MacroRenderer = async (macro, ctx) => {
 	const patterns = (macro.params.patterns ?? "")
 		.split(",")
-		.map((pattern) => pattern.trim().toLowerCase())
+		.map((pattern) => pattern.trim())
 		.filter(Boolean);
+	const matchers = patterns
+		.map((pattern) => {
+			try {
+				return new RegExp(pattern, "i");
+			} catch {
+				return null;
+			}
+		})
+		.filter((matcher): matcher is RegExp => matcher !== null);
 	const rows = [...ctx.storage.attachments.values()]
 		.filter(
 			(attachment) =>
 				patterns.length === 0 ||
-				patterns.some((pattern) =>
-					attachment.fileName
-						.toLowerCase()
-						.includes(pattern.replace(/\*/g, "")),
-				),
+				matchers.some((matcher) => matcher.test(attachment.fileName)),
 		)
 		.sort((left, right) => left.fileName.localeCompare(right.fileName));
 	if (rows.length === 0) {
@@ -525,7 +530,7 @@ const attachments: MacroRenderer = async (macro, ctx) => {
 	const body = rows
 		.map(
 			(attachment) =>
-				`<tr><td><a href="${escapeHtml(attachmentDownloadUrl(ctx.page.sourceId, attachment.fileName, attachment.version))}">${escapeHtml(attachment.fileName)}</a></td><td>${escapeHtml(fileSize(attachment.size))}</td><td>${attachment.version}</td></tr>`,
+				`<tr><td><a href="${escapeHtml(attachmentUrl(ctx.page.sourceId, attachment.fileName, attachment.version))}">${escapeHtml(attachment.fileName)}</a></td><td>${escapeHtml(formatSize(attachment.size))}</td><td>${attachment.version}</td></tr>`,
 		)
 		.join("");
 	return `<div class="wiki-attachments" data-macro="attachments"><table class="wiki-table"><thead><tr><th>Name</th><th>Size</th><th>Version</th></tr></thead><tbody>${body}</tbody></table></div>`;
@@ -550,7 +555,7 @@ const details: MacroRenderer = async (macro, ctx) => {
 };
 
 const detailsSummary: MacroRenderer = async (macro, ctx) => {
-	const labels = (macro.params.labels ?? "")
+	const labels = (macro.params.label ?? macro.params.labels ?? "")
 		.split(",")
 		.map((label) => label.trim())
 		.filter(Boolean);
@@ -558,17 +563,22 @@ const detailsSummary: MacroRenderer = async (macro, ctx) => {
 		ctx,
 		macro.params.spaces ?? macro.params.spaceAndPage,
 	);
-	let rows = await pagesWithProperties(ctx.access, spaceIds, 200);
+	const max = integerParam(macro.params.max, 200, 1, 200);
+	let rows = await pagesWithProperties(
+		ctx.access,
+		spaceIds,
+		labels.length > 0 ? 200 : max,
+	);
 	if (labels.length > 0) {
 		const allowed = new Set(
 			(await pagesWithLabels(ctx.access, labels, spaceIds, { limit: 200 })).map(
 				(page) => page.id,
 			),
 		);
-		rows = rows.filter((row) => allowed.has(row.id));
+		rows = rows.filter((row) => allowed.has(row.id)).slice(0, max);
 	}
 
-	const requested = (macro.params.columns ?? "")
+	const requested = (macro.params.headings ?? macro.params.columns ?? "")
 		.split(",")
 		.map((column) => column.trim())
 		.filter(Boolean);
@@ -576,8 +586,9 @@ const detailsSummary: MacroRenderer = async (macro, ctx) => {
 		requested.length > 0
 			? requested
 			: [...new Set(rows.flatMap((row) => [...row.values.keys()]))].slice(0, 8);
+	const firstColumn = macro.params.firstcolumn?.trim() || "Title";
 	const heading = macro.params.heading ?? "Page properties report";
-	const head = `<th>Title</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}`;
+	const head = `<th>${escapeHtml(firstColumn)}</th>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}`;
 	const body = rows
 		.map(
 			(row) =>
@@ -643,6 +654,7 @@ export async function renderMacro(
 		if (error instanceof JqlError) {
 			return `<div class="wiki-unknown-macro" data-macro="${escapeHtml(macro.name)}">${escapeHtml(error.jiraMessage)}</div>`;
 		}
-		throw error;
+		console.error(`wiki macro ${macro.name} failed`, error);
+		return `<div class="wiki-unknown-macro" data-macro="${escapeHtml(macro.name)}">This macro could not be rendered.</div>`;
 	}
 }

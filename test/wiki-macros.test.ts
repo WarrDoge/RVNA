@@ -18,7 +18,12 @@ import {
 	childPageLinks,
 	pagesWithProperties,
 } from "../src/lib/server/wiki/data.ts";
-import { macroNames } from "../src/lib/server/wiki/macros.ts";
+import {
+	type MacroContext,
+	macroNames,
+	macroRenderers,
+	renderMacro,
+} from "../src/lib/server/wiki/macros.ts";
 import { loadWikiAccess } from "../src/lib/server/wiki/permissions.ts";
 import { renderWikiBody } from "../src/lib/server/wiki/render.ts";
 
@@ -41,17 +46,20 @@ async function createPage(
 		labels?: string[];
 		updated?: Date;
 		status?: "current" | "draft" | "trashed";
+		type?: "page" | "blogpost";
+		spaceId?: string;
 	} = {},
 ) {
 	const [row] = await db
 		.insert(pages)
 		.values({
 			sourceId: `wm-${randomUUID()}`,
-			spaceId: space.id,
+			spaceId: options.spaceId ?? space.id,
 			parentId: options.parentId ?? null,
 			position: options.position ?? 0,
 			title,
 			status: options.status ?? "current",
+			type: options.type ?? "page",
 			bodyStorage: storage,
 			bodyHtml: `<p>${title}</p>`,
 			creatorId: user.id,
@@ -95,6 +103,32 @@ async function render(
 			searchUser: { id: user.id, username: user.username },
 		},
 	);
+}
+
+async function macroContext(
+	page: typeof pages.$inferSelect,
+): Promise<MacroContext> {
+	return {
+		user,
+		access: await loadWikiAccess(user),
+		page: {
+			id: page.id,
+			sourceId: page.sourceId,
+			spaceId: page.spaceId,
+			title: page.title,
+		},
+		space,
+		storage: {
+			pageSourceId: page.sourceId,
+			spaceKey: space.key,
+			attachments: new Map(),
+			pageSourceIdByTitle: new Map(),
+			otherSpacePages: new Map(),
+			inlineMarkers: new Set(),
+		},
+		renderBody: async () => "",
+		searchUser: { id: user.id, username: user.username },
+	};
 }
 
 beforeAll(async () => {
@@ -242,6 +276,7 @@ const macroCases: {
 	name: string;
 	storage: string;
 	expect: string[];
+	absent?: string[];
 	setup?: () => Promise<void>;
 }[] = [
 	{
@@ -335,6 +370,14 @@ const macroCases: {
 		expect: ["wiki-file-name", "notes.docx"],
 	},
 	{
+		name: "view-file empty name falls back to title",
+		storage: storage(
+			'<ac:structured-macro ac:name="view-file"><ac:parameter ac:name="title">notes.docx</ac:parameter><ac:parameter ac:name="name"/></ac:structured-macro>',
+		),
+		expect: ["wiki-file-name", "notes.docx"],
+		absent: ["missing attachment"],
+	},
+	{
 		name: "recently-updated",
 		storage: storage(
 			'<ac:structured-macro ac:name="recently-updated"><ac:parameter ac:name="max">3</ac:parameter></ac:structured-macro>',
@@ -371,6 +414,14 @@ const macroCases: {
 		name: "attachments",
 		storage: storage('<ac:structured-macro ac:name="attachments" />'),
 		expect: ["wiki-attachments", "diagram.png", "notes.docx"],
+	},
+	{
+		name: "attachments regular expression",
+		storage: storage(
+			'<ac:structured-macro ac:name="attachments"><ac:parameter ac:name="patterns">.*\\.pdf</ac:parameter></ac:structured-macro>',
+		),
+		expect: ["wiki-attachments", "manual.pdf"],
+		absent: ["diagram.png", "notes.docx"],
 	},
 	{
 		name: "anchor",
@@ -439,7 +490,7 @@ test.each(macroCases)("macro $name renders", async (macroCase) => {
 	}
 	if (
 		macroCase.name.startsWith("view-file") ||
-		macroCase.name === "attachments"
+		macroCase.name.startsWith("attachments")
 	) {
 		await db.insert(pageAttachments).values([
 			{
@@ -495,8 +546,143 @@ test.each(macroCases)("macro $name renders", async (macroCase) => {
 			`macro ${macroCase.name} should contain ${expected}`,
 		).toContain(expected);
 	}
+	for (const absent of macroCase.absent ?? []) {
+		expect(
+			html,
+			`macro ${macroCase.name} should not contain ${absent}`,
+		).not.toContain(absent);
+	}
 	expect(html).not.toContain("<ac:");
 	expect(html).not.toContain("<ri:");
+});
+
+test("space keys in macro parameters are case-insensitive", async () => {
+	const page = await createPage(
+		"Case space",
+		storage(
+			`<ac:structured-macro ac:name="recently-updated"><ac:parameter ac:name="spaces">${spaceKey.toLowerCase()}</ac:parameter><ac:parameter ac:name="max">100</ac:parameter></ac:structured-macro>`,
+		),
+	);
+	const html = await render(page);
+	expect(html).toContain(`pageId=${page.sourceId}`);
+});
+
+test("space type parameters select only spaces of that type", async () => {
+	const personalKey = `WMP${run.slice(0, 3).toUpperCase()}`;
+	const [personal] = await db
+		.insert(spaces)
+		.values({
+			sourceId: `wm-personal-${run}`,
+			key: personalKey,
+			name: `Personal space ${run}`,
+			type: "personal",
+		})
+		.returning();
+	try {
+		await createPage("Personal type page", "<p>personal</p>", {
+			spaceId: personal.id,
+		});
+		await createPage("Global type page", "<p>global</p>");
+		const page = await createPage(
+			"Space type macro",
+			storage(
+				'<ac:structured-macro ac:name="recently-updated"><ac:parameter ac:name="spaces">@personal</ac:parameter><ac:parameter ac:name="max">100</ac:parameter></ac:structured-macro>',
+			),
+		);
+		const html = await render(page);
+		expect(html).toContain("Personal type page");
+		expect(html).not.toContain("Global type page");
+	} finally {
+		await pool.query("delete from spaces where id = $1", [personal.id]);
+	}
+});
+
+test("recently-updated with types=blogpost lists only blogposts", async () => {
+	await createPage("Types normal page", "<p>normal</p>");
+	await createPage("Types blog post", "<p>blog</p>", { type: "blogpost" });
+	const page = await createPage(
+		"Types macro page",
+		storage(
+			'<ac:structured-macro ac:name="recently-updated"><ac:parameter ac:name="types">blogpost</ac:parameter><ac:parameter ac:name="max">100</ac:parameter></ac:structured-macro>',
+		),
+	);
+	const html = await render(page);
+	expect(html).toContain("Types blog post");
+	expect(html).not.toContain("Types normal page");
+});
+
+test("content by label shows the labels a page carries", async () => {
+	await createPage("Alpha only page", "<p>alpha</p>", { labels: ["alpha"] });
+	const page = await createPage(
+		"Label macro page",
+		storage(
+			'<ac:structured-macro ac:name="contentbylabel"><ac:parameter ac:name="labels">alpha,beta</ac:parameter></ac:structured-macro>',
+		),
+	);
+	const html = await render(page);
+	expect(html).toContain('href="/label/alpha"');
+	expect(html).not.toContain('href="/label/beta"');
+});
+
+test("widget links do not emit unsafe schemes", async () => {
+	const page = await createPage("Unsafe widget", "<p>widget</p>");
+	const html = await renderMacro(
+		{
+			name: "widget",
+			params: { url: "javascript:alert(1)" },
+			body: null,
+			plain: null,
+			raw: "",
+			start: 0,
+			end: 0,
+		},
+		await macroContext(page),
+	);
+	expect(html).not.toContain('href="javascript:');
+	expect(html).toContain("javascript:alert(1)");
+});
+
+test("page properties report reads the editor's parameter names", async () => {
+	await createPage(
+		"Report labelled",
+		'<ac:structured-macro ac:name="details"><ac:rich-text-body><tbody><tr><th>Owner</th><td>Team</td></tr></tbody></ac:rich-text-body></ac:structured-macro>',
+		{ labels: ["report-label"] },
+	);
+	await createPage(
+		"Report unlabelled",
+		'<ac:structured-macro ac:name="details"><ac:rich-text-body><tbody><tr><th>Owner</th><td>Other</td></tr></tbody></ac:rich-text-body></ac:structured-macro>',
+	);
+	const page = await createPage(
+		"Report macro",
+		storage(
+			'<ac:structured-macro ac:name="detailssummary"><ac:parameter ac:name="label">report-label</ac:parameter><ac:parameter ac:name="headings">Owner</ac:parameter><ac:parameter ac:name="firstcolumn">Page name</ac:parameter><ac:parameter ac:name="max">1</ac:parameter></ac:structured-macro>',
+		),
+	);
+	const html = await render(page);
+	expect(html).toContain("Report labelled");
+	expect(html).not.toContain("Report unlabelled");
+	expect(html).toContain("<th>Page name</th>");
+	expect(html).toContain("<th>Owner</th>");
+});
+
+test("a macro renderer failure becomes an inline message", async () => {
+	const page = await createPage(
+		"Failing macro",
+		storage(
+			'<ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">FAIL-1</ac:parameter></ac:structured-macro>',
+		),
+	);
+	const original = macroRenderers.jira;
+	macroRenderers.jira = () => {
+		throw new Error("renderer exploded");
+	};
+	try {
+		const html = await render(page);
+		expect(html).toContain('class="wiki-unknown-macro"');
+		expect(html).toContain("could not be rendered");
+	} finally {
+		macroRenderers.jira = original;
+	}
 });
 
 test("unknown macros render a neutral placeholder naming the macro", async () => {
