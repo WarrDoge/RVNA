@@ -1063,12 +1063,13 @@ with `DEV_LOGIN_USER` when `NODE_ENV=production`.
 | `HOST_HEADER`              | adapter-node: header with the host, e.g. `x-forwarded-host`          |
 | `SHUTDOWN_TIMEOUT`         | adapter-node: seconds to wait for requests on shutdown, default 30   |
 | `APP_VERSION`              | Version shown on the System info page, optional                      |
-| `CONFLUENCE_URL`           | Confluence base URL, not read yet                                    |
-| `CONFLUENCE_PAT`           | Confluence personal access token, not read yet                       |
+| `CONFLUENCE_URL`           | Confluence base URL, used by the importer                            |
+| `CONFLUENCE_PAT`           | Confluence personal access token, sent as a bearer token             |
 
 The server reads `.env` when it exists (`npm start` passes it to `node build`); Vitest does the same. The three `OIDC_*` values are optional
 but must be set together; with none of them only local accounts can sign in. The bootstrap pair must
-also be set together. The importer reads the Jira variables; Confluence is not read yet.
+also be set together. The importer treats an empty variable as unset; `JIRA_URL`/`JIRA_PAT` and
+`CONFLUENCE_URL`/`CONFLUENCE_PAT` must each be set together.
 
 ## Administration
 
@@ -1250,7 +1251,8 @@ It reads `/rest/api/2/dashboard` and `/rest/dashboards/1.0/{id}` (`/rest/api/2/d
 does not exist on Jira 11.3), maps every gadget and its preferences, and imports the saved filters
 the gadgets use together with the ones Jira lists as favourites or on the Manage Filters pages.
 Jira does not report who owns a dashboard or who it is shared with, so an imported dashboard is
-shared and owned by the Jira user the token belongs to. The step is idempotent like the others.
+owned by the Jira user the token belongs to and comes in private; the System Dashboard is shared
+with everyone. The step is idempotent like the others.
 
 ## Jira URLs
 
