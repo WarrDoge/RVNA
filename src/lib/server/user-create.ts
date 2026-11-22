@@ -17,13 +17,14 @@ function promptHidden(question: string) {
 		let value = "";
 		process.stderr.write(question);
 		input.setRawMode(true);
-		input.resume();
 		input.setEncoding("utf8");
 
 		function finish(action: () => void) {
 			input.setRawMode(false);
 			input.pause();
 			input.off("data", onData);
+			input.off("end", onEnd);
+			input.off("error", onError);
 			process.stderr.write("\n");
 			action();
 		}
@@ -46,7 +47,20 @@ function promptHidden(question: string) {
 				}
 			}
 		}
+		function onEnd() {
+			finish(() =>
+				reject(
+					new Error("the password prompt ended before a password was entered"),
+				),
+			);
+		}
+		function onError(error: Error) {
+			finish(() => reject(error));
+		}
 		input.on("data", onData);
+		input.on("end", onEnd);
+		input.on("error", onError);
+		input.resume();
 	});
 }
 
