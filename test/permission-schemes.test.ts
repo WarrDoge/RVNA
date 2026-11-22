@@ -776,3 +776,67 @@ test("deletes a scheme only after its projects are removed", async () => {
 		.where(eq(auditLog.entityId, copiedSchemeId));
 	expect(audits.map((row) => row.action)).toContain("permission.scheme.delete");
 });
+test("assigning a project leaves the global scheme untouched", async () => {
+	let [global] = await db
+		.select({
+			id: permissionSchemes.id,
+			projectIds: permissionSchemes.projectIds,
+		})
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.sourceId, "global"));
+	if (!global) {
+		await db
+			.insert(permissionSchemes)
+			.values({
+				sourceId: "global",
+				name: "Global permissions",
+				description: "Global permission holders imported from Jira",
+				projectIds: [],
+				raw: {},
+			})
+			.onConflictDoNothing();
+		[global] = await db
+			.select({
+				id: permissionSchemes.id,
+				projectIds: permissionSchemes.projectIds,
+			})
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.sourceId, "global"));
+	}
+	expect(global).toBeDefined();
+	const original = global.projectIds ?? [];
+	await db
+		.update(permissionSchemes)
+		.set({ projectIds: [otherProject.projectId] })
+		.where(eq(permissionSchemes.id, global.id));
+	let assigned = false;
+	try {
+		const response = await injectAs(
+			app,
+			admin.session,
+			"POST",
+			`/api/admin/permission-schemes/${importedSchemeId}/projects`,
+			{ projectId: otherProject.projectId },
+		);
+		expect(response.statusCode).toBe(200);
+		assigned = true;
+		const [after] = await db
+			.select({ projectIds: permissionSchemes.projectIds })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, global.id));
+		expect(after.projectIds).toContain(otherProject.projectId);
+	} finally {
+		await db
+			.update(permissionSchemes)
+			.set({ projectIds: original })
+			.where(eq(permissionSchemes.id, global.id));
+		if (assigned) {
+			await injectAs(
+				app,
+				admin.session,
+				"DELETE",
+				`/api/admin/permission-schemes/${importedSchemeId}/projects/${otherProject.projectId}`,
+			);
+		}
+	}
+});

@@ -549,16 +549,19 @@ export async function assignPermissionSchemeProject(
 	const allSchemes = await db
 		.select({
 			id: permissionSchemes.id,
+			sourceId: permissionSchemes.sourceId,
 			name: permissionSchemes.name,
 			projectIds: permissionSchemes.projectIds,
 		})
-		.from(permissionSchemes);
+		.from(permissionSchemes)
+		.where(sql`${permissionSchemes.sourceId} <> 'global'`);
 	const previous = allSchemes.find((row) =>
 		(row.projectIds ?? []).includes(project.id),
 	);
 
 	await db.transaction(async (tx) => {
 		for (const row of allSchemes) {
+			if (row.sourceId === "global") continue;
 			const ids = row.projectIds ?? [];
 			const shouldHold = row.id === scheme.id;
 			if (ids.includes(project.id) === shouldHold) continue;
