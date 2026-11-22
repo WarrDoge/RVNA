@@ -407,6 +407,15 @@ describe("workflow definition rules", () => {
 				issueCounts: new Map(),
 			}),
 		).toEqual([]);
+		expect(
+			codes(
+				validate(definition, {
+					liveStatusIds: new Set([a, b, c]),
+					issueCounts: new Map(),
+					statusMapping: { [c]: randomUUID() },
+				}),
+			),
+		).toEqual(["invalid_mapping"]);
 	});
 
 	test("shape checks reject transitions that leave the workflow's statuses", () => {

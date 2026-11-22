@@ -197,20 +197,25 @@ export function validateDefinition(input: ValidationInput): Problem[] {
 	for (const id of liveStatusIds) {
 		if (statusIds.has(id)) continue;
 		const issueCount = issueCounts.get(id) ?? 0;
-		if (issueCount === 0) continue;
 		const replacement = mapping[id];
-		if (replacement === undefined) {
+		if (
+			replacement !== undefined &&
+			(!statusIds.has(replacement) || !names.has(replacement))
+		) {
 			problems.push({
-				code: "removed_status_in_use",
-				message: `${issueCount} ${issueCount === 1 ? "issue is" : "issues are"} in ${nameOf(id)}, which is removed from the workflow. Choose a status to move them to.`,
+				code: "invalid_mapping",
+				message: `${nameOf(id)} cannot be mapped to a status that is not part of the workflow`,
 				statusId: id,
 				statusName: nameOf(id),
 				issueCount,
 			});
-		} else if (!statusIds.has(replacement) || !names.has(replacement)) {
+			continue;
+		}
+		if (issueCount === 0) continue;
+		if (replacement === undefined) {
 			problems.push({
-				code: "invalid_mapping",
-				message: `${nameOf(id)} cannot be mapped to a status that is not part of the workflow`,
+				code: "removed_status_in_use",
+				message: `${issueCount} ${issueCount === 1 ? "issue is" : "issues are"} in ${nameOf(id)}, which is removed from the workflow. Choose a status to move them to.`,
 				statusId: id,
 				statusName: nameOf(id),
 				issueCount,
