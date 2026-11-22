@@ -429,6 +429,15 @@ describe("workflow definition rules", () => {
 		).not.toBeNull();
 	});
 
+	test("any-status transitions take part in the display order", () => {
+		const definition: Definition = {
+			initialStatusId: b,
+			statuses: [a, b, c],
+			transitions: [transition(b, c), transition(null, a)],
+		};
+		expect(orderStatuses(definition, names)).toEqual([b, a, c]);
+	});
+
 	test("statuses are ordered from the initial status and changes are described by name", () => {
 		const definition: Definition = {
 			initialStatusId: b,

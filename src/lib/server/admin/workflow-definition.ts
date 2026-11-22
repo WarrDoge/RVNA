@@ -109,7 +109,11 @@ export function orderStatuses(
 	for (let head = 0; head < queue.length; head++) {
 		const current = queue[head];
 		const next = definition.transitions
-			.filter((transition) => transition.fromStatusId === current)
+			.filter(
+				(transition) =>
+					transition.fromStatusId === null ||
+					transition.fromStatusId === current,
+			)
 			.map((transition) => transition.toStatusId)
 			.sort(byName);
 		for (const id of next) visit(id);
