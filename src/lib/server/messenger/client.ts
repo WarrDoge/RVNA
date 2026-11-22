@@ -55,6 +55,12 @@ async function request<T>(
 				: `Matrix request failed (${response.status})`;
 		throw new MatrixClientError(response.status, message);
 	}
+	if (payload === null) {
+		throw new MatrixClientError(
+			response.status,
+			"Matrix returned an empty response",
+		);
+	}
 	return payload as T;
 }
 
