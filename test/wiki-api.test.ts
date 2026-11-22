@@ -582,7 +582,7 @@ describe("permission enforcement", () => {
 		const url = `/download/attachments/${home.sourceId}/notes.txt`;
 		const anonymous = await app.inject({ method: "GET", url });
 		expect(anonymous.statusCode).toBe(302);
-		expect(anonymous.headers.location).toMatch(/^\/auth\/login\?returnTo=/);
+		expect(anonymous.headers.location).toMatch(/^\/login\.jsp\?returnTo=/);
 
 		expect((await get(url, bob)).statusCode).toBe(404);
 		expect((await get(url, carol)).statusCode).toBe(200);

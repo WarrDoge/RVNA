@@ -1,12 +1,6 @@
 import { and, eq, isNull, lt, ne, sql } from "drizzle-orm";
 import * as client from "openid-client";
-import {
-	createSession,
-	loginPath,
-	randomValue,
-	sha256,
-	syncGroups,
-} from "./auth.ts";
+import { createSession, randomValue, sha256, syncGroups } from "./auth.ts";
 import { db } from "./db.ts";
 import { env, ssoConfigured } from "./env.ts";
 import { HttpError } from "./http.ts";
@@ -402,12 +396,12 @@ export async function logout(sessionId: string | undefined) {
 	}
 
 	if (!ssoConfigured() || !idToken) {
-		return { redirect: loginPath() };
+		return { redirect: "/" };
 	}
 
 	const config = await getConfiguration();
 	if (!config.serverMetadata().end_session_endpoint) {
-		return { redirect: loginPath() };
+		return { redirect: "/" };
 	}
 
 	return {
