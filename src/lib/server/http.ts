@@ -334,8 +334,12 @@ function errorResponse(
 		return jiraError(500, "Internal server error");
 	}
 	if (error instanceof ValidationError) {
-		// A validation error goes through the route's 400 schema.
-		const schema = response && !isSchema(response) ? response[400] : undefined;
+		// The schema of the status that failed, or 400 when the route only maps that one.
+		const schema =
+			response && !isSchema(response)
+				? (response[error.status] ??
+					(error.status === 400 ? response[400] : undefined))
+				: undefined;
 		const parsed = schema?.safeParse(error.body);
 		return jsonResponse(parsed?.success ? parsed.data : error.body, {
 			status: error.status,

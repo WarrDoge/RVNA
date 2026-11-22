@@ -184,3 +184,30 @@ test("6. a mutating route without a body schema still checks the content type", 
 	});
 	expect([response.statusCode, response.json()]).toEqual([415, unsupported]);
 });
+
+test("7. a body-parser error on a route with a 400 schema keeps its parser fields", async () => {
+	const big = JSON.stringify({ name: "a".repeat(1024 * 1024) });
+	const tooLargeBody = await app.inject({
+		method: "POST",
+		url: "/api/filters",
+		cookies: { sid },
+		headers: { "x-requested-with": "rvna", "content-type": json },
+		payload: big,
+	});
+	expect([tooLargeBody.statusCode, tooLargeBody.json()]).toEqual([
+		413,
+		tooLarge,
+	]);
+
+	const unsupportedBody = await app.inject({
+		method: "POST",
+		url: "/api/filters",
+		cookies: { sid },
+		headers: { "x-requested-with": "rvna", "content-type": "application/xml" },
+		payload: "<x/>",
+	});
+	expect([unsupportedBody.statusCode, unsupportedBody.json()]).toEqual([
+		415,
+		unsupported,
+	]);
+});
