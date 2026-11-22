@@ -19,6 +19,8 @@ import type {
 
 const EXPERIMENTAL = { "X-ExperimentalApi": "opt-in" };
 const pageSize = 100;
+const maxPages = 10_000;
+const PORTAL_LINK_BASE = "https://jira.invalid";
 const weekdays = [
 	"monday",
 	"tuesday",
@@ -47,6 +49,7 @@ export function defaultWorkingCalendar(): JiraWorkingCalendar {
 
 interface Paged<T> {
 	values?: T[];
+	size?: number;
 	isLastPage?: boolean;
 }
 
@@ -56,7 +59,10 @@ async function fetchPaged<T>(
 	params: Record<string, string | number> = {},
 ): Promise<T[]> {
 	const values: T[] = [];
-	for (let start = 0; ; ) {
+	for (let start = 0, pages = 0; ; pages++) {
+		if (pages >= maxPages) {
+			throw new Error(`paging did not finish after ${maxPages} pages: ${path}`);
+		}
 		const page = await client.getJson<Paged<T>>(
 			path,
 			{ ...params, start, limit: pageSize },
@@ -65,6 +71,9 @@ async function fetchPaged<T>(
 		const pageValues = page.values ?? [];
 		values.push(...pageValues);
 		if (page.isLastPage || pageValues.length === 0) break;
+		if (page.size !== undefined && start + pageValues.length >= page.size) {
+			break;
+		}
 		start += pageValues.length;
 	}
 	return values;
@@ -73,8 +82,15 @@ async function fetchPaged<T>(
 function portalId(desk: JiraServiceDeskRef): string | null {
 	const link = desk._links?.portal;
 	if (!link) return null;
-	const id = new URL(link).pathname.split("/").filter(Boolean).pop();
-	return id ?? null;
+	try {
+		const id = new URL(link, PORTAL_LINK_BASE).pathname
+			.split("/")
+			.filter(Boolean)
+			.pop();
+		return id ?? null;
+	} catch {
+		return null;
+	}
 }
 
 async function fetchPortal(
@@ -229,19 +245,12 @@ export async function fetchRequestSla(
 	client: JiraClient,
 	issueKey: string,
 ): Promise<JiraRequestSla> {
-	const values: JiraRequestSlaMetric[] = [];
-	for (let start = 0; ; ) {
-		const page = await client.getJson<JiraRequestSla>(
+	return {
+		values: await fetchPaged<JiraRequestSlaMetric>(
+			client,
 			`/rest/servicedeskapi/request/${encodeURIComponent(issueKey)}/sla`,
-			{ start, limit: pageSize },
-			{ headers: EXPERIMENTAL },
-		);
-		const pageValues = page.values ?? [];
-		values.push(...pageValues);
-		if (page.isLastPage || pageValues.length === 0) break;
-		start += pageValues.length;
-	}
-	return { values };
+		),
+	};
 }
 
 export async function fetchRequestChannel(
