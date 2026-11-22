@@ -204,16 +204,22 @@ async function handlePush(
 		linkedCommits += 1;
 		await linkCommit(row.id, linked);
 
-		const links = await db
-			.select({
-				issueId: gitlabCommitIssues.issueId,
-				applied: gitlabCommitIssues.smartCommitsApplied,
-			})
-			.from(gitlabCommitIssues)
-			.where(eq(gitlabCommitIssues.commitId, row.id));
-		const pending = linked.filter((issue) =>
-			links.some((link) => link.issueId === issue.id && !link.applied),
-		);
+		const claimed = await db
+			.update(gitlabCommitIssues)
+			.set({ smartCommitsApplied: true })
+			.where(
+				and(
+					eq(gitlabCommitIssues.commitId, row.id),
+					eq(gitlabCommitIssues.smartCommitsApplied, false),
+					inArray(
+						gitlabCommitIssues.issueId,
+						linked.map((issue) => issue.id),
+					),
+				),
+			)
+			.returning({ issueId: gitlabCommitIssues.issueId });
+		const claimedIds = new Set(claimed.map((link) => link.issueId));
+		const pending = linked.filter((issue) => claimedIds.has(issue.id));
 		if (pending.length === 0) continue;
 
 		await applySmartCommits({
@@ -225,10 +231,6 @@ async function handlePush(
 			projectKeys: context.projectKeys,
 			issues: pending,
 		});
-		await db
-			.update(gitlabCommitIssues)
-			.set({ smartCommitsApplied: true })
-			.where(eq(gitlabCommitIssues.commitId, row.id));
 	}
 
 	return {
