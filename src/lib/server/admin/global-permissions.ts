@@ -131,39 +131,32 @@ export async function addGlobalPermission(
 	}
 
 	const scheme = await ensureGlobalScheme();
-	const existing = await db
-		.select({
-			id: permissionGrants.id,
-			sourceId: permissionGrants.sourceId,
-		})
-		.from(permissionGrants)
-		.where(
-			and(
-				eq(permissionGrants.schemeId, scheme.id),
-				eq(permissionGrants.permissionKey, "ADMINISTER"),
-				eq(permissionGrants.holderType, body.holderType),
-				sql`lower(${permissionGrants.holderParameter}) = ${parameter.toLowerCase()}`,
-			),
-		)
-		.limit(1);
-	if (existing.length > 0) {
-		const current = existing[0];
-		if (!current) throw new Error("Existing global holder disappeared");
-		return {
-			holder: {
-				id: current.id,
-				holderType: body.holderType,
-				holderParameter: parameter,
-				source: isLocal(current.sourceId)
-					? ("local" as const)
-					: ("imported" as const),
-			},
-			created: false,
-		};
-	}
+	const result = await db.transaction(async (tx) => {
+		await tx
+			.select({ id: permissionSchemes.id })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id))
+			.for("update");
+		const [existing] = await tx
+			.select({
+				id: permissionGrants.id,
+				sourceId: permissionGrants.sourceId,
+				holderType: permissionGrants.holderType,
+				holderParameter: permissionGrants.holderParameter,
+			})
+			.from(permissionGrants)
+			.where(
+				and(
+					eq(permissionGrants.schemeId, scheme.id),
+					eq(permissionGrants.permissionKey, "ADMINISTER"),
+					eq(permissionGrants.holderType, body.holderType),
+					sql`lower(${permissionGrants.holderParameter}) = ${parameter.toLowerCase()}`,
+				),
+			)
+			.limit(1);
+		if (existing) return { grant: existing, created: false as const };
 
-	const [grant] = await db.transaction(async (tx) => {
-		const rows = await tx
+		const [grant] = await tx
 			.insert(permissionGrants)
 			.values({
 				sourceId: `local:${randomUUID()}`,
@@ -194,17 +187,19 @@ export async function addGlobalPermission(
 				},
 			},
 		});
-		return rows;
+		return { grant, created: true as const };
 	});
 
 	return {
 		holder: {
-			id: grant.id,
-			holderType: grant.holderType as "user" | "group",
-			holderParameter: grant.holderParameter as string,
-			source: "local" as const,
+			id: result.grant.id,
+			holderType: result.grant.holderType as "user" | "group",
+			holderParameter: result.grant.holderParameter as string,
+			source: isLocal(result.grant.sourceId)
+				? ("local" as const)
+				: ("imported" as const),
 		},
-		created: true,
+		created: result.created,
 	};
 }
 

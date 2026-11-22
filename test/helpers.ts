@@ -1,7 +1,19 @@
 import { expect } from "vitest";
-import { pool } from "../src/lib/server/db.ts";
+import { db, pool } from "../src/lib/server/db.ts";
 import type { MockIssuer, MockUser } from "./oidc-mock.ts";
 import type { TestApp } from "./server.ts";
+
+type Transaction = typeof db.transaction;
+
+/** Replaces `db.transaction` on the proxy target; returns the undo. */
+export function swapTransaction(next: Transaction) {
+	const target = db as unknown as { transaction: Transaction };
+	const previous = target.transaction;
+	target.transaction = next;
+	return () => {
+		target.transaction = previous;
+	};
+}
 
 export function mockIssuer(): MockIssuer {
 	const issuer = (globalThis as { oidcMock?: MockIssuer }).oidcMock;

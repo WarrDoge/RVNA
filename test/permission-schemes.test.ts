@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import {
@@ -21,7 +21,7 @@ import {
 	fixtureKey,
 	type SeedResult,
 } from "./fixtures/project.ts";
-import { buildServer, cleanupTestData } from "./helpers.ts";
+import { buildServer, cleanupTestData, swapTransaction } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = newRun();
@@ -547,6 +547,71 @@ test("global ADMINISTER holders can be added and removed", async () => {
 			"global.permission.remove",
 		]),
 	);
+});
+
+test("concurrent identical global grants create one holder", async () => {
+	const carol = await makeUser(run, "carol");
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	const request = () =>
+		injectAs(app, admin.session, "POST", "/api/admin/global-permissions", {
+			holderType: "user",
+			holderParameter: carol.username,
+		});
+	const first = request();
+	const second = request();
+	await both;
+	restore();
+	release();
+
+	const responses = await Promise.all([first, second]);
+	expect(responses.map((response) => response.statusCode).sort()).toEqual([
+		200, 201,
+	]);
+	const [scheme] = await db
+		.select({ id: permissionSchemes.id })
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.sourceId, "global"));
+	expect(scheme).toBeDefined();
+	const grants = await db
+		.select({ id: permissionGrants.id })
+		.from(permissionGrants)
+		.where(
+			and(
+				eq(permissionGrants.schemeId, scheme.id),
+				eq(permissionGrants.permissionKey, "ADMINISTER"),
+				sql`lower(${permissionGrants.holderParameter}) = ${carol.username.toLowerCase()}`,
+			),
+		);
+	expect(grants).toHaveLength(1);
+	const audits = await db
+		.select({ id: auditLog.id })
+		.from(auditLog)
+		.where(
+			and(
+				eq(auditLog.action, "global.permission.add"),
+				eq(auditLog.entityId, scheme.id),
+				sql`${auditLog.summary} like ${`%${carol.username}%`}`,
+			),
+		);
+	expect(audits).toHaveLength(1);
+	await db
+		.delete(permissionGrants)
+		.where(eq(permissionGrants.id, grants[0].id));
 });
 
 test("a non-admin cannot open the admin permission screens", async () => {
