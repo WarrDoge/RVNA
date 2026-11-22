@@ -352,6 +352,50 @@ describe("service desk import", () => {
 		expect(await rowCounts()).toEqual(beforeCounts);
 	});
 
+	test("numbers SLA cycles by their start time, not by their position", async () => {
+		const dataset = serviceDeskFixtureDataset();
+		const issue = dataset.issues.find((data) => data.issue.key === "SDFIX-1");
+		const metric = issue?.sla?.values?.[0];
+		if (!metric) throw new Error("the fixture has no SLA metric");
+		metric.completedCycles = [
+			{
+				startTime: { epochMillis: Date.parse("2026-02-10T09:00:00Z") },
+				stopTime: { epochMillis: Date.parse("2026-02-10T13:00:00Z") },
+				breached: false,
+				goalDuration: { millis: 28_800_000 },
+				elapsedTime: { millis: 14_400_000 },
+				remainingTime: { millis: 14_400_000 },
+			},
+			{
+				startTime: { epochMillis: Date.parse("2026-02-01T09:00:00Z") },
+				stopTime: { epochMillis: Date.parse("2026-02-01T10:00:00Z") },
+				breached: false,
+				goalDuration: { millis: 28_800_000 },
+				elapsedTime: { millis: 3_600_000 },
+				remainingTime: { millis: 25_200_000 },
+			},
+		];
+
+		await importDataset(dataset, {
+			baseUrl: serviceDeskBaseUrl,
+			fullImport: true,
+		});
+
+		const cycles = await pool.query<{ started_at: Date }>(
+			`select c.started_at
+			 from sla_imported_cycles c
+			 join issues i on i.id = c.issue_id
+			 join projects p on p.id = i.project_id
+			 where p.key = $1 and i.key = $2
+			 order by c.cycle_number`,
+			[serviceDeskProjectKey, "SDFIX-1"],
+		);
+		expect(cycles.rows.map((row) => row.started_at.toISOString())).toEqual([
+			"2026-02-01T09:00:00.000Z",
+			"2026-02-10T09:00:00.000Z",
+		]);
+	});
+
 	test("a later import leaves an administrator's open access choice alone", async () => {
 		await pool.query(
 			"update service_desks set open_access = true where source_id = '9100'",

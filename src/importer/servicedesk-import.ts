@@ -543,6 +543,11 @@ export async function importIssueSla(
 		}
 		const cycles = [...(metric.completedCycles ?? [])];
 		if (metric.ongoingCycle) cycles.push(metric.ongoingCycle);
+		cycles.sort(
+			(left, right) =>
+				(timeOf(left.startTime)?.getTime() ?? 0) -
+				(timeOf(right.startTime)?.getTime() ?? 0),
+		);
 		return cycles.map((cycle, index) =>
 			cycleRow(issueId, metricId, index + 1, cycle),
 		);
