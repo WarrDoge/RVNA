@@ -76,17 +76,18 @@ export function finalizeHtml(source: string): string {
 		(_match, levelText: string, attributes: string, inner: string) => {
 			const level = Number(levelText);
 			const text = stripTags(inner);
+			const existingId = attributes.match(/\bid="([^"]*)"/)?.[1];
+			if (existingId) {
+				used.add(existingId);
+				headings.push({ level, id: existingId, text });
+				return `<h${level}${attributes}>${inner}</h${level}>`;
+			}
 			const base = slug(text) || "section";
 			let id = base;
 			let suffix = 2;
 			while (used.has(id)) id = `${base}-${suffix++}`;
 			used.add(id);
 			headings.push({ level, id, text });
-			const existingId = attributes.match(/\bid="([^"]*)"/)?.[1];
-			if (existingId) {
-				used.add(existingId);
-				return `<h${level}${attributes}>${inner}</h${level}>`;
-			}
 			return `<h${level}${attributes} id="${escapeHtml(id)}">${inner}</h${level}>`;
 		},
 	);
