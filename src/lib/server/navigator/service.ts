@@ -125,11 +125,16 @@ function assertVisibleColumns(
 			.map((field) => field.sourceId),
 	);
 	for (const column of columns) {
-		if (!isCustomColumn(column)) continue;
-		if (!visible.has(customSourceId(column))) {
-			throw new JqlError(
-				`Column '${column}' does not exist or you do not have permission to view it.`,
-			);
+		if (isCustomColumn(column)) {
+			if (!visible.has(customSourceId(column))) {
+				throw new JqlError(
+					`Column '${column}' does not exist or you do not have permission to view it.`,
+				);
+			}
+			continue;
+		}
+		if (!systemField(column)) {
+			throw new JqlError(`Column '${column}' does not exist.`);
 		}
 	}
 }
@@ -270,7 +275,9 @@ export async function navigatorPage(
 
 function iso(value: unknown) {
 	if (value === null || value === undefined) return null;
-	return new Date(value as string).toISOString();
+	const date = new Date(value as string);
+	if (Number.isNaN(date.getTime())) return null;
+	return date.toISOString();
 }
 
 function userRef(
@@ -445,10 +452,8 @@ function cellText(issue: NavigatorIssue, column: string): string {
 			return formatSeconds(issue.originalEstimate);
 		case "remainingEstimate":
 			return formatSeconds(issue.remainingEstimate);
-		default: {
-			const field = systemField(column);
-			return field ? "" : "";
-		}
+		default:
+			return "";
 	}
 }
 
@@ -689,11 +694,11 @@ export async function saveNavigatorPreferences(
 		columns?: string[];
 	},
 ) {
-	const fields = await issueFields(actor);
+	const customFields = await issueFields(actor);
 	const columns =
 		input.columns === undefined
 			? undefined
-			: visibleColumns(input.columns, fields);
+			: visibleColumns(input.columns, customFields);
 	const [row] = await db
 		.insert(userPreferences)
 		.values({
@@ -713,7 +718,7 @@ export async function saveNavigatorPreferences(
 
 	return {
 		view: row.navigatorView,
-		columns: visibleColumns(row.columns, fields),
+		columns: visibleColumns(row.columns, customFields),
 	};
 }
 

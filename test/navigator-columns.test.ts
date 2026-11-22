@@ -2,7 +2,10 @@ import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
-import { getNavigatorPreferences } from "../src/lib/server/navigator/service.ts";
+import {
+	getNavigatorPreferences,
+	loadNavigatorPage,
+} from "../src/lib/server/navigator/service.ts";
 import { load as issuesLoad } from "../src/routes/issues/+page.server.ts";
 import {
 	createProjectFixture,
@@ -17,6 +20,7 @@ const username = `t-${run}-navigator`;
 
 let client: Client;
 let viewer: CurrentUser;
+let fixture: Awaited<ReturnType<typeof createProjectFixture>>;
 
 beforeAll(async () => {
 	await runMigrations();
@@ -39,7 +43,7 @@ beforeAll(async () => {
 		hasPassword: false,
 	};
 
-	await createProjectFixture(client, {
+	fixture = await createProjectFixture(client, {
 		run,
 		key,
 		issues: [
@@ -88,6 +92,29 @@ test("a filter's stale and duplicate columns are dropped before the navigator lo
 	expect(data.columns).toEqual(["key", "summary"]);
 
 	await client.query(`delete from filters where id = $1`, [filterId]);
+});
+
+test("an unparseable timestamp becomes a null field instead of failing the page", async () => {
+	const [issue] = fixture.issueIds;
+	await client.query(`update issues set created = 'infinity' where id = $1`, [
+		issue,
+	]);
+	try {
+		const page = await loadNavigatorPage(
+			{
+				jql: `project = ${key} ORDER BY key ASC`,
+				startAt: 0,
+				maxResults: 1,
+				columns: ["key", "created"],
+			},
+			viewer,
+		);
+		expect(page.issues[0]?.created).toBeNull();
+	} finally {
+		await client.query(`update issues set created = now() where id = $1`, [
+			issue,
+		]);
+	}
 });
 
 test("a stale preference column is dropped when the preferences load", async () => {

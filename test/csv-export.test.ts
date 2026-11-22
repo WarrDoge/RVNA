@@ -166,6 +166,20 @@ test("a broken query is refused before the stream starts", async () => {
 	expect(response.json().error).toContain("Error in the JQL Query");
 });
 
+test("an unknown column id is refused before the page and the stream", async () => {
+	const page = await app.inject({
+		method: "GET",
+		url: `/api/search/issues?jql=${encodeURIComponent(`project = ${key}`)}&columns=key,notafield`,
+		cookies: { sid: session },
+	});
+	expect(page.statusCode).toBe(400);
+	expect(page.json().error).toContain("notafield");
+
+	const response = await exportCsv("key,notafield");
+	expect(response.statusCode).toBe(400);
+	expect(response.json().error).toContain("notafield");
+});
+
 test("an unknown field is refused before the stream starts", async () => {
 	const response = await exportCsv(
 		"key",
