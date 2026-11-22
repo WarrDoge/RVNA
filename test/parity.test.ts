@@ -707,6 +707,61 @@ describe("parity checks", () => {
 		expect(comments?.details).toContain("parity-test-page");
 	});
 
+	test("a failed attachment download does not abort the wiki snapshot", async () => {
+		const page = {
+			id: "parity-sample-page",
+			type: "page",
+			status: "current",
+			title: "Sample page",
+			history: { createdDate: "2026-01-01T00:00:00.000Z" },
+			metadata: { labels: { results: [] } },
+			restrictions: {},
+		};
+		const attachment = (id: string, name: string) => ({
+			id,
+			type: "attachment",
+			status: "current",
+			title: name,
+			version: { number: 1 },
+			_links: { download: `/download/attachments/${page.id}/${name}` },
+		});
+		const client = {
+			listSpaces: async (status: string) =>
+				status === "current"
+					? [
+							{
+								id: "1",
+								key: spaceKey,
+								name: "Parity Space",
+								status: "current",
+							},
+						]
+					: [],
+			listUsers: async () => [],
+			listContent: async (_key: string, type: string, status: string) =>
+				type === "page" && status === "current" ? [page] : [],
+			listComments: async () => [],
+			listAttachments: async () => [
+				attachment("good", "good.txt"),
+				attachment("missing", "missing.txt"),
+			],
+			listAttachmentVersions: async () => [{ number: 1 }],
+			listVersions: async () => [],
+			listSpacePermissions: async () => [],
+			listSpaceRootContent: async () => ({ page: [page.id], blogpost: [] }),
+			listChildPages: async () => [],
+			download: async (path: string) => {
+				if (path.includes("missing")) throw new Error("404");
+				return Buffer.from("hello");
+			},
+		} as unknown as ConfluenceClient;
+
+		const live = await fetchWikiLive(client);
+		expect(live.attachmentSample.map((item) => item.sourceId)).toEqual([
+			"good:1",
+		]);
+	});
+
 	test("watcher and like parity counts imported rows only", async () => {
 		const importedUser = await pool.query<{ id: string }>(
 			"select id from users where username = $1",

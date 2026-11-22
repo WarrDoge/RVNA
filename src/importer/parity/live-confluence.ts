@@ -137,13 +137,19 @@ async function downloadSample(
 			item.version.number,
 		);
 		if (!path) continue;
-		const bytes = await client.download(path);
-		samples.push({
-			sourceId: item.sourceId,
-			pageSourceId: item.pageSourceId,
-			size: bytes.length,
-			sha256: createHash("sha256").update(bytes).digest("hex"),
-		});
+		try {
+			const bytes = await client.download(path);
+			samples.push({
+				sourceId: item.sourceId,
+				pageSourceId: item.pageSourceId,
+				size: bytes.length,
+				sha256: createHash("sha256").update(bytes).digest("hex"),
+			});
+		} catch (error) {
+			console.warn(
+				`Skipping attachment sample ${item.sourceId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 	return samples;
 }
