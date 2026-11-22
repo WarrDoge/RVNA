@@ -14,7 +14,7 @@ import {
 	versions,
 } from "./schema.ts";
 
-const issueKeyPattern = /^([A-Za-z][A-Za-z0-9_]*)-(\d+)$/;
+export const issueKeyPattern = /^([A-Za-z][A-Za-z0-9_]*)-(\d+)$/;
 const uuidPattern = z.uuid();
 
 /** Current key of the project that used `key` before, or null when `key` is current or unknown. */
