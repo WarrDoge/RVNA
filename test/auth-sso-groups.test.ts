@@ -425,3 +425,32 @@ test("an identity token without a groups claim leaves the memberships alone", as
 		(projects.json() as { key: string }[]).map((row) => row.key),
 	).toContain(claimKey);
 });
+
+test("a claim that matches a local group under SQL lower does not create another group", async () => {
+	const localName = `İ-${run}-local`;
+	const claimName = `i-${run}-local`;
+	await db.insert(groups).values({ name: localName, local: true });
+	try {
+		await syncGroups(importedId, [claimName]);
+
+		const rows = await db
+			.select({ name: groups.name })
+			.from(groups)
+			.where(sql`lower(${groups.name}) = lower(${claimName})`);
+		expect(rows.map((row) => row.name)).toEqual([localName]);
+		const memberships = await db
+			.select({ id: userGroups.groupId })
+			.from(userGroups)
+			.where(
+				and(
+					eq(userGroups.userId, importedId),
+					sql`${userGroups.groupId} in (select id from groups where lower(name) = lower(${claimName}))`,
+				),
+			);
+		expect(memberships).toHaveLength(0);
+	} finally {
+		await db
+			.delete(groups)
+			.where(sql`lower(${groups.name}) = lower(${claimName})`);
+	}
+});

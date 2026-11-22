@@ -214,7 +214,12 @@ export async function syncGroups(userId: string, groupNames: string[]) {
 
 		const existing = lowerNames.length
 			? await tx
-					.select()
+					.select({
+						id: groups.id,
+						name: groups.name,
+						local: groups.local,
+						lowerName: sql<string>`lower(${groups.name})`,
+					})
 					.from(groups)
 					.where(
 						sql`lower(${groups.name}) = any(${sql.param(lowerNames)}::text[])`,
@@ -223,8 +228,9 @@ export async function syncGroups(userId: string, groupNames: string[]) {
 			: [];
 		const byLower = new Map<string, (typeof existing)[number]>();
 		for (const group of existing) {
-			const lower = group.name.toLowerCase();
-			if (!byLower.has(lower)) byLower.set(lower, group);
+			if (!byLower.has(group.lowerName)) {
+				byLower.set(group.lowerName, group);
+			}
 		}
 
 		const missing = [...names].filter(([lower]) => !byLower.has(lower));
@@ -236,9 +242,16 @@ export async function syncGroups(userId: string, groupNames: string[]) {
 					target: groups.name,
 					set: { name: sql`excluded.name` },
 				})
-				.returning();
+				.returning({
+					id: groups.id,
+					name: groups.name,
+					local: groups.local,
+					lowerName: sql<string>`lower(${groups.name})`,
+				});
 			for (const group of inserted) {
-				byLower.set(group.name.toLowerCase(), group);
+				if (!byLower.has(group.lowerName)) {
+					byLower.set(group.lowerName, group);
+				}
 			}
 		}
 
