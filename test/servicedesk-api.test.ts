@@ -119,6 +119,20 @@ function inject(
 	});
 }
 
+/** Waits until the database reports at least `count` sessions blocked on a lock. */
+async function waitForLockWaiters(count: number) {
+	const deadline = Date.now() + 5000;
+	while (Date.now() < deadline) {
+		const result = await pool.query<{ n: number }>(
+			`select count(*)::int as n from pg_stat_activity
+			 where datname = current_database() and wait_event_type = 'Lock'`,
+		);
+		if ((result.rows[0]?.n ?? 0) >= count) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	throw new Error(`timed out waiting for ${count} lock waiters`);
+}
+
 test("the portal page title is in the server HTML", async () => {
 	const response = await app.inject({
 		method: "GET",
@@ -2370,26 +2384,51 @@ describe("portal access when the desk is open", () => {
 				[projectId],
 			);
 		await deleteAudit();
+		const locker = await pool.connect();
 		try {
-			const results = await Promise.all([
-				updateDeskSettings(actor, projectKey, { openAccess: false }),
-				updateDeskSettings(actor, projectKey, { openAccess: true }),
-			]);
+			// Hold the desk row so the two updates queue in call order: closing
+			// replaces true with false, and opening replaces false with true.
+			await locker.query("begin");
+			await locker.query(
+				"select id from service_desks where id = $1 for update",
+				[deskId],
+			);
+			const closing = updateDeskSettings(actor, projectKey, {
+				openAccess: false,
+			});
+			await waitForLockWaiters(1);
+			const opening = updateDeskSettings(actor, projectKey, {
+				openAccess: true,
+			});
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const results = await Promise.all([closing, opening]);
 			expect(results.map((result) => result.openAccess)).toEqual([false, true]);
-			const audited = await pool.query<{ fromValue: boolean }>(
-				"select (changes->'from'->>'openAccess')::boolean as \"fromValue\" from audit_log where action = 'servicedesk.update' and entity_id = $1",
+			const audited = await pool.query<{
+				fromValue: boolean;
+				toValue: boolean;
+			}>(
+				`select (changes->'from'->>'openAccess')::boolean as "fromValue",
+				        (changes->'to'->>'openAccess')::boolean as "toValue"
+				 from audit_log
+				 where action = 'servicedesk.update' and entity_id = $1`,
 				[projectId],
 			);
-			expect(audited.rows.map((row) => row.fromValue).sort()).toEqual([
-				false,
-				true,
-			]);
+			expect(audited.rows).toHaveLength(2);
+			expect(audited.rows).toEqual(
+				expect.arrayContaining([
+					{ fromValue: true, toValue: false },
+					{ fromValue: false, toValue: true },
+				]),
+			);
 			const deskRow = await pool.query<{ openAccess: boolean }>(
 				'select open_access as "openAccess" from service_desks where id = $1',
 				[deskId],
 			);
 			expect(deskRow.rows[0]?.openAccess).toBe(true);
 		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
 			await deleteAudit();
 		}
 	});
