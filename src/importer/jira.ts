@@ -1,10 +1,3 @@
-import {
-	GetOnlyClient,
-	GetOnlyRequestError,
-	type GetOnlyRequestOptions,
-} from "./client.ts";
+import { GetOnlyClient, GetOnlyRequestError } from "./client.ts";
 
-export { GetOnlyRequestError as JiraRequestError };
-export type JiraRequestOptions = GetOnlyRequestOptions;
-
-export class JiraClient extends GetOnlyClient {}
+export { GetOnlyClient as JiraClient, GetOnlyRequestError as JiraRequestError };
