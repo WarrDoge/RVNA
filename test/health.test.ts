@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { createSession } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
+import { health } from "../src/lib/server/health/service.ts";
 import { users } from "../src/lib/server/schema.ts";
 import { buildServer } from "./helpers.ts";
 
@@ -74,6 +75,7 @@ test("health answers 503 before a session lookup when the database is down", asy
 	const spy = vi
 		.spyOn(db.$client, "query")
 		.mockRejectedValue(new Error("down"));
+	const log = vi.spyOn(console, "error").mockImplementation(() => {});
 	try {
 		const response = await app.inject({
 			method: "GET",
@@ -85,7 +87,48 @@ test("health answers 503 before a session lookup when the database is down", asy
 			{ status: "error" },
 		]);
 	} finally {
+		log.mockRestore();
 		spy.mockRestore();
 		await app.close();
+	}
+});
+
+test("the probe gives up when the database does not answer", async () => {
+	const query = vi
+		.spyOn(db.$client, "query")
+		.mockImplementation(() => new Promise(() => {}));
+	const log = vi.spyOn(console, "error").mockImplementation(() => {});
+	vi.useFakeTimers();
+	try {
+		const pending = health();
+		await vi.advanceTimersByTimeAsync(5_000);
+		await expect(pending).resolves.toEqual({ status: "error" });
+		expect(log).toHaveBeenCalledWith(
+			"Health check failed",
+			expect.objectContaining({
+				message: "The database health check timed out",
+			}),
+		);
+	} finally {
+		vi.useRealTimers();
+		log.mockRestore();
+		query.mockRestore();
+	}
+});
+
+test("a failed probe logs the cause", async () => {
+	const query = vi
+		.spyOn(db.$client, "query")
+		.mockRejectedValueOnce(new Error("database down"));
+	const log = vi.spyOn(console, "error").mockImplementation(() => {});
+	try {
+		await expect(health()).resolves.toEqual({ status: "error" });
+		expect(log).toHaveBeenCalledWith(
+			"Health check failed",
+			expect.objectContaining({ message: "database down" }),
+		);
+	} finally {
+		log.mockRestore();
+		query.mockRestore();
 	}
 });
