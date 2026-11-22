@@ -85,6 +85,14 @@ describe("rankBetween", () => {
 		);
 		expect(() => rankBetween("a", "a")).toThrow("Rank bounds are not in order");
 	});
+
+	test("explains that no rank exists below the lowest printable rank", () => {
+		for (const bound of ["", " "]) {
+			expect(() => rankBetween(null, bound)).toThrow(
+				"No rank can sort before the minimum rank",
+			);
+		}
+	});
 });
 
 describe("PostgreSQL ordering", () => {

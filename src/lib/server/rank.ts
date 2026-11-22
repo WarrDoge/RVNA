@@ -1,3 +1,9 @@
+/**
+ * Ranks are compared in byte order (`collate "C"`) and are generated only from
+ * the printable-ASCII range, so every character stays within
+ * [MIN_CHAR, MAX_CHAR]. A bound made only of MIN_CHAR has no rank before it in
+ * that range.
+ */
 const MIN_CHAR = 32;
 const MAX_CHAR = 126;
 const MIDDLE = "m";
@@ -6,9 +12,10 @@ function char(code: number) {
 	return String.fromCharCode(code);
 }
 
+/** Decrements the first character that can move; MIN_CHAR descends instead. */
 function below(value: string): string {
 	if (value === "") {
-		throw new Error("No rank can sort before an empty rank");
+		throw new Error("No rank can sort before the minimum rank");
 	}
 	const first = value.charCodeAt(0);
 	if (first > MIN_CHAR) {
@@ -18,6 +25,7 @@ function below(value: string): string {
 	return value[0] + below(value.slice(1));
 }
 
+/** Increments the last character that can move, otherwise appends MIDDLE. */
 function above(value: string): string {
 	if (value === "") return MIDDLE;
 	const last = value.charCodeAt(value.length - 1);
@@ -27,6 +35,7 @@ function above(value: string): string {
 	return value + MIDDLE;
 }
 
+/** Requires `before < after`; descends at the first differing character. */
 function midpoint(before: string, after: string): string {
 	let index = 0;
 	while (
@@ -66,8 +75,10 @@ export function rankBetween(
 	if (before !== null && after !== null && before >= after) {
 		throw new Error("Rank bounds are not in order");
 	}
-	if (before === null && after === null) return MIDDLE;
-	if (before === null) return below(after as string);
+	if (before === null) {
+		if (after === null) return MIDDLE;
+		return below(after);
+	}
 	if (after === null) return above(before);
 	return midpoint(before, after);
 }
