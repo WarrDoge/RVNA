@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { saveAttachmentUpload } from "../src/lib/server/attachments/service.ts";
+import {
+	contentDisposition,
+	saveAttachmentUpload,
+} from "../src/lib/server/attachments/service.ts";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { HttpError } from "../src/lib/server/http.ts";
@@ -11,6 +14,7 @@ import {
 	issueAffectsVersions,
 	issueTypes,
 	linkTypes,
+	permissionGrants,
 	permissionSchemes,
 	priorities,
 	projectIssueTypes,
@@ -998,6 +1002,31 @@ test("attachments round trip, are served safely and can be deleted", async () =>
 	expect(htmlDownload.headers["x-content-type-options"]).toBe("nosniff");
 	expect(htmlDownload.headers["content-security-policy"]).toBe("sandbox");
 
+	const svg = multipartBody({
+		name: "diagram.svg",
+		type: "image/svg+xml",
+		content:
+			'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+	});
+	const svgUpload = await inject(
+		"POST",
+		`/api/issues/${key}/attachments`,
+		userSession,
+		svg.body,
+		{ "content-type": svg.contentType },
+	);
+	expect(svgUpload.statusCode).toBe(201);
+	const svgId = svgUpload.json()[0].id as string;
+	const svgDownload = await inject(
+		"GET",
+		`/api/attachments/${svgId}`,
+		userSession,
+	);
+	expect(svgDownload.statusCode).toBe(200);
+	expect(String(svgDownload.headers["content-disposition"])).toMatch(
+		/^attachment;/,
+	);
+
 	const importedId = `imported-${run}`;
 	await pool.query("update attachments set source_id = $1 where id = $2", [
 		importedId,
@@ -1034,6 +1063,79 @@ test("attachments round trip, are served safely and can be deleted", async () =>
 		null,
 	);
 	expect(unauthenticated.statusCode).toBe(401);
+});
+
+test("the RFC 5987 filename escapes characters attr-char does not allow", () => {
+	expect(contentDisposition("attachment", "O'Brien (1)*.txt")).toBe(
+		`attachment; filename="O'Brien (1)*.txt"; filename*=UTF-8''O%27Brien%20%281%29%2A.txt`,
+	);
+});
+
+test("an author with Delete all attachments may delete their own", async () => {
+	const key = `D${run.slice(0, 6).toUpperCase()}`;
+	const project = await projectFixture(key, `${tag} Delete all`);
+	const [scheme] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `${tag}:delete-all-scheme`,
+			name: `${tag} delete all scheme`,
+			projectIds: [project.id],
+			raw: {},
+		})
+		.returning();
+	await db.insert(permissionGrants).values(
+		(
+			[
+				["BROWSE_PROJECTS", "anyone", null],
+				["CREATE_ISSUES", "projectRole", "member"],
+				["CREATE_ATTACHMENTS", "projectRole", "member"],
+				["DELETE_ALL_ATTACHMENTS", "projectRole", "member"],
+			] as const
+		).map(([permissionKey, holderType, holderParameter]) => ({
+			sourceId: `${tag}:delete-all-${permissionKey}`,
+			schemeId: scheme.id,
+			permissionKey,
+			holderType,
+			holderParameter,
+			raw: {},
+		})),
+	);
+	await grantDefaultProjectRole(project.id, [`t-${run}-user`], "member");
+	try {
+		const created = await createIssue(
+			userSession,
+			{ summary: "Delete all own attachment" },
+			key,
+		);
+		expect(created.statusCode).toBe(201);
+		const issueKey = created.json().key as string;
+		const text = multipartBody({
+			name: "own.txt",
+			type: "text/plain",
+			content: "own attachment",
+		});
+		const upload = await inject(
+			"POST",
+			`/api/issues/${issueKey}/attachments`,
+			userSession,
+			text.body,
+			{ "content-type": text.contentType },
+		);
+		expect(upload.statusCode).toBe(201);
+		const attachmentId = upload.json()[0].id as string;
+		const deleted = await inject(
+			"DELETE",
+			`/api/attachments/${attachmentId}`,
+			userSession,
+		);
+		expect(deleted.statusCode).toBe(204);
+	} finally {
+		await pool.query("delete from issues where project_id = $1", [project.id]);
+		await pool.query("delete from permission_schemes where id = $1", [
+			scheme.id,
+		]);
+		await pool.query("delete from projects where id = $1", [project.id]);
+	}
 });
 
 test("deleting an issue leaves an audit record that names the actor", async () => {

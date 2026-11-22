@@ -25,6 +25,15 @@ export const issueParams = z.object({ key: z.string().min(1).max(100) });
 export const attachmentParams = z.object({ id: z.string().min(1) });
 
 const inlineTypes = ["application/pdf", "text/plain"];
+const activeTypes = [
+	"text/html",
+	"text/xml",
+	"application/xml",
+	"application/javascript",
+	"application/x-javascript",
+	"text/javascript",
+	"text/xsl",
+];
 
 function baseType(mimeType: string | null) {
 	return (mimeType ?? "application/octet-stream")
@@ -35,6 +44,7 @@ function baseType(mimeType: string | null) {
 
 function isInline(mimeType: string | null) {
 	const type = baseType(mimeType);
+	if (activeTypes.includes(type) || type.endsWith("+xml")) return false;
 	return (
 		type.startsWith("image/") ||
 		type.startsWith("audio/") ||
@@ -50,7 +60,11 @@ export function contentDisposition(
 	const fallback = fileName
 		.replace(/[^\x20-\x7e]/g, "_")
 		.replace(/["\\]/g, "_");
-	return `${kind}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
+	const encoded = encodeURIComponent(fileName).replace(
+		/['()*]/g,
+		(character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+	);
+	return `${kind}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
 }
 
 export function safeFileName(value: string | undefined) {
@@ -164,7 +178,7 @@ export async function saveAttachmentUpload(
 	const root = storageRoot();
 	const staged: Staged[] = [];
 	const moved: string[] = [];
-	let created: (typeof attachments.$inferSelect)[] = [];
+	let created: (typeof attachments.$inferSelect)[];
 	let issue: AttachmentIssue;
 
 	try {
@@ -238,30 +252,24 @@ export async function saveAttachmentUpload(
 		});
 	}
 
-	return Promise.all(
-		created.map(async (row) => {
-			const [author] = row.authorId
-				? await db
-						.select({
-							id: users.id,
-							username: users.username,
-							displayName: users.displayName,
-							avatarUrl: userAvatarSql(users.id),
-						})
-						.from(users)
-						.where(eq(users.id, row.authorId))
-						.limit(1)
-				: [];
-			return {
-				id: row.id,
-				fileName: row.fileName,
-				mimeType: row.mimeType,
-				size: row.size,
-				author: author ?? null,
-				created: row.created?.toISOString() ?? null,
-			};
-		}),
-	);
+	const [author] = await db
+		.select({
+			id: users.id,
+			username: users.username,
+			displayName: users.displayName,
+			avatarUrl: userAvatarSql(users.id),
+		})
+		.from(users)
+		.where(eq(users.id, actor.id))
+		.limit(1);
+	return created.map((row) => ({
+		id: row.id,
+		fileName: row.fileName,
+		mimeType: row.mimeType,
+		size: row.size,
+		author: author ?? null,
+		created: row.created?.toISOString() ?? null,
+	}));
 }
 
 export async function attachmentDownload(actor: CurrentUser, id: string) {
@@ -301,7 +309,18 @@ export async function deleteAttachment(actor: CurrentUser, id: string) {
 		row.authorId === actor.id
 			? "DELETE_OWN_ATTACHMENTS"
 			: "DELETE_ALL_ATTACHMENTS";
-	await requireIssuePermission(actor, row.issueId, permission);
+	try {
+		await requireIssuePermission(actor, row.issueId, permission);
+	} catch (error) {
+		if (
+			row.authorId !== actor.id ||
+			!(error instanceof HttpError) ||
+			error.status !== 403
+		) {
+			throw error;
+		}
+		await requireIssuePermission(actor, row.issueId, "DELETE_ALL_ATTACHMENTS");
+	}
 
 	const now = new Date();
 	await db.transaction(async (tx) => {
