@@ -55,7 +55,10 @@ export const dashboardFavourites = pgTable(
 			.notNull()
 			.defaultNow(),
 	},
-	(table) => [primaryKey({ columns: [table.userId, table.dashboardId] })],
+	(table) => [
+		primaryKey({ columns: [table.userId, table.dashboardId] }),
+		index("dashboard_favourites_dashboard_idx").on(table.dashboardId),
+	],
 );
 
 export const dashboardGadgets = pgTable(
@@ -72,7 +75,10 @@ export const dashboardGadgets = pgTable(
 		rowIndex: integer("row_index").notNull().default(0),
 		color: text("color").notNull().default("color1"),
 		refreshSeconds: integer("refresh_seconds").notNull().default(0),
-		config: jsonb("config").notNull().default({}),
+		config: jsonb("config")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default({}),
 		...importedAt,
 	},
 	(table) => [index("dashboard_gadgets_dashboard_idx").on(table.dashboardId)],

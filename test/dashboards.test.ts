@@ -507,6 +507,15 @@ test("a dashboard is copied with its gadgets", async () => {
 	expect(copied.owner.username).toBe(`t-${run}-other`);
 });
 
+test("dashboard favourites are indexed by dashboard", async () => {
+	const result = await pool.query<{ indexname: string }>(
+		"select indexname from pg_indexes where tablename = 'dashboard_favourites'",
+	);
+	expect(result.rows.map((row) => row.indexname)).toContain(
+		"dashboard_favourites_dashboard_idx",
+	);
+});
+
 test("favourites decide the default dashboard", async () => {
 	const first = await createDashboard(`Favourite one ${run}`, { shared: true });
 	const second = await createDashboard(`Favourite two ${run}`, {
