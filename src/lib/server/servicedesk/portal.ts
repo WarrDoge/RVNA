@@ -799,10 +799,10 @@ export interface MyRequestFilters {
 	deskId?: string;
 }
 
-export async function myRequests(
+async function myRequestConditions(
 	user: CurrentUser,
 	filters: MyRequestFilters,
-): Promise<MyRequest[]> {
+) {
 	const participating = await participatingIssueIds(user.id);
 	const scope =
 		filters.scope === "created"
@@ -833,7 +833,14 @@ export async function myRequests(
 			or(ilike(issues.summary, pattern), ilike(issues.key, pattern)),
 		);
 	}
+	return conditions;
+}
 
+export async function myRequests(
+	user: CurrentUser,
+	filters: MyRequestFilters,
+): Promise<MyRequest[]> {
+	const conditions = await myRequestConditions(user, filters);
 	const rows = await db
 		.select({
 			key: issues.key,
@@ -864,6 +871,21 @@ export async function myRequests(
 		portalId: row.portalId,
 		created: row.created?.toISOString() ?? null,
 	}));
+}
+
+/** The number of requests `myRequests` would return, without loading the rows. */
+export async function countMyRequests(
+	user: CurrentUser,
+	filters: MyRequestFilters,
+): Promise<number> {
+	const conditions = await myRequestConditions(user, filters);
+	const [row] = await db
+		.select({ count: sql<number>`count(*)::int` })
+		.from(issues)
+		.innerJoin(statuses, eq(statuses.id, issues.statusId))
+		.innerJoin(requestTypes, eq(requestTypes.id, issues.requestTypeId))
+		.where(and(...conditions));
+	return row?.count ?? 0;
 }
 
 export interface CustomerRequestView {

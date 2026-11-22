@@ -43,6 +43,10 @@ import {
 	participatingIssueIds,
 } from "../src/lib/server/servicedesk/access.ts";
 import { applyCreateAutomation } from "../src/lib/server/servicedesk/automation.ts";
+import {
+	countMyRequests,
+	myRequests,
+} from "../src/lib/server/servicedesk/portal.ts";
 import { runQueue } from "../src/lib/server/servicedesk/queues.ts";
 import { issueSla } from "../src/lib/server/servicedesk/sla.ts";
 import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page.server.ts";
@@ -750,6 +754,31 @@ describe("portal API", () => {
 			customerSession,
 		);
 		expect(response.statusCode).toBe(400);
+	});
+
+	test("the request count matches the listed requests", async () => {
+		const actor = await userFor(customerSession);
+		const open = {
+			status: "open" as const,
+			scope: "all" as const,
+			query: "",
+			deskId,
+		};
+		expect(await countMyRequests(actor, open)).toBe(
+			(await myRequests(actor, open)).length,
+		);
+		const search = { ...open, query: "Printer" };
+		expect(await countMyRequests(actor, search)).toBe(
+			(await myRequests(actor, search)).length,
+		);
+		const created = {
+			status: "all" as const,
+			scope: "created" as const,
+			query: "",
+		};
+		expect(await countMyRequests(actor, created)).toBe(
+			(await myRequests(actor, created)).length,
+		);
 	});
 
 	test("the portal detail counts only its own open requests", async () => {
