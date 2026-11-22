@@ -44,8 +44,9 @@ export async function projectPage(
 		if (portal) return redirect(portal);
 	}
 
-	if (requested !== "" && requested.toUpperCase() !== resolved) {
-		segments[2] = encodeURIComponent(resolved);
+	const canonical = resolved.toUpperCase();
+	if (requested !== "" && requested.toUpperCase() !== canonical) {
+		segments[2] = encodeURIComponent(canonical);
 		return redirect(`${segments.join("/")}${input.search}`);
 	}
 
