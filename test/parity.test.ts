@@ -967,6 +967,68 @@ describe("parity checks", () => {
 		}
 	});
 
+	test("issue search keeps paging when the response has no total", async () => {
+		const issue = (key: string) => ({
+			key,
+			fields: {
+				project: { key: "P" },
+				status: { id: "1" },
+				resolution: null,
+				assignee: null,
+				updated: "2026-01-01T00:00:00.000Z",
+				comment: { total: 0 },
+				worklog: { total: 0 },
+				attachment: [],
+				issuelinks: [],
+				watches: { watchCount: 0 },
+				subtasks: [],
+			},
+			changelog: { total: 0 },
+		});
+		const jiraFetch = (async (input: string | URL | Request) => {
+			const url = new URL(String(input));
+			const path = url.pathname;
+			if (path === "/rest/api/2/project") {
+				return new Response(JSON.stringify([{ id: "1", key: "P" }]));
+			}
+			if (path === "/rest/api/2/user/search") {
+				return new Response("[]");
+			}
+			if (path === "/rest/api/2/issueLinkType") {
+				return new Response(JSON.stringify({ issueLinkTypes: [] }));
+			}
+			if (path === "/rest/api/2/search") {
+				const maxResults = url.searchParams.get("maxResults");
+				if (maxResults === "0") {
+					return new Response(JSON.stringify({ total: 2 }));
+				}
+				const startAt = Number(url.searchParams.get("startAt") ?? 0);
+				const issues =
+					startAt === 0 ? [issue("P-1")] : startAt === 1 ? [issue("P-2")] : [];
+				return new Response(JSON.stringify({ issues }));
+			}
+			if (path.endsWith("/statuses") || path.endsWith("/versions")) {
+				return new Response("[]");
+			}
+			if (path.endsWith("/components")) {
+				return new Response("[]");
+			}
+			return new Response("[]");
+		}) as typeof fetch;
+		const client = new JiraClient({
+			baseUrl: "https://jira.example.test",
+			token: "token",
+			fetchImpl: jiraFetch,
+		});
+		const live = await fetchJiraLive(client, {
+			privateApis: false,
+			serviceDesks: false,
+			agile: false,
+			filters: false,
+		});
+		expect([...live.issues.keys()]).toEqual(["P-1", "P-2"]);
+	});
+
 	test("live fetches only issue GET requests", async () => {
 		const calls: string[] = [];
 		const jiraFetch = (async (

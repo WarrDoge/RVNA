@@ -89,7 +89,11 @@ async function fetchIssues(
 				history: issue.changelog?.total ?? 0,
 			});
 		}
-		if (values.length === 0 || startAt + values.length >= (page.total ?? 0)) {
+		if (values.length === 0) break;
+		if (
+			typeof page.total === "number" &&
+			startAt + values.length >= page.total
+		) {
 			break;
 		}
 		startAt += values.length;
