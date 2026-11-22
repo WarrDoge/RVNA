@@ -52,6 +52,19 @@ function optionMatches(object: Record<string, unknown>, option: LoadedOption) {
 	return text !== null && text.toLowerCase() === option.value.toLowerCase();
 }
 
+async function writeIssueCustom(
+	executor: Pick<typeof db, "execute">,
+	values: { id: string; custom: Record<string, unknown> }[],
+) {
+	if (values.length === 0) return;
+	await executor.execute(sql`
+		update ${issues} as target
+		set custom = data.custom
+		from jsonb_to_recordset(${JSON.stringify(values)}::jsonb) as data(id uuid, custom jsonb)
+		where target.id = data.id
+	`);
+}
+
 async function loadFieldRow(id: string) {
 	const [row] = await db
 		.select()
@@ -70,8 +83,12 @@ async function loadLoadedField(id: string) {
 	return toLoadedField(row, type, options);
 }
 
-async function nameTaken(name: string, exceptId?: string) {
-	const [row] = await db
+async function nameTaken(
+	name: string,
+	exceptId?: string,
+	executor: Pick<typeof db, "select"> = db,
+) {
+	const [row] = await executor
 		.select({ id: fields.id, name: fields.name })
 		.from(fields)
 		.where(sql`lower(${fields.name}) = lower(${name})`)
@@ -143,14 +160,16 @@ async function optionCountMap(fieldIds: string[]) {
 }
 
 /** How many issues store a value for each field, keyed by `fields.source_id`. */
-async function storedValueCounts() {
+async function storedValueCounts(sourceIds: string[]) {
+	const counts = new Map<string, number>();
+	if (sourceIds.length === 0) return counts;
 	const result = await db.execute(sql`
 		select keys.key as key, count(*)::int as count
 		from ${issues}, jsonb_object_keys(${issues.custom}) as keys(key)
-		where jsonb_typeof(${issues.custom} -> keys.key) <> 'null'
+		where keys.key = any(${sql.param(sourceIds)}::text[])
+			and jsonb_typeof(${issues.custom} -> keys.key) <> 'null'
 		group by keys.key
 	`);
-	const counts = new Map<string, number>();
 	for (const row of result.rows as { key: string; count: number }[]) {
 		counts.set(row.key, Number(row.count));
 	}
@@ -162,7 +181,7 @@ async function summaries(rows: FieldRow[]) {
 	const [contexts, optionCounts, storedCounts] = await Promise.all([
 		contextMap(ids),
 		optionCountMap(ids),
-		storedValueCounts(),
+		storedValueCounts(rows.map((row) => row.sourceId)),
 	]);
 	return rows.map((row) => {
 		const type = adminTypeForField(row);
@@ -230,35 +249,74 @@ function contextLabel(context: {
 /** Rewrites an option reference inside any stored value of the field. */
 function replaceOptionRefs(
 	value: unknown,
+	field: LoadedField,
 	option: LoadedOption,
 	replacement: { id: string; value: string },
 ): { value: unknown; changed: boolean } {
 	if (Array.isArray(value)) {
 		let changed = false;
 		const items = value.map((item) => {
-			const result = replaceOptionRefs(item, option, replacement);
+			const result = replaceOptionRefs(item, field, option, replacement);
 			changed = changed || result.changed;
 			return result.value;
 		});
 		return { value: changed ? items : value, changed };
 	}
+	if (typeof value === "string") {
+		const text = value.trim();
+		if (
+			option.parentOptionId === null &&
+			text !== "" &&
+			text.toLowerCase() === option.value.toLowerCase()
+		) {
+			return {
+				value: { value: replacement.value, id: replacement.id },
+				changed: true,
+			};
+		}
+		return { value, changed: false };
+	}
 	const object = objectOf(value);
 	if (!object) return { value, changed: false };
-	let changed = false;
-	const next: Record<string, unknown> = { ...object };
-	if (optionMatches(object, option)) {
-		next.value = replacement.value;
-		next.id = replacement.id;
-		changed = true;
+	if (option.parentOptionId === null) {
+		if (!optionMatches(object, option)) return { value, changed: false };
+		return {
+			value: {
+				...object,
+				value: replacement.value,
+				id: replacement.id,
+			},
+			changed: true,
+		};
 	}
-	if (next.child !== undefined && next.child !== null) {
-		const child = replaceOptionRefs(next.child, option, replacement);
-		if (child.changed) {
-			next.child = child.value;
-			changed = true;
-		}
+	const parent = field.options.find(
+		(item) => item.id === option.parentOptionId,
+	);
+	if (!parent || !optionMatches(object, parent)) {
+		return { value, changed: false };
 	}
-	return { value: changed ? next : value, changed };
+	const child = objectOf(object.child);
+	if (child) {
+		if (!optionMatches(child, option)) return { value, changed: false };
+		return {
+			value: {
+				...object,
+				child: { ...child, value: replacement.value, id: replacement.id },
+			},
+			changed: true,
+		};
+	}
+	const childText = optionText(object.child);
+	if (childText === null || !matchesOptionText(childText, option)) {
+		return { value, changed: false };
+	}
+	return {
+		value: {
+			...object,
+			child: { value: replacement.value, id: replacement.id },
+		},
+		changed: true,
+	};
 }
 
 function optionText(value: unknown): string | null {
@@ -267,6 +325,25 @@ function optionText(value: unknown): string | null {
 
 function matchesOptionText(value: string, option: LoadedOption) {
 	return value.toLowerCase() === option.value.toLowerCase();
+}
+
+/** The part of a stored cascading value that can refer to `option`. */
+function usageValue(
+	field: LoadedField,
+	value: unknown,
+	option: LoadedOption,
+): unknown {
+	if (field.type !== "cascading") return value;
+	const object = objectOf(value);
+	if (!object) return option.parentOptionId === null ? value : null;
+	if (option.parentOptionId === null) {
+		return { value: object.value, id: object.id };
+	}
+	const parent = field.options.find(
+		(item) => item.id === option.parentOptionId,
+	);
+	if (!parent || !optionMatches(object, parent)) return null;
+	return object.child ?? null;
 }
 
 function planOptionRemoval(
@@ -278,7 +355,11 @@ function planOptionRemoval(
 	if (field.type === "cascading") {
 		const text = optionText(value);
 		if (text !== null) {
-			if (!matchesOptionText(text, option) || !target) {
+			if (
+				option.parentOptionId !== null ||
+				!matchesOptionText(text, option) ||
+				!target
+			) {
 				return { value, missing: [] };
 			}
 			return {
@@ -287,7 +368,10 @@ function planOptionRemoval(
 			};
 		}
 		const object = objectOf(value);
-		if (object && optionMatches(object, option)) {
+		if (option.parentOptionId === null) {
+			if (!object || !optionMatches(object, option)) {
+				return { value, missing: [] };
+			}
 			if (!target) return { value, missing: [] };
 			const childText = optionText(object.child);
 			const child = objectOf(object.child);
@@ -318,19 +402,26 @@ function planOptionRemoval(
 				missing: [],
 			};
 		}
-		if (object?.child) {
-			const childText = optionText(object.child);
-			const child = objectOf(object.child);
-			if (
-				(childText !== null && matchesOptionText(childText, option)) ||
-				(child !== null && optionMatches(child, option))
-			) {
-				if (!target) return { value, missing: [] };
-				return {
-					value: { ...object, child: { value: target.value, id: target.id } },
-					missing: [],
-				};
-			}
+		const parent = field.options.find(
+			(item) => item.id === option.parentOptionId,
+		);
+		if (!object || !parent || !optionMatches(object, parent) || !target) {
+			return { value, missing: [] };
+		}
+		const child = objectOf(object.child);
+		if (child) {
+			if (!optionMatches(child, option)) return { value, missing: [] };
+			return {
+				value: { ...object, child: { value: target.value, id: target.id } },
+				missing: [],
+			};
+		}
+		const childText = optionText(object.child);
+		if (childText !== null && matchesOptionText(childText, option)) {
+			return {
+				value: { ...object, child: { value: target.value, id: target.id } },
+				missing: [],
+			};
 		}
 		return { value, missing: [] };
 	}
@@ -505,6 +596,10 @@ export async function createCustomField(
 		await tx.execute(
 			sql`select pg_advisory_xact_lock(${fieldNumberLockKey}::bigint)`,
 		);
+		const taken = await nameTaken(body.name, undefined, tx);
+		if (taken) {
+			throw new HttpError(409, `A field named "${taken.name}" already exists`);
+		}
 		const result = await tx.execute(sql`
 			select greatest(
 				10299,
@@ -594,6 +689,18 @@ export async function updateCustomField(
 	}
 
 	await db.transaction(async (tx) => {
+		if (body.name !== undefined) {
+			await tx.execute(
+				sql`select pg_advisory_xact_lock(${fieldNumberLockKey}::bigint)`,
+			);
+			const taken = await nameTaken(body.name, row.id, tx);
+			if (taken) {
+				throw new HttpError(
+					409,
+					`A field named "${taken.name}" already exists`,
+				);
+			}
+		}
 		await tx
 			.update(fields)
 			.set({ ...next, updatedAt: new Date() })
@@ -619,7 +726,8 @@ export async function deleteCustomField(
 	const row = await loadFieldRow(id);
 	if (!row) throw new HttpError(404, "Field not found");
 	const type = adminTypeForField(row);
-	const count = (await storedValueCounts()).get(row.sourceId) ?? 0;
+	const count =
+		(await storedValueCounts([row.sourceId])).get(row.sourceId) ?? 0;
 
 	if (!type) {
 		throw new HttpError(
@@ -693,14 +801,17 @@ export async function deleteCustomField(
 		if (missing.length > 0)
 			return { ok: false as const, reason: "missing" as const, missing };
 
+		const storedById = new Map(stored.map((issue) => [issue.id, issue]));
+		const updates: { id: string; custom: Record<string, unknown> }[] = [];
 		for (const step of plan) {
-			const issue = stored.find((item) => item.id === step.id);
+			const issue = storedById.get(step.id);
 			if (!issue) continue;
 			const custom: Record<string, unknown> = { ...issue.custom };
 			delete custom[from.sourceId];
 			if (step.value !== null) custom[to.sourceId] = step.value;
-			await tx.update(issues).set({ custom }).where(eq(issues.id, step.id));
+			updates.push({ id: step.id, custom });
 		}
+		await writeIssueCustom(tx, updates);
 
 		await tx.delete(fields).where(eq(fields.id, row.id));
 		await audit(tx, actor, {
@@ -777,18 +888,33 @@ export async function createCustomFieldOption(
 	}
 
 	const value = body.value;
-	const siblings = siblingOptions(field, parentOptionId);
-	if (
-		siblings.some(
-			(option) => option.value.toLowerCase() === value.toLowerCase(),
-		)
-	) {
-		throw new HttpError(409, `The option "${value}" already exists`);
-	}
-	const sequence =
-		siblings.reduce((max, option) => Math.max(max, option.sequence), -1) + 1;
 
 	const created = await db.transaction(async (tx) => {
+		await tx
+			.select({ id: fields.id })
+			.from(fields)
+			.where(eq(fields.id, row.id))
+			.for("update");
+		const optionRows = await tx
+			.select({
+				value: fieldOptions.value,
+				parentOptionId: fieldOptions.parentOptionId,
+				sequence: fieldOptions.sequence,
+			})
+			.from(fieldOptions)
+			.where(eq(fieldOptions.fieldId, row.id));
+		const siblings = optionRows.filter(
+			(option) => option.parentOptionId === parentOptionId,
+		);
+		if (
+			siblings.some(
+				(option) => option.value.toLowerCase() === value.toLowerCase(),
+			)
+		) {
+			throw new HttpError(409, `The option "${value}" already exists`);
+		}
+		const sequence =
+			siblings.reduce((max, option) => Math.max(max, option.sequence), -1) + 1;
 		const [option] = await tx
 			.insert(fieldOptions)
 			.values({
@@ -851,25 +977,57 @@ export async function updateCustomFieldOption(
 
 	const renamed = value !== option.value;
 	await db.transaction(async (tx) => {
+		if (renamed) {
+			await tx
+				.select({ id: fields.id })
+				.from(fields)
+				.where(eq(fields.id, field.id))
+				.for("update");
+			const optionRows = await tx
+				.select({
+					id: fieldOptions.id,
+					value: fieldOptions.value,
+					parentOptionId: fieldOptions.parentOptionId,
+				})
+				.from(fieldOptions)
+				.where(eq(fieldOptions.fieldId, field.id));
+			const siblings = optionRows.filter(
+				(item) =>
+					item.parentOptionId === option.parentOptionId &&
+					item.id !== option.id,
+			);
+			if (
+				siblings.some(
+					(item) => item.value.toLowerCase() === value.toLowerCase(),
+				)
+			) {
+				throw new HttpError(409, `The option "${value}" already exists`);
+			}
+		}
 		await tx
 			.update(fieldOptions)
 			.set({ value, disabled, updatedAt: new Date() })
 			.where(eq(fieldOptions.id, option.id));
 		if (renamed) {
 			const stored = await lockStoredValues(tx, field);
+			const updates: { id: string; custom: Record<string, unknown> }[] = [];
 			for (const issue of stored) {
 				const replaced = replaceOptionRefs(
 					issue.custom[field.sourceId],
+					field,
 					option,
 					{ id: option.id, value },
 				);
 				if (!replaced.changed) continue;
-				const custom = {
-					...issue.custom,
-					[field.sourceId]: replaced.value,
-				};
-				await tx.update(issues).set({ custom }).where(eq(issues.id, issue.id));
+				updates.push({
+					id: issue.id,
+					custom: {
+						...issue.custom,
+						[field.sourceId]: replaced.value,
+					},
+				});
 			}
+			await writeIssueCustom(tx, updates);
 		}
 		await audit(tx, actor, {
 			action: "field.option.update",
@@ -947,7 +1105,11 @@ export async function deleteCustomFieldOption(
 	const result = await db.transaction(async (tx) => {
 		const stored = await lockStoredValues(tx, field);
 		const using = stored.filter((issue) =>
-			optionUsage(issue.custom[field.sourceId], optionIds, optionValues),
+			optionUsage(
+				usageValue(field, issue.custom[field.sourceId], option),
+				optionIds,
+				optionValues,
+			),
 		);
 		if (using.length > 0 && !target) {
 			return {
@@ -965,15 +1127,20 @@ export async function deleteCustomFieldOption(
 			return { ok: false as const, reason: "missing" as const, missing };
 		}
 
+		const usingById = new Map(using.map((issue) => [issue.id, issue]));
+		const updates: { id: string; custom: Record<string, unknown> }[] = [];
 		for (const step of plan) {
-			const issue = using.find((item) => item.id === step.id);
+			const issue = usingById.get(step.id);
 			if (!issue) continue;
-			const custom = {
-				...issue.custom,
-				[field.sourceId]: step.value,
-			};
-			await tx.update(issues).set({ custom }).where(eq(issues.id, step.id));
+			updates.push({
+				id: step.id,
+				custom: {
+					...issue.custom,
+					[field.sourceId]: step.value,
+				},
+			});
 		}
+		await writeIssueCustom(tx, updates);
 
 		await tx.delete(fieldOptions).where(eq(fieldOptions.id, option.id));
 		await audit(tx, actor, {

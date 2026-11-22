@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	type AdminFieldType,
@@ -11,6 +11,7 @@ import {
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	auditLog,
+	fieldOptions,
 	fields,
 	issues,
 	issueTypes,
@@ -26,6 +27,7 @@ import {
 	buildServer,
 	cleanupTestData,
 	grantDefaultProjectRole,
+	swapTransaction,
 } from "./helpers.ts";
 import type { InjectResponse, TestApp } from "./server.ts";
 
@@ -178,6 +180,40 @@ function unitField(
 
 function ok(value: unknown) {
 	return { ok: true, value };
+}
+
+/** Runs two requests that both wait before opening their transaction. */
+async function concurrentRequests(
+	first: () => Promise<InjectResponse>,
+	second: () => Promise<InjectResponse>,
+) {
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const firstResponse = first();
+		const secondResponse = second();
+		await both;
+		restore();
+		release();
+		return await Promise.all([firstResponse, secondResponse]);
+	} finally {
+		restore();
+		release();
+	}
 }
 
 beforeAll(async () => {
@@ -951,6 +987,81 @@ describe("custom field administration", () => {
 		]);
 	});
 
+	test("renaming a cascading parent leaves a same-named child alone", async () => {
+		const cascading = await createField({
+			name: `${tag} Cascade rename`,
+			type: "cascading",
+		});
+		const parent = await addOption(cascading.id, "Other");
+		await addOption(cascading.id, "Other", parent.id);
+		await setContexts(cascading.id, [{ projectId }]);
+
+		const created = await createIssue();
+		expectStatus(created, 201);
+		const issue = created.json();
+		await db
+			.update(issues)
+			.set({
+				custom: {
+					[cascading.sourceId]: {
+						value: "Other",
+						id: parent.id,
+						child: { value: "Other" },
+					},
+				},
+			})
+			.where(eq(issues.id, issue.id));
+
+		const renamed = await inject(
+			"PATCH",
+			`/api/admin/custom-fields/${cascading.id}/options/${parent.id}`,
+			{ value: "Renamed" },
+		);
+		expectStatus(renamed, 200);
+
+		const [row] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, issue.id));
+		const custom = row?.custom as Record<string, unknown> | undefined;
+		expect(custom?.[cascading.sourceId]).toEqual({
+			value: "Renamed",
+			id: parent.id,
+			child: { value: "Other" },
+		});
+	});
+
+	test("renaming an option rewrites a legacy string value", async () => {
+		const select = await createField({
+			name: `${tag} Legacy rename`,
+			type: "select",
+		});
+		const option = await addOption(select.id, "Old");
+		await setContexts(select.id, [{ projectId }]);
+		const created = (await createIssue()).json();
+		await db
+			.update(issues)
+			.set({ custom: { [select.sourceId]: "Old" } })
+			.where(eq(issues.id, created.id));
+
+		const renamed = await inject(
+			"PATCH",
+			`/api/admin/custom-fields/${select.id}/options/${option.id}`,
+			{ value: "New" },
+		);
+		expectStatus(renamed, 200);
+
+		const [row] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, created.id));
+		const custom = row?.custom as Record<string, unknown> | undefined;
+		expect(custom?.[select.sourceId]).toEqual({
+			value: "New",
+			id: option.id,
+		});
+	});
+
 	test("deleting an option is refused while used and can migrate", async () => {
 		const select = await createField({
 			name: `${tag} Option delete`,
@@ -1023,6 +1134,87 @@ describe("custom field administration", () => {
 		);
 		expect(childRefused.statusCode).toBe(409);
 		expect(childRefused.json()).toMatchObject({ count: 1 });
+	});
+
+	test("a cascading child is only used under its own parent", async () => {
+		const cascading = await createField({
+			name: `${tag} Cascade scope`,
+			type: "cascading",
+		});
+		const alpha = await addOption(cascading.id, "Alpha");
+		const beta = await addOption(cascading.id, "Beta");
+		await addOption(cascading.id, "Shared", alpha.id);
+		const sharedBeta = await addOption(cascading.id, "Shared", beta.id);
+		await setContexts(cascading.id, [{ projectId }]);
+
+		const created = await createIssue();
+		expectStatus(created, 201);
+		const issue = created.json();
+		await db
+			.update(issues)
+			.set({
+				custom: {
+					[cascading.sourceId]: { value: "Alpha", child: "Shared" },
+				},
+			})
+			.where(eq(issues.id, issue.id));
+
+		const removed = await inject(
+			"DELETE",
+			`/api/admin/custom-fields/${cascading.id}/options/${sharedBeta.id}`,
+		);
+		expectStatus(removed, 204);
+
+		const [row] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, issue.id));
+		const custom = row?.custom as Record<string, unknown> | undefined;
+		expect(custom?.[cascading.sourceId]).toEqual({
+			value: "Alpha",
+			child: "Shared",
+		});
+	});
+
+	test("migrating a cascading child leaves another parent's child alone", async () => {
+		const cascading = await createField({
+			name: `${tag} Cascade migrate scope`,
+			type: "cascading",
+		});
+		const alpha = await addOption(cascading.id, "Alpha");
+		const beta = await addOption(cascading.id, "Beta");
+		await addOption(cascading.id, "Shared", alpha.id);
+		const sharedBeta = await addOption(cascading.id, "Shared", beta.id);
+		const otherBeta = await addOption(cascading.id, "Other", beta.id);
+		await setContexts(cascading.id, [{ projectId }]);
+
+		const created = await createIssue();
+		expectStatus(created, 201);
+		const issue = created.json();
+		await db
+			.update(issues)
+			.set({
+				custom: {
+					[cascading.sourceId]: { value: "Alpha", child: "Shared" },
+				},
+			})
+			.where(eq(issues.id, issue.id));
+
+		const migrated = await inject(
+			"DELETE",
+			`/api/admin/custom-fields/${cascading.id}/options/${sharedBeta.id}?migrateTo=${otherBeta.id}`,
+		);
+		expectStatus(migrated, 204);
+
+		const [row] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, issue.id));
+		const custom = row?.custom as Record<string, unknown> | undefined;
+		expect(custom?.[cascading.sourceId]).toEqual({
+			value: "Alpha",
+			child: "Shared",
+		});
 	});
 
 	test("legacy string values are migrated with the option", async () => {
@@ -1458,6 +1650,188 @@ describe("custom field administration", () => {
 				`${field.type} should not be searchable: ${refused.body}`,
 			).toBe(400);
 		}
+	});
+
+	test("the field summary counts the issues that store a value", async () => {
+		const field = await createField({
+			name: `${tag} Counted`,
+			type: "text",
+		});
+		await setContexts(field.id, [{ projectId }]);
+		const first = await createIssue({
+			customFields: { [field.id]: "one" },
+		});
+		expectStatus(first, 201);
+		const second = await createIssue({
+			customFields: { [field.id]: "two" },
+		});
+		expectStatus(second, 201);
+
+		const detailResponse = await inject(
+			"GET",
+			`/api/admin/custom-fields/${field.id}`,
+		);
+		expectStatus(detailResponse, 200);
+		expect(detailResponse.json().issueCount).toBe(2);
+
+		const list = await inject("GET", "/api/admin/custom-fields");
+		const listed = list
+			.json()
+			.find((item: { id: string }) => item.id === field.id);
+		expect(listed.issueCount).toBe(2);
+
+		await db
+			.update(issues)
+			.set({ custom: {} })
+			.where(eq(issues.id, first.json().id));
+		const after = await inject("GET", `/api/admin/custom-fields/${field.id}`);
+		expect(after.json().issueCount).toBe(1);
+	});
+
+	test("a field migration rewrites every stored value", async () => {
+		const source = await createField({
+			name: `${tag} Batch source`,
+			type: "text",
+		});
+		const target = await createField({
+			name: `${tag} Batch target`,
+			type: "text",
+		});
+		await setContexts(source.id, [{ projectId }]);
+		await setContexts(target.id, [{ projectId }]);
+
+		const values = ["one", "two", "three"];
+		const created: { id: string }[] = [];
+		for (const value of values) {
+			const response = await createIssue({
+				customFields: { [source.id]: value },
+			});
+			expectStatus(response, 201);
+			created.push(response.json());
+		}
+
+		const migrated = await inject(
+			"DELETE",
+			`/api/admin/custom-fields/${source.id}?migrateTo=${target.id}`,
+		);
+		expectStatus(migrated, 204);
+
+		for (const [index, issue] of created.entries()) {
+			const [row] = await db
+				.select({ custom: issues.custom })
+				.from(issues)
+				.where(eq(issues.id, issue.id));
+			const custom = row?.custom as Record<string, unknown> | undefined;
+			expect(custom?.[source.sourceId]).toBeUndefined();
+			expect(custom?.[target.sourceId]).toBe(values[index]);
+		}
+	});
+
+	test("concurrent field creates with one name keep one field", async () => {
+		const fieldName = `${tag} Race create`;
+		const responses = await concurrentRequests(
+			() =>
+				inject("POST", "/api/admin/custom-fields", {
+					name: fieldName,
+					type: "text",
+				}),
+			() =>
+				inject("POST", "/api/admin/custom-fields", {
+					name: fieldName,
+					type: "text",
+				}),
+		);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			201, 409,
+		]);
+		const rows = await db
+			.select({ id: fields.id })
+			.from(fields)
+			.where(sql`lower(${fields.name}) = lower(${fieldName})`);
+		expect(rows).toHaveLength(1);
+		createdFieldIds.push(...rows.map((row) => row.id));
+	});
+
+	test("concurrent renames to one name keep one name", async () => {
+		const one = await createField({
+			name: `${tag} Race rename one`,
+			type: "text",
+		});
+		const two = await createField({
+			name: `${tag} Race rename two`,
+			type: "text",
+		});
+		const fieldName = `${tag} Race rename target`;
+		const responses = await concurrentRequests(
+			() =>
+				inject("PATCH", `/api/admin/custom-fields/${one.id}`, {
+					name: fieldName,
+				}),
+			() =>
+				inject("PATCH", `/api/admin/custom-fields/${two.id}`, {
+					name: fieldName,
+				}),
+		);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			200, 409,
+		]);
+		const rows = await db
+			.select({ id: fields.id })
+			.from(fields)
+			.where(sql`lower(${fields.name}) = lower(${fieldName})`);
+		expect(rows).toHaveLength(1);
+	});
+
+	test("concurrent option creates keep one value", async () => {
+		const field = await createField({
+			name: `${tag} Race option`,
+			type: "select",
+		});
+		const responses = await concurrentRequests(
+			() =>
+				inject("POST", `/api/admin/custom-fields/${field.id}/options`, {
+					value: "Same",
+				}),
+			() =>
+				inject("POST", `/api/admin/custom-fields/${field.id}/options`, {
+					value: "Same",
+				}),
+		);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			201, 409,
+		]);
+		const rows = await db
+			.select({ id: fieldOptions.id })
+			.from(fieldOptions)
+			.where(eq(fieldOptions.fieldId, field.id));
+		expect(rows).toHaveLength(1);
+	});
+
+	test("concurrent option creates get distinct sequences", async () => {
+		const field = await createField({
+			name: `${tag} Race sequence`,
+			type: "select",
+		});
+		const responses = await concurrentRequests(
+			() =>
+				inject("POST", `/api/admin/custom-fields/${field.id}/options`, {
+					value: "Alpha",
+				}),
+			() =>
+				inject("POST", `/api/admin/custom-fields/${field.id}/options`, {
+					value: "Beta",
+				}),
+		);
+		expect(responses.map((response) => response.statusCode)).toEqual([
+			201, 201,
+		]);
+		const rows = await db
+			.select({ sequence: fieldOptions.sequence })
+			.from(fieldOptions)
+			.where(eq(fieldOptions.fieldId, field.id));
+		expect(rows.map((row) => row.sequence).sort((a, b) => a - b)).toEqual([
+			0, 1,
+		]);
 	});
 
 	test("every mutating admin route wrote an audit row", async () => {
