@@ -4,7 +4,13 @@ import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { hashPassword } from "../src/lib/server/passwords.ts";
 import { users } from "../src/lib/server/schema.ts";
 import { newRun } from "./admin-helpers.ts";
-import { buildServer, cleanupTestData, login } from "./helpers.ts";
+import {
+	buildServer,
+	cleanupTestData,
+	cookieFrom,
+	login,
+	mockIssuer,
+} from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = newRun();
@@ -82,6 +88,26 @@ async function expectRefused(user: ReturnType<typeof idp>, message = conflict) {
 	expect(callback.json()).toEqual({ error: message });
 	expect(sessionId).toBeUndefined();
 	expect(callback.headers["set-cookie"]).not.toContain("sid=");
+}
+
+async function startCallback(user: ReturnType<typeof idp>) {
+	mockIssuer().setUser(user);
+	const loginResponse = await app.inject({
+		method: "GET",
+		url: "/auth/login",
+	});
+	expect(loginResponse.statusCode).toBe(302);
+	const location = loginResponse.headers.location;
+	if (!location) throw new Error("Login did not redirect");
+	const transactionId = cookieFrom(loginResponse.headers, "oidc_transaction");
+	const authorizeResponse = await fetch(location, { redirect: "manual" });
+	const callbackLocation = authorizeResponse.headers.get("location");
+	if (!callbackLocation) throw new Error("Authorize did not redirect");
+	const callbackUrl = new URL(callbackLocation);
+	return {
+		transactionId,
+		url: `${callbackUrl.pathname}${callbackUrl.search}`,
+	};
 }
 
 async function expectLogin(user: ReturnType<typeof idp>) {
@@ -262,6 +288,32 @@ test("an SSO login never changes the password of an attached account", async () 
 	const after = await reload(imported.id);
 	expect(after.passwordHash).toBe(hash);
 	expect(after.lastLoginAt).toBeInstanceOf(Date);
+});
+
+test("two concurrent callbacks for one identity create one account", async () => {
+	const user = idp("concurrent");
+	const first = await startCallback(user);
+	const second = await startCallback(user);
+
+	const [left, right] = await Promise.all([
+		app.inject({
+			method: "GET",
+			url: first.url,
+			cookies: { oidc_transaction: first.transactionId },
+		}),
+		app.inject({
+			method: "GET",
+			url: second.url,
+			cookies: { oidc_transaction: second.transactionId },
+		}),
+	]);
+
+	expect([left.statusCode, right.statusCode].sort()).toEqual([303, 303]);
+	const rows = await db
+		.select({ id: users.id })
+		.from(users)
+		.where(eq(users.username, user.username));
+	expect(rows).toHaveLength(1);
 });
 
 test("an IdP rename onto a taken username keeps the current username", async () => {

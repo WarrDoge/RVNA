@@ -122,80 +122,90 @@ async function upsertUser(
 		(user.passwordHash === null ||
 			(user.sourceKey !== null && emailMatches(user)));
 
-	let [user] = await db
-		.select()
-		.from(users)
-		.where(eq(users.oidcSub, sub))
-		.limit(1);
+	return db.transaction(async (tx) => {
+		// Two callbacks for one identity must not both pass the lookups below.
+		await tx.execute(
+			sql`select pg_advisory_xact_lock(hashtextextended(${`oidc:${sub}`}, 0))`,
+		);
+		await tx.execute(
+			sql`select pg_advisory_xact_lock(hashtextextended(${`username:${username.toLowerCase()}`}, 0))`,
+		);
 
-	if (!user) {
-		const [byUsername] = await db
+		let [user] = await tx
 			.select()
 			.from(users)
-			.where(sql`lower(${users.username}) = ${username.toLowerCase()}`)
+			.where(eq(users.oidcSub, sub))
 			.limit(1);
-		if (byUsername) {
-			if (!canAttach(byUsername)) return { refused: "conflict" };
-			user = byUsername;
+
+		if (!user) {
+			const [byUsername] = await tx
+				.select()
+				.from(users)
+				.where(sql`lower(${users.username}) = ${username.toLowerCase()}`)
+				.limit(1);
+			if (byUsername) {
+				if (!canAttach(byUsername)) return { refused: "conflict" };
+				user = byUsername;
+			}
 		}
-	}
 
-	if (!user && email && emailVerified) {
-		const [byEmail] = await db
-			.select()
-			.from(users)
-			.where(
-				and(
-					isNull(users.oidcSub),
-					sql`lower(${users.email}) = ${email.toLowerCase()}`,
-				),
-			)
-			.limit(1);
-		if (byEmail && canAttach(byEmail)) user = byEmail;
-	}
-
-	const profile = {
-		oidcSub: sub,
-		username,
-		email,
-		displayName,
-		avatarUrl,
-		updatedAt: new Date(),
-	};
-
-	if (user) {
-		if (!user.active) return { refused: "inactive" };
-		const attaching = user.oidcSub === null;
-		const [taken] = await db
-			.select({ id: users.id })
-			.from(users)
-			.where(
-				and(
-					sql`lower(${users.username}) = ${username.toLowerCase()}`,
-					ne(users.id, user.id),
-				),
-			)
-			.limit(1);
-		[user] = await db
-			.update(users)
-			.set(taken ? { ...profile, username: user.username } : profile)
-			.where(eq(users.id, user.id))
-			.returning();
-		if (attaching) {
-			await db.insert(auditLog).values({
-				actorId: user.id,
-				actorName: user.displayName,
-				action: "account.link",
-				entityType: "user",
-				entityId: user.id,
-				summary: `${user.username}: the first single sign-on attached an identity to this existing account`,
-			});
+		if (!user && email && emailVerified) {
+			const [byEmail] = await tx
+				.select()
+				.from(users)
+				.where(
+					and(
+						isNull(users.oidcSub),
+						sql`lower(${users.email}) = ${email.toLowerCase()}`,
+					),
+				)
+				.limit(1);
+			if (byEmail && canAttach(byEmail)) user = byEmail;
 		}
+
+		const profile = {
+			oidcSub: sub,
+			username,
+			email,
+			displayName,
+			avatarUrl,
+			updatedAt: new Date(),
+		};
+
+		if (user) {
+			if (!user.active) return { refused: "inactive" };
+			const attaching = user.oidcSub === null;
+			const [taken] = await tx
+				.select({ id: users.id })
+				.from(users)
+				.where(
+					and(
+						sql`lower(${users.username}) = ${username.toLowerCase()}`,
+						ne(users.id, user.id),
+					),
+				)
+				.limit(1);
+			[user] = await tx
+				.update(users)
+				.set(taken ? { ...profile, username: user.username } : profile)
+				.where(eq(users.id, user.id))
+				.returning();
+			if (attaching) {
+				await tx.insert(auditLog).values({
+					actorId: user.id,
+					actorName: user.displayName,
+					action: "account.link",
+					entityType: "user",
+					entityId: user.id,
+					summary: `${user.username}: the first single sign-on attached an identity to this existing account`,
+				});
+			}
+			return { user };
+		}
+
+		[user] = await tx.insert(users).values(profile).returning();
 		return { user };
-	}
-
-	[user] = await db.insert(users).values(profile).returning();
-	return { user };
+	});
 }
 
 async function devLogin(username: string, returnTo: string) {
@@ -292,7 +302,6 @@ export class OidcCallbackError extends HttpError {
 
 export type CallbackInput = {
 	transactionId?: string;
-	code?: string;
 	state?: string;
 	error?: string;
 	url: URL;
@@ -330,7 +339,10 @@ export async function completeLogin(input: CallbackInput) {
 	}
 
 	if (input.error) {
-		throw new OidcCallbackError(400, "Authorization was not granted");
+		await db
+			.delete(oidcTransactions)
+			.where(eq(oidcTransactions.idHash, transaction.idHash));
+		throw new OidcCallbackError(400, "Authorization was not granted", true);
 	}
 
 	const config = await getConfiguration();
@@ -362,7 +374,14 @@ export async function completeLogin(input: CallbackInput) {
 		await db
 			.delete(oidcTransactions)
 			.where(eq(oidcTransactions.idHash, transaction.idHash));
-		if (result?.refused === "conflict") {
+		if (!result) {
+			throw new OidcCallbackError(
+				400,
+				"The identity token has no subject claim",
+				true,
+			);
+		}
+		if (result.refused === "conflict") {
 			throw new OidcCallbackError(
 				403,
 				"An account with this username already exists. Ask an administrator to link it.",
@@ -399,15 +418,19 @@ export async function logout(sessionId: string | undefined) {
 		return { redirect: "/" };
 	}
 
-	const config = await getConfiguration();
-	if (!config.serverMetadata().end_session_endpoint) {
+	try {
+		const config = await getConfiguration();
+		if (!config.serverMetadata().end_session_endpoint) {
+			return { redirect: "/" };
+		}
+		return {
+			redirect: client.buildEndSessionUrl(config, {
+				id_token_hint: idToken,
+				post_logout_redirect_uri: new URL("/", env.APP_URL).href,
+			}).href,
+		};
+	} catch (error) {
+		console.warn("OIDC logout: could not build the provider redirect", error);
 		return { redirect: "/" };
 	}
-
-	return {
-		redirect: client.buildEndSessionUrl(config, {
-			id_token_hint: idToken,
-			post_logout_redirect_uri: new URL("/", env.APP_URL).href,
-		}).href,
-	};
 }

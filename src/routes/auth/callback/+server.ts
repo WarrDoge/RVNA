@@ -20,7 +20,6 @@ export const GET = endpoint(
 		try {
 			const result = await completeLogin({
 				transactionId: event.cookies.get(TRANSACTION_COOKIE),
-				code: query.code,
 				state: query.state,
 				error: query.error,
 				url: event.url,

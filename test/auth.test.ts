@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { requestPath, sha256 } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
-import { sessions, users } from "../src/lib/server/schema.ts";
+import { oidcTransactions, sessions, users } from "../src/lib/server/schema.ts";
 import {
 	adminGroup,
 	buildServer,
@@ -130,6 +130,49 @@ test("the callback rejects a state that does not match the transaction", async (
 	expect(response.statusCode).toBe(400);
 	expect(response.json().error).toMatch(/state/i);
 	expect(response.headers["set-cookie"]).toBeUndefined();
+});
+
+test("an authorization error deletes the transaction and clears its cookie", async () => {
+	const loginResponse = await app.inject({
+		method: "GET",
+		url: "/auth/login",
+	});
+	const transactionId = cookieFrom(loginResponse.headers, "oidc_transaction");
+	const [transaction] = await db
+		.select()
+		.from(oidcTransactions)
+		.where(eq(oidcTransactions.idHash, sha256(transactionId)));
+	expect(transaction).toBeDefined();
+
+	const response = await app.inject({
+		method: "GET",
+		url: `/auth/callback?error=access_denied&state=${encodeURIComponent(transaction?.state as string)}`,
+		cookies: { oidc_transaction: transactionId },
+	});
+	expect(response.statusCode).toBe(400);
+	expect(response.json().error).toMatch(/not granted/i);
+	expect(String(response.headers["set-cookie"])).toContain(
+		"oidc_transaction=;",
+	);
+
+	const [after] = await db
+		.select()
+		.from(oidcTransactions)
+		.where(eq(oidcTransactions.idHash, sha256(transactionId)));
+	expect(after).toBeUndefined();
+});
+
+test("an identity token without a subject is not reported as inactive", async () => {
+	const { callback } = await login(app, {
+		sub: "",
+		username: username("no-subject"),
+		email: `${username("no-subject")}@example.com`,
+		emailVerified: true,
+		name: "No Subject",
+		groups: [],
+	});
+	expect(callback.statusCode).toBe(400);
+	expect(callback.json().error).toBe("The identity token has no subject claim");
 });
 
 test("the callback rejects a missing transaction cookie", async () => {
