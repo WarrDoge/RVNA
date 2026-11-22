@@ -6,7 +6,7 @@ import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { requireAdminActor } from "../permissions.ts";
 import { projects, requestTypes, serviceDesks } from "../schema.ts";
-import { matrixWhoami } from "./client.ts";
+import { MatrixClientError, matrixWhoami } from "./client.ts";
 import {
 	clearMessengerToken,
 	matrixServerName,
@@ -232,16 +232,22 @@ export async function testMessengerConnection(actor: CurrentUser) {
 	if (!settings.accessToken) {
 		throw new HttpError(400, "Set the bot's access token first");
 	}
+	let who: { user_id: string };
 	try {
-		const who = await matrixWhoami(settings);
-		const serverName = matrixServerName(who.user_id);
-		if (!serverName) throw new Error("The Matrix id has no server name");
-		await saveMessengerIdentity({ userId: who.user_id, serverName });
-		return { userId: who.user_id, serverName };
+		who = await matrixWhoami(settings);
 	} catch (error) {
-		throw new HttpError(
-			502,
-			error instanceof Error ? error.message : "The homeserver is unreachable",
-		);
+		if (error instanceof MatrixClientError) {
+			throw new HttpError(
+				error.status === 401 || error.status === 403 ? 400 : 502,
+				error.message,
+			);
+		}
+		throw new HttpError(502, "The homeserver is unreachable");
 	}
+	const serverName = matrixServerName(who.user_id);
+	if (!serverName) {
+		throw new HttpError(502, "The bot's Matrix id has no server name");
+	}
+	await saveMessengerIdentity({ userId: who.user_id, serverName });
+	return { userId: who.user_id, serverName };
 }

@@ -384,6 +384,21 @@ describe("administrator connection", () => {
 			fake.token,
 		);
 	});
+
+	test("a rejected bot token is reported as a bad request", async () => {
+		fake.revoke();
+		try {
+			const tested = await inject(
+				"POST",
+				"/api/admin/messenger/test",
+				adminSession,
+			);
+			expect(tested.statusCode).toBe(400);
+			expect(tested.json().error).toContain("Invalid access token");
+		} finally {
+			fake.revoked = false;
+		}
+	});
 });
 
 describe("sync worker", () => {
