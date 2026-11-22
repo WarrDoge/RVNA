@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
 	attachmentUploadLimits,
@@ -126,6 +126,55 @@ async function homePageOf(space: SpaceRow, access: WikiAccess) {
 		.limit(1);
 	if (!row || !pageReadable(access, row)) return null;
 	return { id: row.id, sourceId: row.sourceId, title: row.title };
+}
+
+/** Summaries for the readable rows, with their home pages and counts in two batch queries. */
+async function spaceSummaries(access: WikiAccess, rows: SpaceRow[]) {
+	const readable = rows.filter((row) => access.readableSpaceIds.has(row.id));
+	if (readable.length === 0) return [];
+	const homePageIds = readable
+		.map((row) => row.homePageId)
+		.filter((id): id is string => id !== null);
+	const countFilters = [
+		inArray(
+			pages.spaceId,
+			readable.map((row) => row.id),
+		),
+		eq(pages.status, "current"),
+	];
+	if (access.hiddenPageIds.size > 0) {
+		countFilters.push(notInArray(pages.id, [...access.hiddenPageIds]));
+	}
+	const [homeRows, countRows] = await Promise.all([
+		homePageIds.length > 0
+			? db
+					.select({
+						id: pages.id,
+						sourceId: pages.sourceId,
+						title: pages.title,
+						spaceId: pages.spaceId,
+					})
+					.from(pages)
+					.where(inArray(pages.id, homePageIds))
+			: [],
+		db
+			.select({ spaceId: pages.spaceId, count: sql<number>`count(*)::int` })
+			.from(pages)
+			.where(and(...countFilters))
+			.groupBy(pages.spaceId),
+	]);
+	const homes = new Map(homeRows.map((row) => [row.id, row]));
+	const counts = new Map(countRows.map((row) => [row.spaceId, row.count]));
+	return readable.map((row) => {
+		const home = row.homePageId ? homes.get(row.homePageId) : undefined;
+		return spaceSummary(
+			row,
+			home && home.spaceId === row.id && pageReadable(access, home)
+				? { id: home.id, sourceId: home.sourceId, title: home.title }
+				: null,
+			counts.get(row.id) ?? 0,
+		);
+	});
 }
 
 function scopeFor(
@@ -306,18 +355,7 @@ export async function listSpaces(
 		.where(filters.length > 0 ? and(...filters) : undefined)
 		.orderBy(asc(sql`lower(${spaces.name})`));
 
-	const result = [];
-	for (const row of rows) {
-		if (!access.readableSpaceIds.has(row.id)) continue;
-		result.push(
-			spaceSummary(
-				row,
-				await homePageOf(row, access),
-				await pageCount(row.id, access),
-			),
-		);
-	}
-	return result;
+	return spaceSummaries(access, rows);
 }
 
 export async function getSpace(actor: CurrentUser, key: string) {
@@ -1047,17 +1085,7 @@ export async function wikiHome(actor: CurrentUser) {
 		.select()
 		.from(spaces)
 		.orderBy(asc(sql`lower(${spaces.name})`));
-	const spaceSummaries = [];
-	for (const row of spaceRows) {
-		if (!access.readableSpaceIds.has(row.id)) continue;
-		spaceSummaries.push(
-			spaceSummary(
-				row,
-				await homePageOf(row, access),
-				await pageCount(row.id, access),
-			),
-		);
-	}
+	const summaries = await spaceSummaries(access, spaceRows);
 
 	const createdRows = await db.execute(sql`
 		select p.id, p.source_id, p.title, s.key as space_key, s.name as space_name
@@ -1099,7 +1127,7 @@ export async function wikiHome(actor: CurrentUser) {
 			updated: row.updated,
 			author: row.author,
 		})),
-		spaces: spaceSummaries,
+		spaces: summaries,
 		created: (createdRows.rows as Record<string, unknown>[]).map(mapRow),
 		watched: (watchedRows.rows as Record<string, unknown>[]).map(mapRow),
 	};

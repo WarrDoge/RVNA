@@ -606,7 +606,7 @@ describe("labels", () => {
 	});
 
 	test("concurrent label sets replace instead of merging", async () => {
-		const page = await wiki.page(author, space.key, "Label race");
+		const page = await wiki.page(author, space.key, "Label race set");
 		await pool.query(`
 			create or replace function test_slow_label_insert() returns trigger
 			language plpgsql as $$
