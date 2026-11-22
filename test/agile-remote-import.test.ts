@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
+	fetchBoards,
 	fetchSprintReport,
 	filterProjectKeys,
 	importJiraAgile,
@@ -436,6 +437,18 @@ describe("Jira agile mapping", () => {
 			"Recent",
 		]);
 		expect(plan.subFilterJql).toBe("fixVersion is EMPTY");
+		const orPlan = parseBoardConfig(configuration, {
+			...editModel,
+			subqueryConfig: {
+				subqueries: [
+					{ id: 1, query: "labels = a OR labels = b" },
+					{ id: 2, query: "fixVersion is EMPTY" },
+				],
+			},
+		});
+		expect(orPlan.subFilterJql).toBe(
+			"(labels = a OR labels = b) AND (fixVersion is EMPTY)",
+		);
 		expect(plan.estimationField).toBe("story_points");
 		expect(plan.swimlaneStrategy).toBe("queries");
 		expect(plan.cardColourStrategy).toBe("priority");
@@ -480,6 +493,32 @@ describe("Jira agile mapping", () => {
 		expect(
 			issueRank({ ...ranked, fields: {} }, fixtureFieldIds.rank),
 		).toBeNull();
+	});
+
+	test("reads every page of boards", async () => {
+		const starts: number[] = [];
+		const client = {
+			async getJson(
+				path: string,
+				params?: Record<string, string | number | boolean | undefined>,
+			) {
+				expect(path).toBe("/rest/agile/1.0/board");
+				const start = Number(params?.startAt ?? 0);
+				starts.push(start);
+				const values: JiraAgileBoard[] = [
+					{ id: 1, name: "One", type: "scrum" },
+					{ id: 2, name: "Two", type: "scrum" },
+					{ id: 3, name: "Three", type: "kanban" },
+				];
+				return {
+					values: values.slice(start, start + 2),
+					isLast: start + 2 >= values.length,
+				};
+			},
+		} as unknown as JiraClient;
+		const boards = await fetchBoards(client);
+		expect(boards.map((item) => item.id)).toEqual([1, 2, 3]);
+		expect(starts).toEqual([0, 2]);
 	});
 
 	test("returns null for a sprint report Jira cannot serve", async () => {
@@ -796,6 +835,7 @@ describe("importJiraAgile", () => {
 			{ privateApis: true },
 		);
 		expect(result.issueSprints).toBe(2);
+		expect(result.issues).toBe(1);
 
 		const sprintRows = await db
 			.select({ id: sprints.id, sourceId: sprints.sourceId })
@@ -819,5 +859,103 @@ describe("importJiraAgile", () => {
 		expect(memberships.find((row) => row.sprintId === sprintBId)?.isOpen).toBe(
 			true,
 		);
+	});
+
+	test("refreshes the board sprint sequence when Jira reorders or inserts one", async () => {
+		const ids = [
+			sprintId + 100,
+			sprintId + 101,
+			sprintId + 102,
+			sprintId + 103,
+		];
+		const sprintsIn = (order: number[]) =>
+			order.map((index) => ({
+				...jiraSprint,
+				id: ids[index],
+				name: `Ordered sprint ${index}`,
+				state: "closed" as const,
+			}));
+		const clientFor = (list: JiraSprint[]) =>
+			new FakeClient(
+				list,
+				new Map(
+					list.map((sprint) => [
+						sprint.id,
+						[issue(issueKeys[0], "0|a", statusIds[0])],
+					]),
+				),
+			) as unknown as JiraClient;
+		const [boardRow] = await db
+			.select()
+			.from(boards)
+			.where(eq(boards.sourceId, String(rapidViewId)));
+		const sequence = async () => {
+			const rows = await db
+				.select({
+					sourceId: sprints.sourceId,
+					sequence: boardSprints.sequence,
+				})
+				.from(boardSprints)
+				.innerJoin(sprints, eq(sprints.id, boardSprints.sprintId))
+				.where(eq(boardSprints.boardId, boardRow.id))
+				.orderBy(boardSprints.sequence);
+			return rows.map((row) => [row.sourceId, row.sequence]);
+		};
+
+		await importJiraAgile(clientFor(sprintsIn([0, 1, 2])), db, {
+			privateApis: true,
+		});
+		expect(await sequence()).toEqual([
+			[String(ids[0]), 0],
+			[String(ids[1]), 1],
+			[String(ids[2]), 2],
+		]);
+
+		await importJiraAgile(clientFor(sprintsIn([2, 0, 3, 1])), db, {
+			privateApis: true,
+		});
+		expect(await sequence()).toEqual([
+			[String(ids[2]), 0],
+			[String(ids[0]), 1],
+			[String(ids[3]), 2],
+			[String(ids[1]), 3],
+		]);
+	});
+
+	test("imports a sprint whose origin board is not in the board list", async () => {
+		const foreignId = sprintId + 200;
+		const foreign: JiraSprint = {
+			...jiraSprint,
+			id: foreignId,
+			name: "Foreign origin sprint",
+			originBoardId: secondRapidViewId,
+		};
+		const client = new FakeClient(
+			[foreign],
+			new Map([[foreignId, [issue(issueKeys[0], "0|a", statusIds[0])]]]),
+		) as unknown as JiraClient;
+
+		const result = await importJiraAgile(client, db, { privateApis: true });
+		expect(result.sprints.closed).toBe(1);
+
+		const [boardRow] = await db
+			.select()
+			.from(boards)
+			.where(eq(boards.sourceId, String(rapidViewId)));
+		const [sprintRow] = await db
+			.select()
+			.from(sprints)
+			.where(eq(sprints.sourceId, String(foreignId)));
+		expect(sprintRow?.boardId).toBe(boardRow.id);
+		const associations = await db
+			.select()
+			.from(boardSprints)
+			.where(eq(boardSprints.boardId, boardRow.id));
+		expect(associations.map((row) => row.sprintId)).toContain(sprintRow.id);
+		const memberships = await db
+			.select()
+			.from(issueSprints)
+			.where(eq(issueSprints.sprintId, sprintRow.id));
+		expect(memberships).toHaveLength(1);
 	});
 });

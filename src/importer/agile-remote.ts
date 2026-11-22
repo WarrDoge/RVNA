@@ -351,7 +351,10 @@ export function parseBoardConfig(
 		columns,
 		swimlanes,
 		quickFilters,
-		subFilterJql: subqueries.length > 0 ? subqueries.join(" AND ") : null,
+		subFilterJql:
+			subqueries.length > 1
+				? subqueries.map((query) => `(${query})`).join(" AND ")
+				: (subqueries[0] ?? null),
 		estimationField: mapEstimationField(
 			estimationTypeId,
 			estimationFieldId,
@@ -453,6 +456,7 @@ async function fetchPaged<T extends { isLast?: boolean }>(
 	path: string,
 	params: Record<string, string | number>,
 	pick: (page: T) => unknown[],
+	maxResults = 100,
 ): Promise<unknown[]> {
 	const values: unknown[] = [];
 	let startAt = 0;
@@ -460,7 +464,7 @@ async function fetchPaged<T extends { isLast?: boolean }>(
 		const page = await client.getJson<T>(path, {
 			...params,
 			startAt,
-			maxResults: 100,
+			maxResults,
 		});
 		const pageValues = pick(page);
 		values.push(...pageValues);
@@ -473,19 +477,13 @@ async function fetchPaged<T extends { isLast?: boolean }>(
 export async function fetchBoards(
 	client: JiraClient,
 ): Promise<JiraAgileBoard[]> {
-	const values: JiraAgileBoard[] = [];
-	let startAt = 0;
-	for (;;) {
-		const page = await client.getJson<{
-			values?: JiraAgileBoard[];
-			isLast?: boolean;
-		}>("/rest/agile/1.0/board", { startAt, maxResults: 50 });
-		const pageValues = page.values ?? [];
-		values.push(...pageValues);
-		if (page.isLast === true || pageValues.length === 0) break;
-		startAt += pageValues.length;
-	}
-	return values;
+	return (await fetchPaged<{ values?: JiraAgileBoard[]; isLast?: boolean }>(
+		client,
+		"/rest/agile/1.0/board",
+		{},
+		(page) => page.values ?? [],
+		50,
+	)) as JiraAgileBoard[];
 }
 
 export async function fetchBoardSprints(
@@ -775,10 +773,9 @@ async function replaceBoardSprints(
 		.select()
 		.from(boardSprints)
 		.where(eq(boardSprints.boardId, boardId));
-	const existingIds = new Set(existing.map((row) => row.sprintId));
+	const existingBySprint = new Map(existing.map((row) => [row.sprintId, row]));
 	const plannedIds = new Set(sprintIds);
 	const stale = existing.filter((row) => !plannedIds.has(row.sprintId));
-	const missing = sprintIds.filter((id) => !existingIds.has(id));
 	if (stale.length > 0) {
 		await database.delete(boardSprints).where(
 			and(
@@ -790,19 +787,34 @@ async function replaceBoardSprints(
 			),
 		);
 	}
-	if (missing.length > 0) {
-		await database.insert(boardSprints).values(
-			missing.map((sprintId, index) => ({
-				boardId,
-				sprintId,
-				sequence: index,
-			})),
-		);
+	const inserts: { boardId: string; sprintId: string; sequence: number }[] = [];
+	const moved: { sprintId: string; sequence: number }[] = [];
+	for (const [sequence, sprintId] of sprintIds.entries()) {
+		const row = existingBySprint.get(sprintId);
+		if (!row) {
+			inserts.push({ boardId, sprintId, sequence });
+		} else if (row.sequence !== sequence) {
+			moved.push({ sprintId, sequence });
+		}
+	}
+	for (const row of moved) {
+		await database
+			.update(boardSprints)
+			.set({ sequence: row.sequence })
+			.where(
+				and(
+					eq(boardSprints.boardId, boardId),
+					eq(boardSprints.sprintId, row.sprintId),
+				),
+			);
+	}
+	if (inserts.length > 0) {
+		await database.insert(boardSprints).values(inserts);
 	}
 	const current = counts.board_sprints ?? emptyCounts();
-	current.inserted += missing.length;
-	current.updated += stale.length;
-	current.unchanged += existing.length - stale.length;
+	current.inserted += inserts.length;
+	current.updated += stale.length + moved.length;
+	current.unchanged += existing.length - stale.length - moved.length;
 	counts.board_sprints = current;
 }
 
@@ -1013,9 +1025,23 @@ export async function importJiraAgile(
 		counts.boards = current;
 	}
 
+	// A sprint can name an origin board that the token cannot list. Keep it on the
+	// board whose sprint list carried it instead of dropping it and its memberships.
+	const fallbackBoardBySprint = new Map<string, number>();
+	for (const plan of boardPlans) {
+		for (const sprint of plan.jiraSprints) {
+			const originBoardId = sprint.originBoardId ?? plan.board.id;
+			if (!boardDbIds.has(originBoardId) && boardDbIds.has(plan.board.id)) {
+				fallbackBoardBySprint.set(String(sprint.id), plan.board.id);
+			}
+		}
+	}
+
 	const sprintIdsBySource = new Map<string, string>();
 	for (const sprint of sprintPlans.values()) {
-		const dbBoardId = boardDbIds.get(sprint.boardId);
+		const dbBoardId = boardDbIds.get(
+			fallbackBoardBySprint.get(sprint.sourceId) ?? sprint.boardId,
+		);
 		if (!dbBoardId) continue;
 		const [existing] = await database
 			.select()
@@ -1309,6 +1335,6 @@ export async function importJiraAgile(
 		boards: boardPlans.length,
 		sprints: sprintStateCounts,
 		issueSprints: membership.size,
-		issues: new Set(membership.values()).size,
+		issues: new Set([...membership.values()].map((row) => row.issueId)).size,
 	};
 }
