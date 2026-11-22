@@ -55,7 +55,7 @@ describe("parity attachment files", () => {
 						{
 							source_id: "wiki-attachment",
 							storage_path: "wiki/file.bin",
-							size: 4,
+							size: "4",
 							sha256: "wiki-hash",
 						},
 					],

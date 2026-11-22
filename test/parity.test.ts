@@ -655,6 +655,38 @@ describe("parity checks", () => {
 		}
 	});
 
+	test("wiki attachment sizes above the integer range are reported as a number", async () => {
+		const sourceId = "parity-test-large-page-attachment:1";
+		await pool.query(
+			`insert into page_attachments (source_id, page_id, file_name, size, version, storage_path, sha256)
+			 values ($1, $2, $3, $4, 1, $5, $6)`,
+			[
+				sourceId,
+				pageId,
+				"large-page.bin",
+				2_147_483_648,
+				"parity-test/large-page",
+				"3".repeat(64),
+			],
+		);
+		try {
+			const tables = await loadTableSet(pool);
+			const database = await loadWikiSnapshot(pool, tables, {
+				spaceKeys: [spaceKey],
+			});
+			if (!database) throw new Error("seeded wiki was not loaded");
+			const attachment = [...database.attachments.values()]
+				.flat()
+				.find((item) => item.sourceId === sourceId);
+			expect(attachment?.size).toBe(2_147_483_648);
+			expect(typeof attachment?.size).toBe("number");
+		} finally {
+			await pool.query("delete from page_attachments where source_id = $1", [
+				sourceId,
+			]);
+		}
+	});
+
 	test("a project-scoped snapshot ignores local changes in other projects", async () => {
 		const otherKey = "PARITYO";
 		await pool.query(

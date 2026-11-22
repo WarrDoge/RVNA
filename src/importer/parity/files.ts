@@ -29,7 +29,7 @@ function toRow(row: AttachmentRow): AttachmentFileRow {
 	return {
 		sourceId: row.source_id,
 		storagePath: row.storage_path,
-		size: row.size,
+		size: Number(row.size),
 		sha256: row.sha256,
 	};
 }

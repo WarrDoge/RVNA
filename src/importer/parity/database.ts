@@ -689,7 +689,7 @@ export async function loadWikiSnapshot(
 			const list = attachments.get(row.page_source_id) ?? [];
 			list.push({
 				sourceId: row.source_id,
-				size: row.size,
+				size: Number(row.size),
 				sha256: row.sha256,
 			});
 			attachments.set(row.page_source_id, list);
