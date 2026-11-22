@@ -18,6 +18,7 @@ export const BATCH_WINDOW_MS = 60_000;
 
 export type MailTransport = {
 	sendMail(message: SendMailOptions): Promise<unknown>;
+	close?(): void;
 };
 
 export type NotificationMail = {
@@ -429,4 +430,11 @@ export async function startMail(
 export async function stopEmailQueue() {
 	setEmailScheduler(null);
 	await stopBoss();
+}
+
+/** Closes the SMTP transport; the queue has already stopped using it. */
+export async function stopMail() {
+	const current = transport;
+	setMailTransport(null);
+	current?.close?.();
 }

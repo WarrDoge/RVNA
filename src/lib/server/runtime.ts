@@ -1,7 +1,12 @@
 import { bootstrapAdmin } from "./bootstrap.ts";
 import { pool, runMigrations } from "./db.ts";
 import { startGitlabQueue, stopGitlabQueue } from "./gitlab/queue.ts";
-import { createSmtpTransport, startMail, stopEmailQueue } from "./mail.ts";
+import {
+	createSmtpTransport,
+	startMail,
+	stopEmailQueue,
+	stopMail,
+} from "./mail.ts";
 import {
 	startMessengerQueue,
 	stopMessengerQueue,
@@ -34,9 +39,19 @@ export async function start() {
 }
 
 export async function stop() {
-	await stopMessengerWorker();
-	await stopMessengerQueue();
-	await stopGitlabQueue();
-	await stopEmailQueue();
-	await pool.end();
+	const steps: [string, () => unknown][] = [
+		["messenger worker", stopMessengerWorker],
+		["messenger queue", stopMessengerQueue],
+		["GitLab queue", stopGitlabQueue],
+		["email queue", stopEmailQueue],
+		["SMTP transport", stopMail],
+		["database pool", () => pool.end()],
+	];
+	for (const [name, step] of steps) {
+		try {
+			await step();
+		} catch (error) {
+			console.error(`shutdown: ${name} failed`, error);
+		}
+	}
 }

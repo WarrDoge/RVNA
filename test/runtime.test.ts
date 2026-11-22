@@ -3,6 +3,7 @@ import { beforeEach, expect, test, vi } from "vitest";
 const state = vi.hoisted(() => ({
 	calls: [] as string[],
 	migrateError: null as Error | null,
+	stopGitlabError: null as Error | null,
 }));
 
 vi.mock("../src/lib/server/bootstrap.ts", () => ({
@@ -29,6 +30,7 @@ vi.mock("../src/lib/server/gitlab/queue.ts", () => ({
 	},
 	stopGitlabQueue: async () => {
 		state.calls.push("gitlab.stop");
+		if (state.stopGitlabError) throw state.stopGitlabError;
 	},
 }));
 
@@ -66,6 +68,7 @@ vi.mock("../src/lib/server/messenger/worker.ts", () => ({
 beforeEach(() => {
 	state.calls.length = 0;
 	state.migrateError = null;
+	state.stopGitlabError = null;
 });
 
 test("a failed start releases what it had already opened", async () => {
@@ -85,4 +88,21 @@ test("a failed start releases what it had already opened", async () => {
 			"pool.end",
 		]),
 	);
+});
+
+test("one failing shutdown step does not skip the rest", async () => {
+	const { start, stop } = await import("../src/lib/server/runtime.ts");
+	await start();
+	state.calls.length = 0;
+	state.stopGitlabError = new Error("gitlab stop failed");
+
+	await expect(stop()).resolves.toBeUndefined();
+	expect(state.calls).toEqual([
+		"worker.stop",
+		"messenger.stop",
+		"gitlab.stop",
+		"mail.queue.stop",
+		"mail.transport.close",
+		"pool.end",
+	]);
 });
