@@ -1,4 +1,5 @@
 import sanitizeHtml from "sanitize-html";
+import { classicEmoticons } from "../../shared/wiki/emoticons.ts";
 import { withSafeRel } from "../html.ts";
 
 export interface ParsedMacro {
@@ -251,23 +252,14 @@ export function findMacros(source: string): ParsedMacro[] {
 }
 
 const emoticons: Record<string, string> = {
-	tick: "\u2705",
-	cross: "\u274c",
-	warning: "\u26a0\ufe0f",
-	plus: "\u2795",
-	minus: "\u2796",
-	question: "\u2753",
-	info: "\u2139\ufe0f",
-	smile: "U0001f642",
-	sad: "U0001f641",
-	cheeky: "U0001f61b",
-	laugh: "U0001f604",
-	thumbs_up: "U0001f44d",
-	thumbs_down: "U0001f44e",
+	...classicEmoticons,
+	info: classicEmoticons.information,
+	thumbs_up: classicEmoticons["thumbs-up"],
+	thumbs_down: classicEmoticons["thumbs-down"],
 	heart: "\u2764\ufe0f",
-	lightbulb: "U0001f4a1",
+	lightbulb: "\u{1f4a1}",
 	star_yellow: "\u2b50",
-	music: "U0001f3b5",
+	music: "\u{1f3b5}",
 };
 
 const layoutClasses: Record<string, string> = {
