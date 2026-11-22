@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { userForSession } from "../src/lib/server/auth.ts";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
 import { loadGadgetData } from "../src/lib/server/gadget-data.ts";
+import { SYSTEM_DASHBOARD_ID } from "../src/lib/server/schema.ts";
 import { adminGroup, buildServer, cleanupTestData, login } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
@@ -14,6 +16,11 @@ let adminSession: string;
 
 beforeAll(async () => {
 	await runMigrations();
+	// The landing page test below brings its own imported dashboard.
+	await pool.query(
+		"update dashboards set source_id = source_id || ':test-aside', name = name || ' (test aside)', shared = false where source_id = $1",
+		[SYSTEM_DASHBOARD_ID],
+	);
 	app = buildServer();
 	const owner = await login(app, {
 		sub: `sub-${run}-owner`,
@@ -39,6 +46,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+	await pool.query(
+		"update dashboards set source_id = $1, name = replace(name, ' (test aside)', ''), shared = true where source_id = $2",
+		[SYSTEM_DASHBOARD_ID, `${SYSTEM_DASHBOARD_ID}:test-aside`],
+	);
 	await cleanupTestData(run);
 	await app.close();
 	await pool.end();
@@ -320,6 +331,146 @@ test("a gadget can be added at a chosen column and row", async () => {
 		["assigned-to-me", 1, 0],
 		["introduction", 1, 1],
 	]);
+});
+
+test("the imported System Dashboard is the landing page by source id", async () => {
+	const byName = await createDashboard("System Dashboard", { shared: true });
+	const imported = await createDashboard(`Imported landing ${run}`, {
+		shared: true,
+	});
+	await pool.query("update dashboards set source_id = $1 where id = $2", [
+		SYSTEM_DASHBOARD_ID,
+		imported.id,
+	]);
+	await pool.query(
+		`delete from dashboard_favourites
+		 where user_id = (select id from users where username = $1)`,
+		[`t-${run}-other`],
+	);
+
+	try {
+		const home = await request("GET", "/api/dashboards/default", otherSession);
+		expect(home.statusCode).toBe(200);
+		expect(home.json().id).toBe(imported.id);
+	} finally {
+		await pool.query("delete from dashboards where id = any($1::uuid[])", [
+			[byName.id, imported.id],
+		]);
+	}
+});
+
+test("a narrower layout pulls gadgets into the remaining columns", async () => {
+	const dashboard = await createDashboard(`Narrow ${run}`, { layout: "AAA" });
+	const ids: string[] = [];
+	for (const column of [0, 1, 2]) {
+		const added = await request(
+			"POST",
+			`/api/dashboards/${dashboard.id}/gadgets`,
+			ownerSession,
+			{ type: "introduction", column, row: 0 },
+		);
+		expect(added.statusCode).toBe(201);
+		ids.push(added.json().id);
+	}
+
+	const changed = await request(
+		"PATCH",
+		`/api/dashboards/${dashboard.id}`,
+		ownerSession,
+		{ layout: "A" },
+	);
+	expect(changed.statusCode).toBe(200);
+	expect(changed.json().layout).toBe("A");
+	expect(
+		changed
+			.json()
+			.gadgets.map((gadget: { id: string; column: number; row: number }) => [
+				gadget.id,
+				gadget.column,
+				gadget.row,
+			]),
+	).toEqual([
+		[ids[0], 0, 0],
+		[ids[1], 0, 1],
+		[ids[2], 0, 2],
+	]);
+});
+
+test("a layout names one list per dashboard column and each gadget once", async () => {
+	const dashboard = await createDashboard(`Column count ${run}`, {
+		layout: "A",
+	});
+	const added = await request(
+		"POST",
+		`/api/dashboards/${dashboard.id}/gadgets`,
+		ownerSession,
+		{ type: "introduction" },
+	);
+	expect(added.statusCode).toBe(201);
+	const gadget = added.json();
+
+	const extra = await request(
+		"PUT",
+		`/api/dashboards/${dashboard.id}/layout`,
+		ownerSession,
+		{ columns: [[gadget.id], []] },
+	);
+	expect(extra.statusCode).toBe(400);
+	expect(extra.json().error).toBe("The layout needs 1 column");
+
+	const twice = await request(
+		"PUT",
+		`/api/dashboards/${dashboard.id}/layout`,
+		ownerSession,
+		{ columns: [[gadget.id, gadget.id]] },
+	);
+	expect(twice.statusCode).toBe(400);
+	expect(twice.json().error).toBe("The layout names a gadget twice");
+});
+
+test("moving gadgets writes their positions in one statement", async () => {
+	const dashboard = await createDashboard(`Batch ${run}`, { layout: "AA" });
+	const ids: string[] = [];
+	for (let index = 0; index < 4; index += 1) {
+		const added = await request(
+			"POST",
+			`/api/dashboards/${dashboard.id}/gadgets`,
+			ownerSession,
+			{ type: "introduction" },
+		);
+		expect(added.statusCode).toBe(201);
+		ids.push(added.json().id);
+	}
+
+	const updates: string[] = [];
+	const counted = new WeakSet<PoolClient>();
+	const countUpdates = (client: PoolClient) => {
+		if (counted.has(client)) return;
+		counted.add(client);
+		const query = client.query.bind(client) as (...args: unknown[]) => unknown;
+		client.query = ((...args: unknown[]) => {
+			const statement = args[0];
+			const text =
+				typeof statement === "string"
+					? statement
+					: ((statement as { text?: string } | undefined)?.text ?? "");
+			if (/update\s+.*dashboard_gadgets/i.test(text)) updates.push(text);
+			return query(...args);
+		}) as typeof client.query;
+	};
+	pool.on("acquire", countUpdates);
+	try {
+		const moved = await request(
+			"PUT",
+			`/api/dashboards/${dashboard.id}/layout`,
+			ownerSession,
+			{ columns: [ids.slice(0, 2), ids.slice(2)] },
+		);
+		expect(moved.statusCode).toBe(200);
+	} finally {
+		pool.off("acquire", countUpdates);
+	}
+	expect(updates).toHaveLength(1);
 });
 
 test("a dashboard is copied with its gadgets", async () => {

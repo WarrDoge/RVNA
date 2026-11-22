@@ -4,6 +4,8 @@ import {
 	type DashboardLayout,
 	isSafeLinkUrl,
 	layoutColumns,
+	STATISTICS,
+	type StatisticType,
 } from "../../shared/gadgets.ts";
 import type { CurrentUser } from "../auth.ts";
 import { userAvatarSql } from "../avatars.ts";
@@ -15,6 +17,7 @@ import {
 	dashboardFavourites,
 	dashboardGadgets,
 	dashboards,
+	SYSTEM_DASHBOARD_ID,
 	users,
 } from "../schema.ts";
 import type {
@@ -30,18 +33,12 @@ import type {
 	PatchDashboardBody,
 } from "./schemas.ts";
 
-const statisticSchema = z.enum([
-	"status",
-	"priority",
-	"type",
-	"assignee",
-	"reporter",
-	"project",
-	"resolution",
-	"component",
-	"label",
-	"fixVersion",
-]);
+const statisticSchema = z.enum(
+	STATISTICS.map((statistic) => statistic.value) as [
+		StatisticType,
+		...StatisticType[],
+	],
+);
 
 const columnsSchema = z.array(z.string().min(1).max(200)).max(50);
 
@@ -165,7 +162,7 @@ function toSummary(row: DashboardRow, viewerId: string, isAdmin: boolean) {
 		sourceId: row.sourceId,
 		name: row.name,
 		description: row.description,
-		layout: row.layout,
+		layout: row.layout as DashboardLayout,
 		shared: row.shared,
 		owner: {
 			id: row.ownerId,
@@ -326,7 +323,9 @@ export async function defaultDashboard(
 		: await db
 				.select({ id: dashboards.id })
 				.from(dashboards)
-				.where(and(eq(dashboards.name, "System Dashboard"), visibleTo(actor)))
+				.where(
+					and(eq(dashboards.sourceId, SYSTEM_DASHBOARD_ID), visibleTo(actor)),
+				)
 				.limit(1);
 
 	const [first] =
@@ -457,18 +456,23 @@ export async function updateDashboard(
 		throw new HttpError(400, "Nothing to change");
 	}
 
-	await db
-		.update(dashboards)
-		.set({
-			...(body.name === undefined ? {} : { name: body.name }),
-			...(body.description === undefined
-				? {}
-				: { description: body.description }),
-			...(body.layout === undefined ? {} : { layout: body.layout }),
-			...(body.shared === undefined ? {} : { shared: body.shared }),
-			updatedAt: new Date(),
-		})
-		.where(eq(dashboards.id, access.row.id));
+	await db.transaction(async (tx) => {
+		await tx
+			.update(dashboards)
+			.set({
+				...(body.name === undefined ? {} : { name: body.name }),
+				...(body.description === undefined
+					? {}
+					: { description: body.description }),
+				...(body.layout === undefined ? {} : { layout: body.layout }),
+				...(body.shared === undefined ? {} : { shared: body.shared }),
+				updatedAt: new Date(),
+			})
+			.where(eq(dashboards.id, access.row.id));
+		if (body.layout !== undefined && body.layout !== access.row.layout) {
+			await renumberIn(tx, access.row.id, layoutColumns(body.layout) - 1);
+		}
+	});
 
 	const dashboard = await loadDashboard(access.row.id, actor);
 	if (!dashboard) throw new HttpError(404, "Dashboard not found");
@@ -728,16 +732,27 @@ export async function setDashboardLayout(
 		);
 	}
 
+	const columnCount = layoutColumns(access.row.layout as DashboardLayout);
+	if (body.columns.length !== columnCount) {
+		throw new HttpError(
+			400,
+			`The layout needs ${columnCount} column${columnCount === 1 ? "" : "s"}`,
+		);
+	}
+
 	const gadgets = await loadGadgets(access.row.id);
 	const known = new Set(gadgets.map((gadget) => gadget.id));
 	const placed = new Set<string>();
 	for (const column of body.columns) {
 		for (const id of column) {
-			if (!known.has(id) || placed.has(id)) {
+			if (!known.has(id)) {
 				throw new HttpError(
 					400,
 					"The layout names a gadget of another dashboard",
 				);
+			}
+			if (placed.has(id)) {
+				throw new HttpError(400, "The layout names a gadget twice");
 			}
 			placed.add(id);
 		}
@@ -746,19 +761,11 @@ export async function setDashboardLayout(
 		throw new HttpError(400, "The layout must name every gadget once");
 	}
 
+	const positions = body.columns.flatMap((ids, columnIndex) =>
+		ids.map((id, rowIndex) => ({ id, columnIndex, rowIndex })),
+	);
 	await db.transaction(async (tx) => {
-		for (const [column, ids] of body.columns.entries()) {
-			for (const [row, id] of ids.entries()) {
-				await tx
-					.update(dashboardGadgets)
-					.set({
-						columnIndex: column,
-						rowIndex: row,
-						updatedAt: new Date(),
-					})
-					.where(eq(dashboardGadgets.id, id));
-			}
-		}
+		await writePositions(tx, positions, new Date());
 	});
 
 	const dashboard = await loadDashboard(access.row.id, actor);
@@ -781,8 +788,37 @@ async function loadGadgetOwner(id: string) {
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+type GadgetPosition = { id: string; columnIndex: number; rowIndex: number };
+
+/** One statement for the whole layout, not one per gadget. */
+async function writePositions(
+	tx: Transaction,
+	positions: GadgetPosition[],
+	updatedAt?: Date,
+) {
+	if (positions.length === 0) return;
+	const values = sql.join(
+		positions.map(
+			(position) =>
+				sql`(${position.id}::uuid, ${position.columnIndex}::int, ${position.rowIndex}::int)`,
+		),
+		sql`, `,
+	);
+	const timestamp = updatedAt ? sql`, updated_at = ${updatedAt}` : sql``;
+	await tx.execute(sql`
+		update ${dashboardGadgets}
+		set column_index = v.column_index, row_index = v.row_index${timestamp}
+		from (values ${values}) as v(id, column_index, row_index)
+		where ${dashboardGadgets}.id = v.id
+	`);
+}
+
 /** Rows are positions inside a column, so they stay dense after a move or delete. */
-async function renumberIn(tx: Transaction, dashboardId: string) {
+async function renumberIn(
+	tx: Transaction,
+	dashboardId: string,
+	maxColumn = Number.POSITIVE_INFINITY,
+) {
 	const rows = await tx
 		.select({
 			id: dashboardGadgets.id,
@@ -793,14 +829,14 @@ async function renumberIn(tx: Transaction, dashboardId: string) {
 		.orderBy(asc(dashboardGadgets.columnIndex), asc(dashboardGadgets.rowIndex));
 
 	const perColumn = new Map<number, number>();
+	const positions: GadgetPosition[] = [];
 	for (const row of rows) {
-		const rowIndex = perColumn.get(row.columnIndex) ?? 0;
-		perColumn.set(row.columnIndex, rowIndex + 1);
-		await tx
-			.update(dashboardGadgets)
-			.set({ rowIndex })
-			.where(eq(dashboardGadgets.id, row.id));
+		const columnIndex = Math.min(row.columnIndex, maxColumn);
+		const rowIndex = perColumn.get(columnIndex) ?? 0;
+		perColumn.set(columnIndex, rowIndex + 1);
+		positions.push({ id: row.id, columnIndex, rowIndex });
 	}
+	await writePositions(tx, positions);
 }
 
 async function renumber(dashboardId: string) {
