@@ -1,5 +1,6 @@
+import { inArray } from "drizzle-orm";
 import { db } from "../db.ts";
-import { projects } from "../schema.ts";
+import { issues, projects } from "../schema.ts";
 
 export interface IssueRef {
 	id: string;
@@ -50,6 +51,19 @@ export function extractIssueKeys(
 export async function loadProjectKeys(): Promise<string[]> {
 	const rows = await db.select({ key: projects.key }).from(projects);
 	return rows.map((row) => row.key);
+}
+
+export async function findIssuesByKeys(keys: string[]): Promise<IssueRef[]> {
+	if (keys.length === 0) return [];
+	return db
+		.select({
+			id: issues.id,
+			key: issues.key,
+			projectId: issues.projectId,
+			summary: issues.summary,
+		})
+		.from(issues)
+		.where(inArray(issues.key, keys));
 }
 
 export function summarySlug(summary: string, maxLength = 40) {
