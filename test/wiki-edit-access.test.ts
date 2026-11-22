@@ -715,6 +715,38 @@ describe("space permissions", () => {
 		);
 		expect(byApp.status).toBe(200);
 	});
+
+	test("anonymous administration and unknown groups are refused", async () => {
+		const own = await wiki.space("PE");
+		await wiki.grant(own.id, { userId: spaceAdmin.id }, ["administer"]);
+		const before = await spaceAdmin.get(
+			`/api/wiki/edit/spaces/${own.key}/permissions`,
+		);
+		const anonymous = await spaceAdmin.put(
+			`/api/wiki/spaces/${own.key}/permissions`,
+			{
+				permissions: [
+					{ permission: "administer", userId: spaceAdmin.id },
+					{ permission: "administer", anonymous: true },
+				],
+			},
+		);
+		expect(anonymous.status).toBe(400);
+		const unknown = await spaceAdmin.put(
+			`/api/wiki/spaces/${own.key}/permissions`,
+			{
+				permissions: [
+					{ permission: "administer", userId: spaceAdmin.id },
+					{ permission: "read", groupName: `t-${wiki.run}-missing` },
+				],
+			},
+		);
+		expect(unknown.status).toBe(400);
+		const kept = await spaceAdmin.get(
+			`/api/wiki/edit/spaces/${own.key}/permissions`,
+		);
+		expect(kept.body).toHaveLength(before.body.length);
+	});
 });
 
 describe("group type-ahead", () => {

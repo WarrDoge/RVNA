@@ -10,7 +10,7 @@ import {
 } from "../../shared/wiki/index.ts";
 import { type CurrentUser, hasGroup } from "../auth.ts";
 import { db } from "../db.ts";
-import { users } from "../schema.ts";
+import { groups, users } from "../schema.ts";
 import {
 	pageAttachments,
 	pages,
@@ -327,6 +327,26 @@ export async function replaceSpacePermissions(
 			.where(inArray(users.id, userIds));
 		if (found.length !== userIds.length)
 			fail(400, "Unknown user in permissions");
+	}
+	if (
+		rows.some(
+			(row) => row.permission === "administer" && row.anonymous === true,
+		)
+	) {
+		fail(400, "Anonymous users cannot administer a space");
+	}
+	const groupNames = [
+		...new Set(rows.flatMap((row) => (row.groupName ? [row.groupName] : []))),
+	];
+	if (groupNames.length > 0) {
+		const found = await db
+			.select({ name: groups.name })
+			.from(groups)
+			.where(
+				sql`lower(${groups.name}) = any(${sql.param(groupNames.map((name) => name.toLowerCase()))}::text[])`,
+			);
+		if (found.length !== groupNames.length)
+			fail(400, "Unknown group in permissions");
 	}
 	const keepsAdmin = rows.some(
 		(row) =>
