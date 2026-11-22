@@ -1,11 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, getTableColumns, isNull, sql } from "drizzle-orm";
+import { getTableColumns, sql } from "drizzle-orm";
 import type { PgColumn, PgTable } from "drizzle-orm/pg-core";
 import type { db } from "./db.ts";
 
 export type Executor = Pick<
 	typeof db,
-	"select" | "insert" | "update" | "delete"
+	"select" | "insert" | "update" | "delete" | "execute"
 >;
 
 export interface RowCounts {
@@ -66,6 +66,14 @@ export interface UpsertOptions {
 
 type CachedRow = Record<string, unknown>;
 
+interface PendingUpdate {
+	key: string;
+	existingId: string;
+	existing: CachedRow;
+	row: CachedRow;
+	values: CachedRow;
+}
+
 interface TableCache {
 	rows: Map<string, CachedRow>;
 	loaded: boolean;
@@ -99,6 +107,7 @@ function isEmptyValue(value: unknown): boolean {
 
 function customValuesEqual(left: unknown, right: unknown): boolean {
 	if (left === right) return true;
+	// Custom values are a keyed bag: an empty value and an absent key mean the same.
 	if (
 		left === null ||
 		left === undefined ||
@@ -123,7 +132,6 @@ function customValuesEqual(left: unknown, right: unknown): boolean {
 			...Object.keys(leftObject),
 			...Object.keys(rightObject),
 		])) {
-			if (key === "elapsedTime" || key === "remainingTime") continue;
 			const leftValue = leftObject[key];
 			const rightValue = rightObject[key];
 			if (
@@ -139,6 +147,104 @@ function customValuesEqual(left: unknown, right: unknown): boolean {
 	return false;
 }
 
+const UPDATE_CHUNK = 100;
+
+async function flushUpdates(
+	tx: Executor,
+	table: PgTable,
+	columns: Record<string, PgColumn>,
+	pending: PendingUpdate[],
+	options: UpsertOptions,
+	localChangeKey: string | null,
+	counts: RowCounts,
+	ids: Map<string, string>,
+	keptLocalIds: string[],
+	cache: TableCache,
+) {
+	const groups = new Map<string, PendingUpdate[]>();
+	for (const update of pending) {
+		const groupKey = Object.keys(update.values).sort().join("\u0000");
+		const group = groups.get(groupKey) ?? [];
+		group.push(update);
+		groups.set(groupKey, group);
+	}
+
+	for (const group of groups.values()) {
+		const keys = Object.keys(group[0]?.values ?? {}).sort();
+		const valueKeys = keys.filter((key) => key !== localChangeKey);
+		const idColumn = columns.id;
+		const columnNames = [
+			idColumn.name,
+			...valueKeys.map((key) => columns[key].name),
+		];
+		for (const chunk of chunks(group, UPDATE_CHUNK)) {
+			const rows = chunk.map((update) => {
+				const values = [
+					sql`${sql.param(update.existingId)}::${sql.raw(idColumn.getSQLType())}`,
+					...valueKeys.map((key) => {
+						const column = columns[key];
+						const value = options.advanceKeys?.includes(key)
+							? update.row[key]
+							: update.values[key];
+						const mapped =
+							value === null ? null : column.mapToDriverValue(value);
+						return sql`${sql.param(mapped)}::${sql.raw(column.getSQLType())}`;
+					}),
+				];
+				return sql`(${sql.join(values, sql`, `)})`;
+			});
+			const assignments = keys.map((key) => {
+				const name = columns[key].name;
+				if (key === localChangeKey) {
+					return sql`${sql.identifier(name)} = 'epoch'::timestamptz`;
+				}
+				if (options.advanceKeys?.includes(key)) {
+					return sql`${sql.identifier(name)} = greatest(target.${sql.identifier(name)}, v.${sql.identifier(name)})`;
+				}
+				return sql`${sql.identifier(name)} = v.${sql.identifier(name)}`;
+			});
+			const marker =
+				options.localChangeColumn && !options.overwriteLocal
+					? sql` and target.${sql.identifier(options.localChangeColumn.name)} is null`
+					: sql``;
+			const query = sql`
+				update ${table} as target
+				set ${sql.join(assignments, sql`, `)}
+				from (values ${sql.join(rows, sql`, `)}) as v(${sql.join(
+					columnNames.map((name) => sql.identifier(name)),
+					sql`, `,
+				)})
+				where target.${sql.identifier(idColumn.name)} = v.${sql.identifier(idColumn.name)}${marker}
+				returning target.${sql.identifier(idColumn.name)} as id
+			`;
+			const result = await tx.execute<{ id: string }>(query);
+			const updatedIds = new Set(result.rows.map((row) => String(row.id)));
+			for (const update of chunk) {
+				if (updatedIds.has(update.existingId)) {
+					counts.updated++;
+					const cached: CachedRow = { ...update.existing, ...update.values };
+					if (localChangeKey) cached[localChangeKey] = null;
+					for (const column of options.advanceKeys ?? []) {
+						if (update.row[column] === undefined) continue;
+						cached[column] = Math.max(
+							Number(update.existing[column] ?? 0),
+							Number(update.row[column] ?? 0),
+						);
+					}
+					cache.rows.set(update.key, cached);
+					continue;
+				}
+				if (options.localChangeColumn && !options.overwriteLocal) {
+					keptLocalIds.push(update.existingId);
+					continue;
+				}
+				ids.delete(update.key);
+				cache.rows.delete(update.key);
+			}
+		}
+	}
+}
+
 export async function upsertRows(
 	tx: Executor,
 	table: PgTable,
@@ -150,9 +256,9 @@ export async function upsertRows(
 	const ids = new Map<string, string>();
 	const keptLocalIds: string[] = [];
 	if (rows.length === 0) return { counts, ids, keptLocalIds };
+	rows = [...new Map(rows.map((row) => [keyOf(row), row])).values()];
 
 	const columns = getTableColumns(table) as Record<string, PgColumn>;
-	const idColumn = columns.id;
 	const localChangeKey = options.localChangeColumn
 		? (Object.keys(columns).find(
 				(key) => columns[key] === options.localChangeColumn,
@@ -178,6 +284,7 @@ export async function upsertRows(
 	}
 
 	const inserts: CachedRow[] = [];
+	const pending: PendingUpdate[] = [];
 	for (const row of rows) {
 		const key = keyOf(row);
 		const existing = cache.rows.get(key);
@@ -240,31 +347,27 @@ export async function upsertRows(
 			continue;
 		}
 
-		const conditions = [eq(idColumn, String(existing.id))];
-		if (options.localChangeColumn && !options.overwriteLocal) {
-			conditions.push(isNull(options.localChangeColumn));
-		}
-		const updated = await tx
-			.update(table)
-			.set(updateValues as never)
-			.where(and(...conditions))
-			.returning({ id: idColumn });
-		if (updated.length === 0 && options.localChangeColumn) {
-			keptLocalIds.push(String(existing.id));
-			continue;
-		}
-		counts.updated++;
-		const cached: CachedRow = { ...existing, ...updateValues };
-		if (localChangeKey) cached[localChangeKey] = null;
-		for (const column of options.advanceKeys ?? []) {
-			if (row[column] === undefined) continue;
-			cached[column] = Math.max(
-				Number(existing[column] ?? 0),
-				Number(row[column] ?? 0),
-			);
-		}
-		cache.rows.set(key, cached);
+		pending.push({
+			key,
+			existingId: String(existing.id),
+			existing,
+			row,
+			values: updateValues,
+		});
 	}
+
+	await flushUpdates(
+		tx,
+		table,
+		columns,
+		pending,
+		options,
+		localChangeKey,
+		counts,
+		ids,
+		keptLocalIds,
+		cache,
+	);
 
 	for (const chunk of chunks(inserts, 100)) {
 		const insert = tx.insert(table).values(chunk as never);
