@@ -353,6 +353,62 @@ class CountingMap<K, V> extends Map<K, V> {
 	}
 }
 
+function wikiLiveClient(
+	options: {
+		page?: { id: string; [key: string]: unknown };
+		users?: unknown[];
+		watchers?: unknown;
+		likes?: unknown;
+		attachments?: unknown[];
+		attachmentVersions?: () => Promise<unknown[]>;
+	} = {},
+) {
+	const page = options.page ?? {
+		id: "parity-social-page",
+		type: "page",
+		status: "current",
+		title: "Social page",
+		history: { createdDate: "2026-01-01T00:00:00.000Z" },
+		metadata: { labels: { results: [] } },
+		restrictions: {},
+		ancestors: [],
+	};
+	const watchers = options.watchers ?? {
+		pageWatchers: [],
+		spaceWatchers: [],
+	};
+	const likes = options.likes ?? { likes: [] };
+	return {
+		listSpaces: async (status: string) =>
+			status === "current"
+				? [
+						{
+							id: "1",
+							key: spaceKey,
+							name: "Parity Space",
+							status: "current",
+						},
+					]
+				: [],
+		listUsers: async () => options.users ?? [],
+		listContent: async (_key: string, type: string, status: string) =>
+			type === "page" && status === "current" ? [page] : [],
+		listComments: async () => [],
+		listAttachments: async () => options.attachments ?? [],
+		listAttachmentVersions: options.attachmentVersions ?? (async () => []),
+		listVersions: async () => [],
+		listSpacePermissions: async () => [],
+		listSpaceRootContent: async () => ({ page: [page.id], blogpost: [] }),
+		listChildPages: async () => [],
+		getJson: async (path: string) => {
+			if (path === "/json/listwatchers.action") return watchers;
+			if (path.startsWith("/rest/likes/1.0/content/")) return likes;
+			throw new Error(`unexpected request: ${path}`);
+		},
+		download: async () => Buffer.from(""),
+	} as unknown as ConfluenceClient;
+}
+
 function wikiSnapshots(localPages: Set<string>) {
 	const pages = new Map(
 		["page-1", "local-page"].map((sourceId) => [
@@ -981,6 +1037,116 @@ describe("parity checks", () => {
 		]);
 	});
 
+	test("an unparsable page date does not abort the live snapshot", async () => {
+		const page = {
+			id: "parity-bad-date-page",
+			type: "page",
+			status: "current",
+			title: "Bad date",
+			history: { createdDate: "not a date" },
+			metadata: { labels: { results: [] } },
+			restrictions: {},
+			ancestors: [],
+		};
+		const live = await fetchWikiLive(wikiLiveClient({ page }));
+		expect(live.pages.get(page.id)?.created).toBeNull();
+	});
+
+	test("unresolved page restrictions keep the key the import stores", async () => {
+		const page = {
+			id: "parity-restriction-page",
+			type: "page",
+			status: "current",
+			title: "Restriction page",
+			history: { createdDate: "2026-01-01T00:00:00.000Z" },
+			metadata: { labels: { results: [] } },
+			restrictions: {
+				read: {
+					restrictions: {
+						user: {
+							results: [{ userKey: "unknown-key", username: "unknown-name" }],
+						},
+					},
+				},
+			},
+			ancestors: [],
+		};
+		const live = await fetchWikiLive(wikiLiveClient({ page, users: [] }));
+		expect(live.pages.get(page.id)?.restrictions).toEqual([
+			"read:user:unknown-key",
+		]);
+	});
+
+	test("an attachment version request failure is not hidden", async () => {
+		const page = {
+			id: "parity-version-page",
+			type: "page",
+			status: "current",
+			title: "Version page",
+			history: { createdDate: "2026-01-01T00:00:00.000Z" },
+			metadata: { labels: { results: [] } },
+			restrictions: {},
+			ancestors: [],
+		};
+		const attachment = {
+			id: "parity-version-attachment",
+			type: "attachment",
+			status: "current",
+			title: "file.txt",
+			version: { number: 1 },
+			_links: { download: `/download/attachments/${page.id}/file.txt` },
+		};
+		const client = wikiLiveClient({
+			page,
+			attachments: [attachment],
+			attachmentVersions: async () => {
+				throw new Error("boom");
+			},
+		});
+		await expect(fetchWikiLive(client)).rejects.toThrow("boom");
+	});
+
+	test("watcher and like counts keep only resolved users", async () => {
+		const users = [
+			{ userKey: "uk-one", username: "fixture-one" },
+			{ userKey: "uk-two", username: "fixture-two" },
+		];
+		const watchers = {
+			pageWatchers: [
+				{ name: "fixture-one", userKey: "uk-one" },
+				{ name: "fixture-one" },
+				{ name: "fixture-two", userKey: "unknown-key-two" },
+				{ name: "unknown-name", userKey: "unknown-key" },
+			],
+			spaceWatchers: [
+				{ name: "fixture-one", userKey: "uk-one" },
+				{ name: "unknown-name", userKey: "unknown-key" },
+			],
+		};
+		const likes = {
+			likes: [
+				{ user: { name: "fixture-one", userKey: "uk-one" } },
+				{ user: { name: "fixture-two" } },
+				{ user: { name: "unknown-name", userKey: "unknown-key" } },
+			],
+		};
+		const live = await fetchWikiLive(
+			wikiLiveClient({ users, watchers, likes }),
+			{ privateApis: true },
+		);
+		expect(live.pageWatchers.get("parity-social-page")).toBe(2);
+		expect(live.spaceWatchers.get(spaceKey)).toBe(1);
+		expect(live.pageLikes.get("parity-social-page")).toBe(2);
+	});
+
+	test("an unexpected social response shape is reported", async () => {
+		const live = await fetchWikiLive(
+			wikiLiveClient({ watchers: { unexpected: "shape" } }),
+			{ privateApis: true },
+		);
+		expect([...(live.socialShapeKeys ?? [])]).toEqual(["unexpected"]);
+	});
+
 	test("attachment samples ignore attachments of local pages", () => {
 		const { live, database } = wikiSnapshots(new Set(["local-page"]));
 		const checks = wikiChecks(live, database, allTables());
@@ -1268,12 +1434,21 @@ describe("parity checks", () => {
 					operation: { targetType: "space", operationKey: "read" },
 					subject: { type: "group", name: "readers" },
 				},
+				{
+					operation: { targetType: "space", operationKey: "read" },
+					subject: { type: "user", userKey: "known-key" },
+				},
+				{
+					operation: { targetType: "space", operationKey: "read" },
+					subject: { type: "user", userKey: "missing-key" },
+				},
 			],
-			new Map(),
+			new Map([["known-key", "alice"]]),
 		);
 		expect(mapped.sort()).toEqual([
 			"delete:group:page-delete",
 			"read:group:readers",
+			"read:user:alice",
 		]);
 
 		const live: WikiLiveSnapshot = {

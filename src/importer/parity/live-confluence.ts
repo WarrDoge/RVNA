@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { GetOnlyRequestError } from "../client.ts";
 import type { ConfluenceClient } from "../confluence.ts";
 import type { PrivateApiOptions } from "../private-apis.ts";
 import { mapSpacePermission } from "../wiki-permissions.ts";
-import { fetchPageSocial, socialUserKey } from "../wiki-social.ts";
+import { fetchPageSocial } from "../wiki-social.ts";
 import type {
 	ConfluenceContent,
 	ConfluenceSpace,
@@ -18,22 +19,41 @@ import type {
 
 const SAMPLE_SIZE = 20;
 
+interface UserDirectory {
+	byKey: Map<string, string>;
+	usernames: Set<string>;
+}
+
 function dateOf(value: string | undefined | null) {
-	return value ? new Date(value).toISOString() : null;
+	if (!value) return null;
+	const date = new Date(value);
+	return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function resolveUsername(
+	user: { userKey?: string | null; username?: string | null },
+	directory: UserDirectory,
+) {
+	if (user.userKey) {
+		const name = directory.byKey.get(user.userKey);
+		if (name) return name;
+	}
+	if (user.username && directory.usernames.has(user.username)) {
+		return user.username;
+	}
+	return null;
 }
 
 function restrictionsOf(
 	content: ConfluenceContent,
-	usernames: Map<string, string>,
+	directory: UserDirectory,
 ): string[] {
 	const result = new Set<string>();
 	for (const operation of ["read", "update"] as const) {
 		const restrictions = content.restrictions?.[operation]?.restrictions;
 		for (const user of restrictions?.user?.results ?? []) {
 			const name =
-				user.username ??
-				(user.userKey ? usernames.get(user.userKey) : undefined) ??
-				user.userKey;
+				resolveUsername(user, directory) ?? user.userKey ?? user.username;
 			if (name) result.add(`${operation}:user:${name}`);
 		}
 		for (const group of restrictions?.group?.results ?? []) {
@@ -54,7 +74,7 @@ function pageFromContent(
 	spaceKey: string,
 	status: WikiLivePageData["status"],
 	type: WikiLivePageData["type"],
-	usernames: Map<string, string>,
+	directory: UserDirectory,
 ): WikiLivePageData {
 	return {
 		sourceId: content.id,
@@ -66,7 +86,7 @@ function pageFromContent(
 		title: content.title ?? "",
 		created: dateOf(content.history?.createdDate ?? content.version?.when),
 		labels: labelsOf(content),
-		restrictions: restrictionsOf(content, usernames),
+		restrictions: restrictionsOf(content, directory),
 	};
 }
 
@@ -101,7 +121,13 @@ async function fetchAttachmentVersions(
 		let versions: ConfluenceVersion[] = [];
 		try {
 			versions = await client.listAttachmentVersions(attachment.id);
-		} catch {
+		} catch (error) {
+			if (
+				!(error instanceof GetOnlyRequestError) ||
+				(error.status !== 403 && error.status !== 404)
+			) {
+				throw error;
+			}
 			versions = [];
 		}
 		if (versions.length === 0 && attachment.version) {
@@ -230,7 +256,9 @@ async function orderPages(
 export function spacePermissions(
 	entries: ConfluenceSpacePermissions[],
 	usernames: Map<string, string>,
+	knownUsernames: Set<string> = new Set(usernames.values()),
 ): string[] {
+	const directory = { byKey: usernames, usernames: knownUsernames };
 	const result = new Set<string>();
 	for (const entry of entries) {
 		const permission = mapSpacePermission(
@@ -244,10 +272,7 @@ export function spacePermissions(
 		} else if (subject.type === "group") {
 			if (subject.name) result.add(`${permission}:group:${subject.name}`);
 		} else {
-			const name =
-				subject.username ??
-				(subject.userKey ? usernames.get(subject.userKey) : undefined) ??
-				subject.userKey;
+			const name = resolveUsername(subject, directory);
 			if (name) result.add(`${permission}:user:${name}`);
 		}
 	}
@@ -257,7 +282,7 @@ export function spacePermissions(
 async function fetchSpacePages(
 	client: ConfluenceClient,
 	space: ConfluenceSpace,
-	usernames: Map<string, string>,
+	directory: UserDirectory,
 	options: PrivateApiOptions,
 ): Promise<{
 	pages: WikiLivePageData[];
@@ -274,6 +299,7 @@ async function fetchSpacePages(
 	pageWatchers: Map<string, number>;
 	spaceWatchers: number;
 	pageLikes: Map<string, number>;
+	socialShapeKeys: Set<string>;
 }> {
 	const pages: WikiLivePageData[] = [];
 	for (const type of ["page", "blogpost"] as const) {
@@ -281,7 +307,7 @@ async function fetchSpacePages(
 			const listed = await client.listContent(space.key, type, status);
 			for (const content of listed) {
 				pages.push(
-					pageFromContent(content, space.key, status, type, usernames),
+					pageFromContent(content, space.key, status, type, directory),
 				);
 			}
 		}
@@ -293,6 +319,7 @@ async function fetchSpacePages(
 	const pageWatchers = new Map<string, number>();
 	const pageLikes = new Map<string, number>();
 	const spaceWatchers = new Set<string>();
+	const socialShapeKeys = new Set<string>();
 	const attachmentItems: {
 		sourceId: string;
 		pageSourceId: string;
@@ -320,16 +347,21 @@ async function fetchSpacePages(
 			inline,
 		});
 		versions.set(page.sourceId, pageVersions.length);
+		for (const key of social.unexpectedKeys) socialShapeKeys.add(key);
 		const watchers = new Set(
-			social.watchers.map(socialUserKey).filter((key) => key !== ""),
+			social.watchers
+				.map((user) => resolveUsername(user, directory))
+				.filter((key): key is string => key !== null),
 		);
 		const likes = new Set(
-			social.likes.map(socialUserKey).filter((key) => key !== ""),
+			social.likes
+				.map((user) => resolveUsername(user, directory))
+				.filter((key): key is string => key !== null),
 		);
 		pageWatchers.set(page.sourceId, watchers.size);
 		pageLikes.set(page.sourceId, likes.size);
 		for (const watcher of social.spaceWatchers) {
-			const key = socialUserKey(watcher);
+			const key = resolveUsername(watcher, directory);
 			if (key) spaceWatchers.add(key);
 		}
 		const pageAttachments: WikiAttachmentData[] = [];
@@ -346,7 +378,8 @@ async function fetchSpacePages(
 
 	const permissions = spacePermissions(
 		await client.listSpacePermissions(space.key),
-		usernames,
+		directory.byKey,
+		directory.usernames,
 	);
 	return {
 		pages,
@@ -358,6 +391,7 @@ async function fetchSpacePages(
 		pageWatchers,
 		spaceWatchers: spaceWatchers.size,
 		pageLikes,
+		socialShapeKeys,
 	};
 }
 
@@ -370,10 +404,14 @@ export async function fetchWikiLive(
 		client.listSpaces("archived"),
 		client.listUsers(),
 	]);
-	const usernames = new Map<string, string>();
+	const directory: UserDirectory = {
+		byKey: new Map<string, string>(),
+		usernames: new Set<string>(),
+	};
 	for (const user of users) {
+		if (user.username) directory.usernames.add(user.username);
 		if (user.userKey && user.username) {
-			usernames.set(user.userKey, user.username);
+			directory.byKey.set(user.userKey, user.username);
 		}
 	}
 	const spaces = [...currentSpaces, ...archivedSpaces];
@@ -385,6 +423,7 @@ export async function fetchWikiLive(
 	const pageWatchers = new Map<string, number>();
 	const spaceWatchers = new Map<string, number>();
 	const pageLikes = new Map<string, number>();
+	const socialShapeKeys = new Set<string>();
 	const tree = new Map<
 		string,
 		{ parentSourceId: string | null; position: number }
@@ -397,13 +436,14 @@ export async function fetchWikiLive(
 	}[] = [];
 
 	for (const space of spaces) {
-		const data = await fetchSpacePages(client, space, usernames, options);
+		const data = await fetchSpacePages(client, space, directory, options);
 		for (const page of data.pages) pages.set(page.sourceId, page);
 		for (const [key, value] of data.versions) versions.set(key, value);
 		for (const [key, value] of data.comments) comments.set(key, value);
 		for (const [key, value] of data.attachments) attachments.set(key, value);
 		for (const [key, value] of data.pageWatchers) pageWatchers.set(key, value);
 		for (const [key, value] of data.pageLikes) pageLikes.set(key, value);
+		for (const key of data.socialShapeKeys) socialShapeKeys.add(key);
 		spaceWatchers.set(space.key, data.spaceWatchers);
 		permissions.set(space.key, data.permissions);
 		attachmentItems.push(...data.attachmentItems);
@@ -432,6 +472,7 @@ export async function fetchWikiLive(
 		watchersSkipped: options.privateApis !== true,
 		pageLikes,
 		pageLikesSkipped: options.privateApis !== true,
+		socialShapeKeys,
 	};
 }
 
