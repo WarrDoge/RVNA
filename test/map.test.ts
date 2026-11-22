@@ -340,6 +340,38 @@ describe("workflow layout", () => {
 		],
 	};
 
+	test("reads the workflow status category from Jira's key", () => {
+		const mapped = mapWorkflowLayout({
+			statuses: [
+				{
+					id: "S<1>",
+					name: "Done",
+					statusId: "fixture-status-done",
+					statusCategory: { key: "done" },
+				},
+				{
+					id: "S<2>",
+					name: "In Progress",
+					statusId: "fixture-status-progress",
+					statusCategory: { key: "indeterminate" },
+				},
+				{
+					id: "S<3>",
+					name: "To Do",
+					statusId: "fixture-status-todo",
+					statusCategory: { key: "new" },
+				},
+			],
+			transitions: [],
+		});
+
+		expect(mapped.statuses.map((status) => status.category)).toEqual([
+			"done",
+			"indeterminate",
+			"new",
+		]);
+	});
+
 	test("maps a global transition as from any and skips create", () => {
 		const mapped = mapWorkflowLayout(layout);
 

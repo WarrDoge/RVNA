@@ -88,6 +88,7 @@ export interface JiraWorkflowLayoutStatus {
 	name: string;
 	statusId?: string | null;
 	statusCategory?: {
+		key?: string;
 		colourName?: string;
 	};
 }

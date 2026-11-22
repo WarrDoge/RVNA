@@ -322,9 +322,19 @@ export interface MappedWorkflowTransition {
 }
 
 function categoryFor(status: JiraWorkflowLayoutStatus) {
+	switch (status.statusCategory?.key) {
+		case "done":
+			return "done" as const;
+		case "indeterminate":
+			return "indeterminate" as const;
+		case "new":
+			return "new" as const;
+	}
 	switch (status.statusCategory?.colourName) {
+		case "green":
 		case "success":
 			return "done" as const;
+		case "yellow":
 		case "inprogress":
 			return "indeterminate" as const;
 		default:
