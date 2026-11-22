@@ -32,14 +32,18 @@ async function ensureRow() {
 		.from(gitlabConfig)
 		.where(eq(gitlabConfig.id, 1))
 		.limit(1);
+	if (!existing) {
+		throw new Error("GitLab configuration row is missing");
+	}
 	return existing;
 }
 
-function decode(value: string | null): string | null {
+function decode(value: string | null, label: string): string | null {
 	if (!value) return null;
 	try {
 		return decryptSecret(value);
-	} catch {
+	} catch (error) {
+		console.error(`GitLab ${label} could not be decrypted`, error);
 		return null;
 	}
 }
@@ -48,8 +52,8 @@ export async function gitlabSettings(): Promise<GitlabSettings> {
 	const row = await ensureRow();
 	return {
 		baseUrl: row.baseUrl,
-		webhookSecret: decode(row.webhookSecret),
-		accessToken: decode(row.accessToken),
+		webhookSecret: decode(row.webhookSecret, "webhook secret"),
+		accessToken: decode(row.accessToken, "access token"),
 		lastDeliveryAt: row.lastDeliveryAt,
 		lastDeliveryStatus: row.lastDeliveryStatus,
 	};
@@ -72,42 +76,35 @@ export async function publicGitlabSettings() {
 	};
 }
 
-export async function saveBaseUrl(baseUrl: string) {
-	await ensureRow();
+async function saveConfig(
+	values: Partial<typeof gitlabConfig.$inferInsert>,
+	updatedAt = new Date(),
+) {
 	await db
-		.update(gitlabConfig)
-		.set({ baseUrl: baseUrl.replace(/\/+$/, ""), updatedAt: new Date() })
-		.where(eq(gitlabConfig.id, 1));
+		.insert(gitlabConfig)
+		.values({ id: 1, ...values, updatedAt })
+		.onConflictDoUpdate({
+			target: gitlabConfig.id,
+			set: { ...values, updatedAt },
+		});
+}
+
+export async function saveBaseUrl(baseUrl: string) {
+	await saveConfig({ baseUrl: baseUrl.replace(/\/+$/, "") });
 }
 
 export async function saveWebhookSecret(secret: string) {
-	await ensureRow();
-	await db
-		.update(gitlabConfig)
-		.set({ webhookSecret: encryptSecret(secret), updatedAt: new Date() })
-		.where(eq(gitlabConfig.id, 1));
+	await saveConfig({ webhookSecret: encryptSecret(secret) });
 }
 
 export async function saveAccessToken(token: string) {
-	await ensureRow();
-	await db
-		.update(gitlabConfig)
-		.set({ accessToken: encryptSecret(token), updatedAt: new Date() })
-		.where(eq(gitlabConfig.id, 1));
+	await saveConfig({ accessToken: encryptSecret(token) });
 }
 
 export async function clearAccessToken() {
-	await ensureRow();
-	await db
-		.update(gitlabConfig)
-		.set({ accessToken: null, updatedAt: new Date() })
-		.where(eq(gitlabConfig.id, 1));
+	await saveConfig({ accessToken: null });
 }
 
 export async function recordDelivery(status: string, at = new Date()) {
-	await ensureRow();
-	await db
-		.update(gitlabConfig)
-		.set({ lastDeliveryAt: at, lastDeliveryStatus: status, updatedAt: at })
-		.where(eq(gitlabConfig.id, 1));
+	await saveConfig({ lastDeliveryAt: at, lastDeliveryStatus: status }, at);
 }
