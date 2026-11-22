@@ -6,6 +6,7 @@ import { requestPath, userForSession, userForToken } from "#lib/server/auth.ts";
 import { env } from "#lib/server/env.ts";
 import { jsonResponse } from "#lib/server/http.ts";
 import { passwordPage } from "#lib/server/http-svelte.ts";
+import { withPermissionData } from "#lib/server/permissions.ts";
 import { skipsSessionGuard } from "#lib/server/public-routes.ts";
 import {
 	dateContext,
@@ -193,10 +194,13 @@ export const sessionHandle: Handle = async ({ event, resolve }) => {
 	return resolve(event);
 };
 
-export const handle = sequence(
+const handleRequest = sequence(
 	securityHeadersHandle,
 	dateContextHandle,
 	sessionHandle,
 );
+
+export const handle: Handle = (input) =>
+	withPermissionData(() => handleRequest(input));
 
 process.once("sveltekit:shutdown", stop);

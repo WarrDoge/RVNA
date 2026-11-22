@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { eq } from "drizzle-orm";
 import type { CurrentUser } from "./auth.ts";
 import { db } from "./db.ts";
@@ -233,7 +234,15 @@ type Data = {
 	globalSchemeId: string | null;
 };
 
+// The data is global, so one request loads it once even for several users; a
+// script or a direct domain call outside a request keeps the per-object cache.
+const requestData = new AsyncLocalStorage<{ data?: Promise<Data> }>();
 const dataCache = new WeakMap<object, Promise<Data>>();
+
+/** Run a request with one permission-data load shared by every check it makes. */
+export function withPermissionData<T>(run: () => T): T {
+	return requestData.run({}, run);
+}
 
 async function loadData(): Promise<Data> {
 	const [projectRows, schemeRows, grantRows, actorRows] = await Promise.all([
@@ -296,9 +305,22 @@ async function loadData(): Promise<Data> {
 }
 
 function getData(user: object) {
+	const scoped = requestData.getStore();
+	if (scoped) {
+		if (!scoped.data) {
+			scoped.data = loadData().catch((error) => {
+				scoped.data = undefined;
+				throw error;
+			});
+		}
+		return scoped.data;
+	}
 	let promise = dataCache.get(user);
 	if (!promise) {
-		promise = loadData();
+		promise = loadData().catch((error) => {
+			dataCache.delete(user);
+			throw error;
+		});
 		dataCache.set(user, promise);
 	}
 	return promise;

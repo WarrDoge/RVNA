@@ -1070,3 +1070,32 @@ test("an edit that sends the unchanged reporter and due date is not refused", as
 		await pool.query("delete from projects where id = $1", [project.id]);
 	}
 });
+
+test("one request loads the global permission data once", async () => {
+	const created = await createIssue(userSession);
+	expect(created.statusCode).toBe(201);
+	const key = created.json().key as string;
+
+	const original = pool.query.bind(pool);
+	const statements: string[] = [];
+	(pool as unknown as { query: typeof pool.query }).query = ((
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		statements.push(typeof query === "string" ? query : (query.text ?? ""));
+		return (original as (...args: unknown[]) => unknown)(query, ...rest);
+	}) as typeof pool.query;
+	try {
+		const response = await inject("PATCH", `/api/issues/${key}`, userSession, {
+			assignee: otherId,
+		});
+		expect(response.statusCode).toBe(200);
+	} finally {
+		(pool as unknown as { query: typeof pool.query }).query = original;
+	}
+
+	const loads = statements.filter((statement) =>
+		statement.includes('from "permission_schemes"'),
+	);
+	expect(loads).toHaveLength(1);
+});
