@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import {
@@ -13,6 +13,7 @@ import {
 	permissionLocalAssignments,
 	permissionLocalRemovals,
 	permissionSchemes,
+	projectRoleActors,
 } from "../src/lib/server/schema.ts";
 import { injectAs, makeUser, newRun, type TestUser } from "./admin-helpers.ts";
 import {
@@ -350,6 +351,127 @@ test("adds and removes a grant, and an imported scheme stays editable", async ()
 			(row) => row.sourceId === importedGrantSource(importedSchemeId),
 		),
 	).toBe(true);
+});
+
+test("a project role grant must name a real role", async () => {
+	const url = `/api/admin/permission-schemes/${copiedSchemeId}/grants`;
+	const missing = await injectAs(app, admin.session, "POST", url, {
+		permissionKey: "ASSIGN_ISSUES",
+		holderType: "projectRole",
+		holderParameter: "not-a-role",
+	});
+	expect(missing.statusCode).toBe(404);
+
+	const added = await injectAs(app, admin.session, "POST", url, {
+		permissionKey: "ASSIGN_ISSUES",
+		holderType: "projectRole",
+		holderParameter: "MEMBER",
+	});
+	expect(added.statusCode).toBe(201);
+	expect(added.json().grant.holderParameter).toBe("member");
+
+	const removed = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`${url}/${added.json().grant.id}`,
+	);
+	expect(removed.statusCode).toBe(204);
+
+	const roleId = `20001-${run}`;
+	const roleNames = ["Alpha Role", "Beta Role", "Gamma Role"];
+	const actorSources = roleNames.map((_, index) => `test:${run}:role:${index}`);
+	await db.insert(projectRoleActors).values(
+		roleNames.map((roleName, index) => ({
+			sourceId: actorSources[index],
+			projectId: index === 1 ? otherProject.projectId : project.projectId,
+			roleId,
+			roleName,
+			actorType: "user",
+			actorParameter: index === 2 ? admin.username : bob.username,
+			raw: {},
+		})),
+	);
+	try {
+		const detail = await schemeDetail(copiedSchemeId);
+		const listed = (detail.json().roles as { id: string; name: string }[])
+			.filter((role) => role.id === roleId)
+			.map((role) => role.name);
+		const missingName = roleNames.find((name) => !listed.includes(name));
+		expect(missingName).toBeDefined();
+		const resolved = await injectAs(app, admin.session, "POST", url, {
+			permissionKey: "LINK_ISSUES",
+			holderType: "projectRole",
+			holderParameter: missingName,
+		});
+		expect(resolved.statusCode).toBe(201);
+		expect(resolved.json().grant.holderParameter).toBe(roleId);
+		await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`${url}/${resolved.json().grant.id}`,
+		);
+	} finally {
+		await db
+			.delete(projectRoleActors)
+			.where(inArray(projectRoleActors.sourceId, actorSources));
+	}
+});
+
+test("concurrent identical grants create one grant", async () => {
+	const url = `/api/admin/permission-schemes/${importedSchemeId}/grants`;
+	const body = {
+		permissionKey: "LINK_ISSUES",
+		holderType: "applicationRole",
+	};
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const request = () => injectAs(app, admin.session, "POST", url, body);
+		const first = request();
+		const second = request();
+		await both;
+		restore();
+		release();
+		const responses = await Promise.all([first, second]);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			201, 409,
+		]);
+		const grants = await db
+			.select({ id: permissionGrants.id })
+			.from(permissionGrants)
+			.where(
+				and(
+					eq(permissionGrants.schemeId, importedSchemeId),
+					eq(permissionGrants.permissionKey, "LINK_ISSUES"),
+					eq(permissionGrants.holderType, "applicationRole"),
+				),
+			);
+		expect(grants).toHaveLength(1);
+		if (grants[0]) {
+			await db
+				.delete(permissionGrants)
+				.where(eq(permissionGrants.id, grants[0].id));
+		}
+	} finally {
+		restore();
+		release();
+	}
 });
 
 test("an application role grant, as the Jira import writes it, can be added again", async () => {
@@ -881,6 +1003,79 @@ test("deletes a scheme only after its projects are removed", async () => {
 		.where(eq(auditLog.entityId, copiedSchemeId));
 	expect(audits.map((row) => row.action)).toContain("permission.scheme.delete");
 });
+test("deleting a scheme waits for a concurrent assignment", async () => {
+	const [local] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `test:${run}:delete-race`,
+			name: `Delete race ${run}`,
+			projectIds: [],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	const original = db.transaction.bind(db);
+	let release = () => {};
+	let entered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const removal = injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/permission-schemes/${local.id}`,
+		);
+		await started;
+		restore();
+		const assigned = await injectAs(
+			app,
+			admin.session,
+			"POST",
+			`/api/admin/permission-schemes/${local.id}/projects`,
+			{ projectId: otherProject.projectId },
+		);
+		expect(assigned.statusCode).toBe(200);
+		release();
+		const removed = await removal;
+		expect(removed.statusCode).toBe(409);
+
+		const rows = await db
+			.select({ id: permissionSchemes.id })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, local.id));
+		expect(rows).toHaveLength(1);
+		const assignments = await db
+			.select({ schemeId: permissionLocalAssignments.schemeId })
+			.from(permissionLocalAssignments)
+			.where(eq(permissionLocalAssignments.projectId, otherProject.projectId));
+		expect(assignments.some((row) => row.schemeId === local.id)).toBe(true);
+	} finally {
+		restore();
+		release();
+		await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/permission-schemes/${local.id}/projects/${otherProject.projectId}`,
+		);
+		await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/permission-schemes/${local.id}`,
+		);
+	}
+});
+
 test("assigning a project leaves the global scheme untouched", async () => {
 	let [global] = await db
 		.select({

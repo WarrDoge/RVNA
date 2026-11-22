@@ -187,6 +187,18 @@ async function canonicalHolder(
 	holderType: string,
 	parameter: string,
 ): Promise<string | null> {
+	if (holderType === "projectRole") {
+		const wanted = parameter.toLowerCase();
+		const [row] = await db
+			.select({ roleId: projectRoleActors.roleId })
+			.from(projectRoleActors)
+			.where(
+				sql`lower(${projectRoleActors.roleId}) = ${wanted} or lower(${projectRoleActors.roleName}) = ${wanted}`,
+			)
+			.limit(1);
+		if (row) return row.roleId;
+		return ["admin", "member", "viewer"].includes(wanted) ? wanted : null;
+	}
 	if (holderType === "user") {
 		const [row] = await db
 			.select({ username: users.username })
@@ -416,25 +428,29 @@ export async function addPermissionGrant(
 		throw new HttpError(404, "The permission holder was not found");
 	}
 
-	const existing = await db
-		.select({ id: permissionGrants.id })
-		.from(permissionGrants)
-		.where(
-			and(
-				eq(permissionGrants.schemeId, scheme.id),
-				eq(permissionGrants.permissionKey, body.permissionKey),
-				eq(permissionGrants.holderType, body.holderType),
-				parameter === null
-					? sql`${permissionGrants.holderParameter} is null`
-					: sql`lower(${permissionGrants.holderParameter}) = ${parameter.toLowerCase()}`,
-			),
-		)
-		.limit(1);
-	if (existing.length > 0) {
-		throw new HttpError(409, "That permission grant already exists");
-	}
-
 	const [grant] = await db.transaction(async (tx) => {
+		await tx
+			.select({ id: permissionSchemes.id })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id))
+			.for("update");
+		const [existing] = await tx
+			.select({ id: permissionGrants.id })
+			.from(permissionGrants)
+			.where(
+				and(
+					eq(permissionGrants.schemeId, scheme.id),
+					eq(permissionGrants.permissionKey, body.permissionKey),
+					eq(permissionGrants.holderType, body.holderType),
+					parameter === null
+						? sql`${permissionGrants.holderParameter} is null`
+						: sql`lower(${permissionGrants.holderParameter}) = ${parameter.toLowerCase()}`,
+				),
+			)
+			.limit(1);
+		if (existing) {
+			throw new HttpError(409, "That permission grant already exists");
+		}
 		const rows = await tx
 			.insert(permissionGrants)
 			.values({
@@ -678,23 +694,43 @@ export async function deletePermissionScheme(actor: CurrentUser, id: string) {
 	if (!scheme) {
 		throw new HttpError(404, "Permission scheme not found");
 	}
-	const projectIds = scheme.projectIds ?? [];
-	if (projectIds.length > 0) {
-		const byId = await projectMap();
-		const keys = projectsFor(projectIds, byId).map((project) => project.key);
-		const names =
-			keys.length > 0 ? keys.join(", ") : `${projectIds.length} project(s)`;
-		throw new HttpError(
-			409,
-			`The permission scheme ${scheme.name} is still assigned to ${names}. Remove the project${projectIds.length === 1 ? "" : "s"} from the scheme before deleting it.`,
-		);
-	}
 
-	const grants = await db
-		.select({ id: permissionGrants.id })
-		.from(permissionGrants)
-		.where(eq(permissionGrants.schemeId, scheme.id));
 	await db.transaction(async (tx) => {
+		const [locked] = await tx
+			.select({
+				id: permissionSchemes.id,
+				name: permissionSchemes.name,
+				projectIds: permissionSchemes.projectIds,
+			})
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id))
+			.for("update");
+		if (!locked) throw new HttpError(404, "Permission scheme not found");
+		const [assignment] = await tx
+			.select({ projectId: permissionLocalAssignments.projectId })
+			.from(permissionLocalAssignments)
+			.where(eq(permissionLocalAssignments.schemeId, scheme.id))
+			.limit(1);
+		const projectIds = [
+			...new Set([
+				...(locked.projectIds ?? []),
+				...(assignment ? [assignment.projectId] : []),
+			]),
+		];
+		if (projectIds.length > 0) {
+			const byId = await projectMap();
+			const keys = projectsFor(projectIds, byId).map((project) => project.key);
+			const names =
+				keys.length > 0 ? keys.join(", ") : `${projectIds.length} project(s)`;
+			throw new HttpError(
+				409,
+				`The permission scheme ${locked.name} is still assigned to ${names}. Remove the project${projectIds.length === 1 ? "" : "s"} from the scheme before deleting it.`,
+			);
+		}
+		const grants = await tx
+			.select({ id: permissionGrants.id })
+			.from(permissionGrants)
+			.where(eq(permissionGrants.schemeId, scheme.id));
 		await tx
 			.delete(permissionGrants)
 			.where(eq(permissionGrants.schemeId, scheme.id));
@@ -705,9 +741,9 @@ export async function deletePermissionScheme(actor: CurrentUser, id: string) {
 			action: "permission.scheme.delete",
 			entityType: "permission_scheme",
 			entityId: scheme.id,
-			summary: `Deleted permission scheme ${scheme.name}`,
+			summary: `Deleted permission scheme ${locked.name}`,
 			changes: {
-				from: { scheme: scheme.name, grants: grants.length },
+				from: { scheme: locked.name, grants: grants.length },
 				to: null,
 			},
 		});
