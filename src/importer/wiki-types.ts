@@ -1,3 +1,7 @@
+/**
+ * Confluence sends `userKey`/`username` or `email`/`emailAddress` depending on
+ * the endpoint; mapping prefers `userKey` and `email`.
+ */
 export interface ConfluenceUserRef {
 	type?: string;
 	username?: string;
@@ -221,14 +225,4 @@ export interface WikiSpaceData {
 	spaceWatchers: WikiSocialUser[];
 	/** The watcher response had an unexpected shape; do not reconcile. */
 	socialShapeMismatch?: boolean;
-}
-
-export interface WikiDataset {
-	users: WikiUser[];
-	spaces: WikiSpaceData[];
-}
-
-export interface WikiMacroUsage {
-	name: string;
-	pages: Set<string>;
 }
