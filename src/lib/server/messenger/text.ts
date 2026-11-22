@@ -1,8 +1,8 @@
 import { env } from "../env.ts";
 
 export const SUMMARY_LIMIT = 255;
-// Escaping can grow text five times and the cut adds a mark; the portal accepts at most 200,000 characters of HTML.
-export const DESCRIPTION_LIMIT = 39_000;
+// Escaping can grow text six times and the cut adds a mark; the portal accepts at most 200,000 characters of HTML.
+export const DESCRIPTION_LIMIT = 33_000;
 export const COMMENT_NOTICE_LIMIT = 300;
 export const RATE_LIMIT = 5;
 export const RATE_WINDOW_MS = 10 * 60 * 1000;
