@@ -44,6 +44,11 @@ export const resolutionRefSchema = z.object({
 	name: z.string(),
 });
 
+export const idNameRefSchema = z.object({
+	id: z.uuid(),
+	name: z.string(),
+});
+
 export const projectTypeSchema = z.enum(["software", "service_desk"]);
 
 export const projectRefSchema = z.object({
@@ -91,8 +96,8 @@ export const versionSchema = z.object({
 	description: z.string().nullable(),
 	released: z.boolean(),
 	archived: z.boolean(),
-	startDate: z.string().nullable(),
-	releaseDate: z.string().nullable(),
+	startDate: z.iso.date().nullable(),
+	releaseDate: z.iso.date().nullable(),
 });
 
 export const workflowSchema = z.object({
@@ -188,9 +193,9 @@ export const issueDetailSchema = z.object({
 	epic: issueRefSchema.nullable(),
 	epicIssues: z.array(issueRefSchema),
 	labels: z.array(z.string()),
-	components: z.array(z.object({ id: z.uuid(), name: z.string() })),
-	fixVersions: z.array(z.object({ id: z.uuid(), name: z.string() })),
-	affectsVersions: z.array(z.object({ id: z.uuid(), name: z.string() })),
+	components: z.array(idNameRefSchema),
+	fixVersions: z.array(idNameRefSchema),
+	affectsVersions: z.array(idNameRefSchema),
 	links: z.array(issueLinkGroupSchema),
 	attachments: z.array(attachmentSchema),
 	watchers: z.object({ count: z.number().int(), watching: z.boolean() }),
@@ -200,7 +205,7 @@ export const issueDetailSchema = z.object({
 		timeSpent: z.number().int().nullable(),
 	}),
 	storyPoints: z.number().nullable(),
-	dueDate: z.string().nullable(),
+	dueDate: z.iso.date().nullable(),
 	created: z.iso.datetime().nullable(),
 	updated: z.iso.datetime().nullable(),
 	resolved: z.iso.datetime().nullable(),
