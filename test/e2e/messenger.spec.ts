@@ -100,6 +100,9 @@ test.afterAll(async () => {
 		await client.query("delete from issue_types where id = $1", [issueTypeId]);
 	}
 	await client.query("delete from messenger_config");
+	await client.query(
+		"update users set messenger_matrix_id = null where messenger_matrix_id is not null",
+	);
 	await client.end();
 });
 
