@@ -78,7 +78,7 @@ export class FakeMatrix {
 	constructor(options: FakeMatrixOptions = {}) {
 		this.botUserId = options.botUserId ?? "@ticket-bot:matrix.test";
 		this.token = options.token ?? "test-matrix-token";
-		this.port = options.port ?? 5176;
+		this.port = options.port ?? 0;
 	}
 
 	async start() {

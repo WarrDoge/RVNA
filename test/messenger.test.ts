@@ -148,7 +148,7 @@ beforeAll(async () => {
 	app = buildServer();
 	await app.ready();
 
-	fake = await new FakeMatrix({ port: 5176 }).start();
+	fake = await new FakeMatrix().start();
 
 	const admin = await login(app, {
 		sub: `${tag}-admin`,

@@ -80,7 +80,7 @@ test.beforeAll(async () => {
 		[requestTypeId],
 	);
 
-	fake = await new FakeMatrix({ port: 5176 }).start();
+	fake = await new FakeMatrix().start();
 });
 
 test.afterAll(async () => {

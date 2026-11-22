@@ -36,9 +36,16 @@ test("overlapping priority reorders are sent in order and the last one wins", as
 
 	await page.goto("/secure/admin/ViewPriorities.jspa");
 	const rows = page.locator("tbody tr");
-	await expect(rows.nth(0)).toContainText(names[0] as string);
-	await expect(rows.nth(1)).toContainText(names[1] as string);
-	await expect(rows.nth(2)).toContainText(names[2] as string);
+	// Other tests leave their own default priority behind, so read this test's
+	// rows in table order rather than assuming they start at the top.
+	const order = async () => {
+		const texts = await rows.allTextContents();
+		return texts.flatMap((text) => {
+			const name = names.find((candidate) => text.includes(candidate));
+			return name ? [name] : [];
+		});
+	};
+	await expect.poll(order).toEqual(names);
 
 	let requests = 0;
 	await page.route("**/api/admin/priorities/order", async (route) => {
@@ -56,14 +63,10 @@ test("overlapping priority reorders are sent in order and the last one wins", as
 		.getByRole("button", { name: `Move priority ${names[0]} down` })
 		.click();
 
-	await expect(rows.nth(0)).toContainText(names[1] as string);
-	await expect(rows.nth(1)).toContainText(names[2] as string);
-	await expect(rows.nth(2)).toContainText(names[0] as string);
+	await expect.poll(order).toEqual([names[1], names[2], names[0]]);
 	await expect.poll(() => requests).toBe(2);
 	await page.waitForLoadState("networkidle");
 
 	await page.reload();
-	await expect(rows.nth(0)).toContainText(names[1] as string);
-	await expect(rows.nth(1)).toContainText(names[2] as string);
-	await expect(rows.nth(2)).toContainText(names[0] as string);
+	await expect.poll(order).toEqual([names[1], names[2], names[0]]);
 });
