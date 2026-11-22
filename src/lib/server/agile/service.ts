@@ -1338,6 +1338,7 @@ async function targetContainerPlan(
 	}
 	let mode: "sprint" | "kanban" | "backlog";
 	let sprintId: string | null = null;
+	let writesSprint = body.sprintId !== undefined;
 	if (body.sprintId !== undefined && body.sprintId !== null) {
 		const [sprint] = await db
 			.select()
@@ -1361,10 +1362,11 @@ async function targetContainerPlan(
 		}
 		mode = board.type === "scrum" ? "sprint" : "kanban";
 		sprintId = active?.id ?? null;
+		writesSprint = board.type === "scrum";
 	} else {
 		mode = board.type === "kanban" ? "kanban" : "backlog";
 	}
-	return { conditions, mode, sprintId, extra };
+	return { conditions, mode, sprintId, extra, writesSprint };
 }
 
 export async function listBoards(actor: CurrentUser) {
@@ -2060,7 +2062,7 @@ export async function moveIssues(
 						.where(eq(issues.id, row.id));
 				}
 			}
-			if (body.sprintId !== undefined) {
+			if (targetPlan?.writesSprint) {
 				await tx.delete(issueSprints).where(
 					and(
 						inArray(

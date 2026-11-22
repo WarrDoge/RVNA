@@ -599,6 +599,28 @@ describe("board data and moves", () => {
 		]);
 	});
 
+	test("a column-only move puts the issue into the active sprint", async () => {
+		const issue = await createIssue(ownerSession, "Column only issue", "0|co");
+		const progress = scrumBoard.columns.find(
+			(column) => column.name === "In Progress",
+		);
+		if (!progress) throw new Error("The In Progress column is missing");
+		const response = await move(ownerSession, {
+			issues: [issue.key],
+			columnId: progress.id,
+			statusId: progressStatusId,
+		});
+		expect(response.statusCode).toBe(200);
+		const memberships = await db
+			.select({ sprintId: issueSprints.sprintId, isOpen: issueSprints.isOpen })
+			.from(issueSprints)
+			.where(
+				and(eq(issueSprints.issueId, issue.id), eq(issueSprints.isOpen, true)),
+			);
+		expect(memberships).toEqual([{ sprintId: sprint1Id, isOpen: true }]);
+		await db.delete(issues).where(eq(issues.id, issue.id));
+	});
+
 	test("transitions on drop and rejects unreachable columns", async () => {
 		const progressColumn = scrumBoard.columns.find(
 			(column) => column.name === "In Progress",
