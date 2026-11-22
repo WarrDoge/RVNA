@@ -30,6 +30,10 @@ import {
 } from "./project-settings.ts";
 import { enqueueGitlabDelivery } from "./queue.ts";
 
+type BrowseContext = NonNullable<
+	Awaited<ReturnType<typeof issuePermissionContext>>
+>;
+
 function payloadObject(payload: unknown) {
 	return (
 		typeof payload === "object" && payload !== null && !Array.isArray(payload)
@@ -168,13 +172,20 @@ export const gitlabVersionSchema = z.object({ version: z.string() });
 
 export type ProjectGitlabInput = z.infer<typeof projectGitlabBody>;
 
-export async function getIssueDevelopment(actor: CurrentUser, key: string) {
-	const context = await issuePermissionContext(key);
-	if (!context) throw new HttpError(404, "Issue not found");
-	if (!(await can(actor, "BROWSE_PROJECTS", context.project, context))) {
+export async function getIssueDevelopment(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	const permission = context ?? (await issuePermissionContext(key));
+	if (!permission) throw new HttpError(404, "Issue not found");
+	if (
+		!context &&
+		!(await can(actor, "BROWSE_PROJECTS", permission.project, permission))
+	) {
 		throw new HttpError(404, "Issue not found");
 	}
-	const development = await issueDevelopment(key);
+	const development = await issueDevelopment(permission.key);
 	if (!development) throw new HttpError(404, "Issue not found");
 	return development;
 }
