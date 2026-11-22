@@ -192,19 +192,22 @@ async function visibleRecipients(
 	const desk = input.internal ? await deskByProjectId(issue.projectId) : null;
 	if (input.internal && !desk) return [];
 
-	const kept: Recipient[] = [];
-	for (const recipient of recipients) {
-		const viewer = {
-			id: recipient.id,
-			username: recipient.username,
-			isAdmin: recipient.isAdmin,
-			groups: await effectiveGroups(recipient.id),
-		};
-		if (desk && !(await isAgent(viewer, desk))) continue;
-		if (!(await viewerProjectIds(viewer)).includes(issue.projectId)) continue;
-		kept.push(recipient);
-	}
-	return kept;
+	const kept = await Promise.all(
+		recipients.map(async (recipient) => {
+			const viewer = {
+				id: recipient.id,
+				username: recipient.username,
+				isAdmin: recipient.isAdmin,
+				groups: await effectiveGroups(recipient.id),
+			};
+			if (desk && !(await isAgent(viewer, desk))) return null;
+			if (!(await viewerProjectIds(viewer)).includes(issue.projectId)) {
+				return null;
+			}
+			return recipient;
+		}),
+	);
+	return kept.filter((recipient): recipient is Recipient => recipient !== null);
 }
 
 async function recordIssueEventUnsafe(input: IssueEventInput) {
@@ -278,9 +281,9 @@ async function recordIssueEventUnsafe(input: IssueEventInput) {
 		await db.insert(notifications).values(rows);
 	}
 
-	try {
-		for (const { recipient, kind } of emails) {
-			if (!recipient.settings.emailNotifications) continue;
+	for (const { recipient, kind } of emails) {
+		if (!recipient.settings.emailNotifications) continue;
+		try {
 			const batchEvent: BatchEvent = {
 				kind,
 				actorId: input.actor.id,
@@ -304,9 +307,12 @@ async function recordIssueEventUnsafe(input: IssueEventInput) {
 				),
 				now,
 			);
+		} catch (error) {
+			console.error(
+				"notification email: could not queue a notification",
+				error,
+			);
 		}
-	} catch (error) {
-		console.error("notification email: could not queue a notification", error);
 	}
 }
 
@@ -374,14 +380,13 @@ export const notificationSettingsSchema = z.object({
 export const unreadSchema = z.object({ unread: z.number().int() });
 
 function visibleNotification(userId: string, visible: string[]) {
-	const projectFilter =
-		visible.length === 0
-			? sql`false`
-			: sql`exists (
-				select 1 from issues i
-				where i.id = notifications.issue_id
-					and i.project_id = any(${sql.param(visible)}::uuid[])
-			)`;
+	// A notification outlives its issue: only hide it while the issue still
+	// exists in a project the user cannot browse.
+	const projectFilter = sql`not exists (
+		select 1 from issues i
+		where i.id = notifications.issue_id
+			and not (i.project_id = any(${sql.param(visible)}::uuid[]))
+	)`;
 	return and(eq(notifications.userId, userId), projectFilter);
 }
 
@@ -477,11 +482,12 @@ export async function unreadNotifications(user: CurrentUser) {
 }
 
 export async function markAllNotificationsRead(user: CurrentUser) {
+	const visible = await visibleProjectIds(user);
 	await db
 		.update(notifications)
 		.set({ readAt: new Date() })
 		.where(
-			and(eq(notifications.userId, user.id), isNull(notifications.readAt)),
+			and(visibleNotification(user.id, visible), isNull(notifications.readAt)),
 		);
 	return { unread: 0 };
 }

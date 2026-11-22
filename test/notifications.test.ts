@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { setMailTransport } from "../src/lib/server/mail.ts";
 import { recordIssueEvent } from "../src/lib/server/notifications.ts";
 import {
 	emailBatches,
+	issues,
 	issueTypes,
 	notifications,
 	permissionGrants,
@@ -30,6 +31,25 @@ import {
 	login,
 } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
+
+const mailFailure = vi.hoisted(() => ({ remaining: 0 }));
+
+vi.mock("../src/lib/server/mail.ts", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../src/lib/server/mail.ts")>();
+	return {
+		...actual,
+		queueEmailEvents: async (
+			...args: Parameters<typeof actual.queueEmailEvents>
+		) => {
+			if (mailFailure.remaining > 0) {
+				mailFailure.remaining -= 1;
+				throw new Error("mail transport unavailable");
+			}
+			return actual.queueEmailEvents(...args);
+		},
+	};
+});
 
 const run = randomUUID().slice(0, 8);
 const tag = `test-${run}`;
@@ -499,6 +519,19 @@ test("deleting an issue notifies watchers and keeps the notification", async () 
 	const rows = await rowsFor(ids.watcher, issue.key);
 	expect(rows.map((row) => row.kind)).toContain("deleted");
 	expect(rows[0].issueKey).toBe(issue.key);
+
+	const list = await inject("GET", "/api/notifications", sessions.watcher);
+	const body = list.json() as {
+		notifications: { id: string; issue: { key: string } }[];
+	};
+	const deleted = body.notifications.find((row) => row.issue.key === issue.key);
+	expect(deleted).toBeDefined();
+	const read = await inject(
+		"POST",
+		`/api/notifications/${deleted?.id}/read`,
+		sessions.watcher,
+	);
+	expect(read.statusCode).toBe(200);
 });
 
 test("notification actors use the local avatar endpoint", async () => {
@@ -748,6 +781,125 @@ test("watchers can be listed, added and removed", async () => {
 		{ userId: randomUUID() },
 	);
 	expect(unknown.statusCode).toBe(400);
+});
+
+test("one recipient's email failure does not drop the rest of the batch", async () => {
+	const issue = await createIssue("reporter", { assignee: ids.assignee });
+	await watch(issue.key, ids.watcher);
+	setMailTransport({ sendMail: async () => ({}) });
+	mailFailure.remaining = 1;
+	try {
+		await recordIssueEvent({
+			issue: {
+				id: issue.id,
+				key: issue.key,
+				summary: issue.summary,
+				reporterId: ids.reporter,
+				assigneeId: ids.assignee,
+			},
+			actor: { id: ids.actor, displayName: "Test actor" },
+			kind: "commented",
+			commentHtml: "<p>A comment</p>",
+		});
+
+		const emails = await db
+			.select({ userId: emailBatches.userId })
+			.from(emailBatches)
+			.where(eq(emailBatches.issueId, issue.id));
+		expect(emails).toHaveLength(2);
+		for (const email of emails) {
+			expect([ids.reporter, ids.assignee, ids.watcher]).toContain(email.userId);
+		}
+	} finally {
+		setMailTransport(null);
+		mailFailure.remaining = 0;
+		await db.delete(emailBatches).where(eq(emailBatches.issueId, issue.id));
+	}
+});
+
+test("marking all read keeps notifications from projects the user cannot browse", async () => {
+	const hiddenKey = `H${run.slice(0, 5).toUpperCase()}`;
+	const [hiddenProject] = await db
+		.insert(projects)
+		.values({
+			sourceId: `${tag}:hidden-project`,
+			key: hiddenKey,
+			name: `${tag} hidden project`,
+			projectType: "software",
+			lastIssueNumber: 0,
+		})
+		.returning();
+	const [scheme] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `${tag}:hidden-scheme`,
+			name: `${tag} hidden scheme`,
+			projectIds: [hiddenProject.id],
+			raw: {},
+		})
+		.returning();
+	await db.insert(permissionGrants).values({
+		sourceId: `${tag}:hidden-browse`,
+		schemeId: scheme.id,
+		permissionKey: "BROWSE_PROJECTS",
+		holderType: "projectRole",
+		holderParameter: "member",
+		raw: {},
+	});
+	const [hiddenIssue] = await db
+		.insert(issues)
+		.values({
+			sourceId: `${tag}:hidden-issue`,
+			projectId: hiddenProject.id,
+			number: 1,
+			key: `${hiddenKey}-1`,
+			typeId: taskTypeId,
+			statusId: todoStatusId,
+			summary: `Hidden issue ${run}`,
+		})
+		.returning();
+	const [notification] = await db
+		.insert(notifications)
+		.values({
+			userId: ids.idle,
+			issueId: hiddenIssue.id,
+			issueKey: hiddenIssue.key,
+			issueSummary: hiddenIssue.summary,
+			actorId: ids.actor,
+			kind: "commented",
+			direct: true,
+			payload: {
+				changes: [],
+				commentHtml: null,
+				attachmentName: null,
+				worklogSeconds: null,
+				worklogComment: null,
+			},
+		})
+		.returning();
+
+	try {
+		const mark = await inject(
+			"POST",
+			"/api/notifications/mark-all-read",
+			sessions.idle,
+		);
+		expect(mark.statusCode).toBe(200);
+		const [row] = await db
+			.select({ readAt: notifications.readAt })
+			.from(notifications)
+			.where(eq(notifications.id, notification.id));
+		expect(row.readAt).toBeNull();
+	} finally {
+		await db.delete(notifications).where(eq(notifications.id, notification.id));
+		await db.delete(projects).where(eq(projects.id, hiddenProject.id));
+		await db
+			.delete(permissionGrants)
+			.where(eq(permissionGrants.schemeId, scheme.id));
+		await db
+			.delete(permissionSchemes)
+			.where(eq(permissionSchemes.id, scheme.id));
+	}
 });
 
 test("a recipient who lost project access gets neither a row nor an email", async () => {
