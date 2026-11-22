@@ -65,43 +65,75 @@ afterAll(async () => {
 	await admin.end();
 });
 
-test("the repair merges groups that differ only by case and keeps both members", {
+test("the repair merges case-only groups and their filter shares", {
 	timeout: 60_000,
 }, async () => {
 	const groupName = "Migration Case Group";
-	const first = await client.query<{ id: string }>(
-		"insert into users (username, display_name) values ($1, $2) returning id",
-		["migration-case-first", "Migration Case First"],
-	);
-	const second = await client.query<{ id: string }>(
-		"insert into users (username, display_name) values ($1, $2) returning id",
-		["migration-case-second", "Migration Case Second"],
-	);
-	const upper = await client.query<{ id: string }>(
-		"insert into groups (name, local) values ($1, false) returning id",
+	const users = [];
+	for (const [index, username] of [
+		"migration-case-first",
+		"migration-case-second",
+		"migration-case-third",
+	].entries()) {
+		const user = await client.query<{ id: string }>(
+			"insert into users (username, display_name) values ($1, $2) returning id",
+			[username, `Migration Case ${index + 1}`],
+		);
+		users.push(user.rows[0].id);
+	}
+	const groups = [];
+	for (const name of [
+		groupName,
+		groupName.toLowerCase(),
+		groupName.toUpperCase(),
+	]) {
+		const group = await client.query<{ id: string }>(
+			"insert into groups (name, local) values ($1, false) returning id",
+			[name],
+		);
+		groups.push(group.rows[0].id);
+	}
+	for (const [index, groupId] of groups.entries()) {
+		await client.query(
+			"insert into user_groups (user_id, group_id, source) values ($1, $2, 'oidc')",
+			[users[index], groupId],
+		);
+	}
+	const keeper = await client.query<{ id: string }>(
+		"select id from groups where lower(name) = lower($1) order by id limit 1",
 		[groupName],
 	);
-	const lower = await client.query<{ id: string }>(
-		"insert into groups (name, local) values ($1, false) returning id",
-		[groupName.toLowerCase()],
+	const keeperId = keeper.rows[0].id;
+	const duplicates = groups.filter((id) => id !== keeperId);
+	const filter = await client.query<{ id: string }>(
+		"insert into filters (name, jql, owner_id) values ($1, $2, $3) returning id",
+		["Migration filter", "project = DEMO", users[0]],
 	);
-	await client.query(
-		"insert into user_groups (user_id, group_id, source) values ($1, $2, 'oidc'), ($3, $4, 'oidc')",
-		[first.rows[0].id, upper.rows[0].id, second.rows[0].id, lower.rows[0].id],
-	);
+	for (const groupId of duplicates) {
+		await client.query(
+			"insert into filter_shares (filter_id, group_id) values ($1, $2)",
+			[filter.rows[0].id, groupId],
+		);
+	}
 
 	await migrate(drizzle(client), { migrationsFolder });
 
-	const groups = await client.query<{ id: string }>(
+	const remaining = await client.query<{ id: string }>(
 		"select id from groups where lower(name) = lower($1)",
 		[groupName],
 	);
-	expect(groups.rows).toHaveLength(1);
+	expect(remaining.rows).toHaveLength(1);
+	expect(remaining.rows[0].id).toBe(keeperId);
 	const members = await client.query<{ user_id: string }>(
 		"select user_id from user_groups where group_id = $1 order by user_id",
-		[groups.rows[0].id],
+		[keeperId],
 	);
 	expect(members.rows.map((row) => row.user_id).sort()).toEqual(
-		[first.rows[0].id, second.rows[0].id].sort(),
+		[...users].sort(),
 	);
+	const shares = await client.query<{ group_id: string }>(
+		"select group_id from filter_shares where filter_id = $1",
+		[filter.rows[0].id],
+	);
+	expect(shares.rows).toEqual([{ group_id: keeperId }]);
 });

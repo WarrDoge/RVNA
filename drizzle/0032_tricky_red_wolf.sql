@@ -20,14 +20,13 @@ ON CONFLICT DO NOTHING;--> statement-breakpoint
 DELETE FROM user_groups ug
 USING group_merge gm
 WHERE ug.group_id = gm.duplicate_id;--> statement-breakpoint
-UPDATE filter_shares fs
-SET group_id = gm.keep_id
-FROM group_merge gm
-WHERE fs.group_id = gm.duplicate_id
-  AND NOT EXISTS (
-    SELECT 1 FROM filter_shares other
-    WHERE other.filter_id = fs.filter_id AND other.group_id = gm.keep_id
-  );--> statement-breakpoint
+INSERT INTO filter_shares (filter_id, group_id, created_at, updated_at)
+SELECT DISTINCT ON (fs.filter_id, gm.keep_id)
+       fs.filter_id, gm.keep_id, fs.created_at, fs.updated_at
+FROM filter_shares fs
+JOIN group_merge gm ON gm.duplicate_id = fs.group_id
+ORDER BY fs.filter_id, gm.keep_id, fs.created_at, fs.id
+ON CONFLICT DO NOTHING;--> statement-breakpoint
 DELETE FROM filter_shares fs
 USING group_merge gm
 WHERE fs.group_id = gm.duplicate_id;--> statement-breakpoint
