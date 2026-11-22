@@ -45,6 +45,15 @@ export async function applyTransition(
 		.for("update");
 	if (!locked || locked.statusId !== issue.statusId) return null;
 
+	if (requestedResolutionId) {
+		const [resolution] = await tx
+			.select({ id: resolutions.id })
+			.from(resolutions)
+			.where(eq(resolutions.id, requestedResolutionId))
+			.limit(1);
+		if (!resolution) return null;
+	}
+
 	const [current] = await tx
 		.select({
 			statusId: issues.statusId,
@@ -149,14 +158,6 @@ export async function transitionIssue(
 	actorId: string | null,
 	options: { resolutionId?: string | null; via?: string | null } = {},
 ): Promise<HistoryItem[] | false> {
-	if (options.resolutionId && transition.to.category === "done") {
-		const [row] = await db
-			.select({ id: resolutions.id })
-			.from(resolutions)
-			.where(eq(resolutions.id, options.resolutionId))
-			.limit(1);
-		if (!row) return false;
-	}
 	const items = await db.transaction((tx) =>
 		applyTransition(
 			tx,

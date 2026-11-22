@@ -9,6 +9,7 @@ import {
 	statuses,
 	users,
 } from "../src/lib/server/schema.ts";
+import { applyTransition } from "../src/lib/server/transitions.ts";
 import { moveIssues } from "../src/lib/server/workflows.ts";
 
 const run = randomUUID().slice(0, 8);
@@ -94,4 +95,53 @@ test("a move without a condition is refused instead of moving every issue", asyn
 	expect(message).toBe("moveIssues needs a condition");
 	const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
 	expect(row.statusId).toBe(fromStatusId);
+});
+
+test("an unknown resolution is refused on a non-done transition that asks for one", async () => {
+	const [target] = await db
+		.insert(statuses)
+		.values({
+			sourceId: `move-progress-${run}`,
+			name: "In Progress",
+			category: "indeterminate",
+		})
+		.returning();
+	try {
+		const [row] = await db.select().from(issues).where(eq(issues.id, issueId));
+		const result = await db.transaction((tx) =>
+			applyTransition(
+				tx,
+				{
+					id: row.id,
+					statusId: row.statusId,
+					statusName: "Open",
+					statusCategory: "new",
+					resolutionId: null,
+					resolutionName: null,
+					resolved: null,
+				},
+				{
+					id: randomUUID(),
+					name: "Start progress",
+					asksResolution: true,
+					to: {
+						id: target.id,
+						name: "In Progress",
+						category: "indeterminate",
+					},
+				},
+				authorId,
+				randomUUID(),
+			),
+		);
+		expect(result).toBeNull();
+		const [after] = await db
+			.select()
+			.from(issues)
+			.where(eq(issues.id, issueId));
+		expect(after.statusId).toBe(fromStatusId);
+		expect(after.resolutionId).toBeNull();
+	} finally {
+		await db.delete(statuses).where(eq(statuses.id, target.id));
+	}
 });
