@@ -1,4 +1,13 @@
-import { and, asc, desc, eq, ilike, inArray, sql } from "drizzle-orm";
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	ilike,
+	inArray,
+	notInArray,
+	sql,
+} from "drizzle-orm";
 import { z } from "zod";
 import type {
 	DraftInfo,
@@ -191,6 +200,9 @@ export async function searchPages(
 				q ? ilike(pages.title, `%${escapeLike(q)}%`) : undefined,
 				spaceKey ? eq(spaces.key, spaceKey) : undefined,
 				inArray(pages.spaceId, readable),
+				wiki.hiddenPageIds.size > 0
+					? notInArray(pages.id, [...wiki.hiddenPageIds])
+					: undefined,
 			),
 		)
 		.orderBy(
@@ -284,6 +296,7 @@ export async function pageEditSummary(actor: CurrentUser, id: string) {
 /** The trash buttons the actor may use: delete restores, administer purges. */
 export async function trashPermissions(actor: CurrentUser, spaceKey: string) {
 	const space = await loadSpace(db, spaceKey);
+	await requireReadableSpace(actor, space.id);
 	const grants = await spaceGrants(actor, space.id);
 	return {
 		canRestore: can(grants, "delete") || can(grants, "delete_own"),

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { pool } from "../src/lib/server/db.ts";
+import { trashPermissions } from "../src/lib/server/wiki-edit/support.ts";
 import {
 	type Client,
 	doc,
@@ -278,6 +279,24 @@ describe("space permission mapping", () => {
 		expect(
 			(await wiki.admin.put(`/api/wiki/pages/${page.id}`, updateBody)).status,
 		).toBe(200);
+	});
+
+	test("trash permissions need a readable space", async () => {
+		const own = await wiki.space("TP");
+		const actor = {
+			id: nobody.id,
+			username: nobody.username,
+			displayName: nobody.username,
+			email: null,
+			avatarUrl: null,
+			groups: [],
+			isAdmin: false,
+			mustChangePassword: false,
+			hasPassword: false,
+		};
+		await expect(trashPermissions(actor, own.key)).rejects.toMatchObject({
+			status: 403,
+		});
 	});
 });
 

@@ -552,6 +552,32 @@ describe("editor support", () => {
 		expect(hits.body).toHaveLength(20);
 	});
 
+	test("restricted pages do not consume the search result budget", async () => {
+		const own = await wiki.space("SR");
+		await wiki.grant(own.id, { userId: editor.id }, ["read", "create"]);
+		const prefix = `ZNeedle ${wiki.run}`;
+		const hidden: string[] = [];
+		for (let i = 0; i < 45; i++) {
+			const page = await wiki.page(editor, own.key, `${prefix} A${i}`);
+			hidden.push(page.id);
+		}
+		const visible: string[] = [];
+		for (let i = 0; i < 20; i++) {
+			const page = await wiki.page(editor, own.key, `${prefix} Z${i}`);
+			visible.push(page.id);
+		}
+		await pool.query(
+			`insert into page_restrictions (source_id, page_id, operation, user_id)
+			 select $1 || ':' || id, id, 'read', $2 from unnest($3::uuid[]) as id`,
+			[`fat:test-${wiki.run}-search`, wiki.admin.id, hidden],
+		);
+		const hits = await editor.get(
+			`/api/wiki/edit/page-search?q=${encodeURIComponent(prefix)}&spaceKey=${own.key}`,
+		);
+		const hitIds = hits.body.map((hit: { id: string }) => hit.id).sort();
+		expect(hitIds).toEqual([...visible].sort());
+	});
+
 	test("page search with an empty q lists recent pages without a database error", async () => {
 		const hits = await wiki.admin.get("/api/wiki/edit/page-search?q=");
 		expect(hits.status).toBe(200);
