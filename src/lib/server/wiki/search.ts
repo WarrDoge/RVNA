@@ -36,17 +36,14 @@ function accessFilter(access: WikiAccess) {
 	const ids = [...access.readableSpaceIds];
 	const readable =
 		ids.length > 0
-			? sql`p.space_id in (${sql.join(
-					ids.map((id) => sql`${id}`),
-					sql`, `,
-				)})`
+			? sql`p.space_id = any(${sql.param(ids)}::uuid[])`
 			: sql`false`;
 	if (access.hiddenPageIds.size === 0) return readable;
-	const hidden = sql.join(
-		[...access.hiddenPageIds].map((id) => sql`${id}`),
-		sql`, `,
-	);
-	return sql`${readable} and p.id not in (${hidden})`;
+	return sql`${readable} and not (p.id = any(${sql.param([...access.hiddenPageIds])}::uuid[]))`;
+}
+
+function escapeLike(value: string) {
+	return value.replace(/[%_\\]/g, "\\$&");
 }
 
 function plainText(html: string | null): string {
@@ -117,8 +114,8 @@ export async function searchWikiPages(
 	if (query !== "") {
 		filters.push(sql`(
 			p.search @@ websearch_to_tsquery('simple', ${query})
-			or p.title ilike ${`%${query.replace(/[%_\\]/g, "\\$&")}%`}
-			or similarity(p.title, ${query}) > 0.3
+			or p.title ilike ${`%${escapeLike(query)}%`}
+			or (p.title % ${query} and similarity(p.title, ${query}) > 0.3)
 		)`);
 	}
 	if (options.spaceKey) {
@@ -156,7 +153,7 @@ export async function searchWikiPages(
 					setweight(to_tsvector('simple', p.title), 'A')
 					|| setweight(coalesce(p.search, ''::tsvector), 'B'),
 					websearch_to_tsquery('simple', ${query})
-				) + case when p.title ilike ${`%${query.replace(/[%_\\]/g, "\\$&")}%`} then 0.5 else 0 end
+				) + case when p.title ilike ${`%${escapeLike(query)}%`} then 0.5 else 0 end
 				+ case when similarity(p.title, ${query}) > 0.3 then 0.25 else 0 end`;
 
 	const total = await db.execute(sql`
@@ -228,11 +225,11 @@ export async function suggestWikiPages(
 		join spaces s on s.id = p.space_id
 		where p.status = 'current'
 			and ${accessFilter(access)}
-			and (p.title ilike ${`%${trimmed.replace(/[%_\\]/g, "\\$&")}%`}
+			and (p.title ilike ${`%${escapeLike(trimmed)}%`}
 				or similarity(p.title, ${trimmed}) > 0.25)
 		order by
 			case when lower(p.title) = lower(${trimmed}) then 0 else 1 end,
-			case when p.title ilike ${`${trimmed.replace(/[%_\\]/g, "\\$&")}%`} then 0 else 1 end,
+			case when p.title ilike ${`${escapeLike(trimmed)}%`} then 0 else 1 end,
 			similarity(p.title, ${trimmed}) desc
 		limit ${Math.min(Math.max(limit, 1), 20)}
 	`);
