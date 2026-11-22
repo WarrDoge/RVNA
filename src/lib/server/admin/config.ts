@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { statusCategorySchema } from "../api-schemas.ts";
 import type { CurrentUser } from "../auth.ts";
@@ -15,6 +15,7 @@ import {
 	linkTypes,
 	priorities,
 	projectIssueTypes,
+	projectWorkflows,
 	resolutions,
 	statuses,
 	workflowStatuses,
@@ -1364,6 +1365,21 @@ export async function updateStatus(
 	};
 }
 
+async function workflowsForIssuesInStatus(statusId: string) {
+	return db
+		.selectDistinct({ id: workflows.id, name: workflows.name })
+		.from(issues)
+		.innerJoin(
+			projectWorkflows,
+			sql`${projectWorkflows.workflowId} = coalesce(
+				(select pw.workflow_id from project_workflows pw where pw.project_id = ${issues.projectId} and pw.issue_type_id = ${issues.typeId}),
+				(select pw.workflow_id from project_workflows pw where pw.project_id = ${issues.projectId} and pw.issue_type_id is null)
+			)`,
+		)
+		.innerJoin(workflows, eq(workflows.id, projectWorkflows.workflowId))
+		.where(eq(issues.statusId, statusId));
+}
+
 export async function deleteStatus(
 	actor: CurrentUser,
 	id: string,
@@ -1416,6 +1432,35 @@ export async function deleteStatus(
 			`${plural(count, "issue uses", "issues use")} the status "${row.name}"`,
 			{ details: { count, canMigrate: true } },
 		);
+	}
+
+	if (target && count > 0) {
+		const affected = await workflowsForIssuesInStatus(row.id);
+		if (affected.length > 0) {
+			const allowed = await db
+				.select({ workflowId: workflowStatuses.workflowId })
+				.from(workflowStatuses)
+				.where(
+					and(
+						eq(workflowStatuses.statusId, target.id),
+						inArray(
+							workflowStatuses.workflowId,
+							affected.map((workflow) => workflow.id),
+						),
+					),
+				);
+			const allowedIds = new Set(allowed.map((entry) => entry.workflowId));
+			const offending = affected.filter(
+				(workflow) => !allowedIds.has(workflow.id),
+			);
+			if (offending.length > 0) {
+				throw new HttpError(
+					400,
+					`The status "${target.name}" is not part of the ${offending.length === 1 ? "workflow" : "workflows"} ${offending.map((workflow) => `"${workflow.name}"`).join(", ")}. Choose a status from the same workflow.`,
+					{ details: { workflows: offending } },
+				);
+			}
+		}
 	}
 
 	await db.transaction(async (tx) => {

@@ -11,6 +11,7 @@ import {
 	linkTypes,
 	priorities,
 	projects,
+	projectWorkflows,
 	resolutions,
 	statuses,
 	workflowStatuses,
@@ -40,6 +41,7 @@ const created = {
 	linkTypes: [] as string[],
 	issues: [] as string[],
 	workflows: [] as string[],
+	projectWorkflows: [] as string[],
 };
 
 type IssueTypeRow = {
@@ -102,6 +104,11 @@ afterAll(async () => {
 	await app.close();
 	if (created.issues.length > 0) {
 		await db.delete(issues).where(inArray(issues.id, created.issues));
+	}
+	if (created.projectWorkflows.length > 0) {
+		await db
+			.delete(projectWorkflows)
+			.where(inArray(projectWorkflows.id, created.projectWorkflows));
 	}
 	if (created.workflows.length > 0) {
 		await db.delete(workflows).where(inArray(workflows.id, created.workflows));
@@ -834,6 +841,90 @@ describe("statuses", () => {
 		expect(body.canMigrate).toBe(false);
 		expect(body.error).toContain(workflow.name);
 		expect(body.workflows).toEqual([{ id: workflow.id, name: workflow.name }]);
+	});
+
+	test("refuses to migrate issues to a status of another workflow", async () => {
+		const source = await createRow<StatusRow>(
+			"/api/admin/statuses",
+			{ name: name("Workflow source"), category: "new" },
+			created.statuses,
+		);
+		const other = await createRow<StatusRow>(
+			"/api/admin/statuses",
+			{ name: name("Workflow other"), category: "indeterminate" },
+			created.statuses,
+		);
+		const target = await createRow<StatusRow>(
+			"/api/admin/statuses",
+			{ name: name("Workflow target"), category: "done" },
+			created.statuses,
+		);
+		const [issueWorkflow] = await db
+			.insert(workflows)
+			.values({
+				sourceId: `${tag}:workflow:issue`,
+				name: name("Issue workflow"),
+			})
+			.returning();
+		created.workflows.push(issueWorkflow.id);
+		await db.insert(workflowStatuses).values({
+			sourceId: `${tag}:workflow-status:issue`,
+			workflowId: issueWorkflow.id,
+			statusId: other.id,
+		});
+		const [targetWorkflow] = await db
+			.insert(workflows)
+			.values({
+				sourceId: `${tag}:workflow:target`,
+				name: name("Target workflow"),
+			})
+			.returning();
+		created.workflows.push(targetWorkflow.id);
+		await db.insert(workflowStatuses).values({
+			sourceId: `${tag}:workflow-status:target`,
+			workflowId: targetWorkflow.id,
+			statusId: target.id,
+		});
+		const [projectWorkflow] = await db
+			.insert(projectWorkflows)
+			.values({
+				sourceId: `${tag}:project-workflow:target`,
+				projectId,
+				workflowId: issueWorkflow.id,
+			})
+			.returning();
+		created.projectWorkflows.push(projectWorkflow.id);
+
+		const type = await createRow<IssueTypeRow>(
+			"/api/admin/issue-types",
+			{ name: name("Type for workflow statuses") },
+			created.issueTypes,
+		);
+		const issue = await insertIssue({ typeId: type.id, statusId: source.id });
+
+		try {
+			const refused = await call(
+				"DELETE",
+				`/api/admin/statuses/${source.id}?migrateTo=${target.id}`,
+			);
+			expect(refused.statusCode).toBe(400);
+			expect(refused.json().error).toContain(issueWorkflow.name);
+
+			const [kept] = await db
+				.select({ statusId: issues.statusId })
+				.from(issues)
+				.where(eq(issues.id, issue.id));
+			expect(kept?.statusId).toBe(source.id);
+			const [stillThere] = await db
+				.select({ id: statuses.id })
+				.from(statuses)
+				.where(eq(statuses.id, source.id));
+			expect(stillThere?.id).toBe(source.id);
+		} finally {
+			await db
+				.delete(projectWorkflows)
+				.where(eq(projectWorkflows.id, projectWorkflow.id));
+		}
 	});
 
 	test("refuses to delete a used status and migrates its issues", async () => {
