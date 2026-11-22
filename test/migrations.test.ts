@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import pg from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 
@@ -17,7 +20,9 @@ scratchUrl.pathname = `/${scratch}`;
 const admin = new pg.Client({ connectionString: adminUrl.toString() });
 let created = false;
 
-function migrateInChild(calls = 1) {
+const dbModule = pathToFileURL(resolve("src/lib/server/db.ts")).href;
+
+function migrateInChild(calls = 1, cwd = process.cwd()) {
 	return new Promise<{ code: number | null; output: string }>(
 		(resolveChild) => {
 			const child = spawn(
@@ -25,10 +30,10 @@ function migrateInChild(calls = 1) {
 				[
 					"--input-type=module",
 					"-e",
-					`const db = await import("./src/lib/server/db.ts"); await Promise.all(Array.from({ length: ${calls} }, () => db.runMigrations())); await db.pool.end();`,
+					`const db = await import(${JSON.stringify(dbModule)}); await Promise.all(Array.from({ length: ${calls} }, () => db.runMigrations())); await db.pool.end();`,
 				],
 				{
-					cwd: process.cwd(),
+					cwd,
 					env: { ...process.env, DATABASE_URL: scratchUrl.toString() },
 					stdio: ["ignore", "pipe", "pipe"],
 				},
@@ -96,6 +101,18 @@ test("two processes migrate an empty database without a race", {
 		}
 	} finally {
 		await client.end();
+	}
+});
+
+test("migrations are found from another working directory", {
+	timeout: 60_000,
+}, async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "rvna-migration-cwd-"));
+	try {
+		const result = await migrateInChild(1, cwd);
+		expect(result.code, result.output).toBe(0);
+	} finally {
+		await rm(cwd, { recursive: true, force: true });
 	}
 });
 

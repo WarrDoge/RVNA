@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
@@ -49,6 +49,11 @@ function proxy<T extends object>(target: () => T): T {
 export const pool = proxy(getPool);
 export const db = proxy(getDb);
 
+/** The migrations sit next to the source tree, whatever the process working directory is. */
+const MIGRATIONS_FOLDER = fileURLToPath(
+	new URL("../../../drizzle", import.meta.url),
+);
+
 /** One lock shared by every process that migrates this database. */
 export const MIGRATION_LOCK = 7_203_117_042;
 
@@ -61,7 +66,7 @@ export async function runMigrations() {
 	try {
 		await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK]);
 		await migrate(drizzle(client), {
-			migrationsFolder: resolve("drizzle"),
+			migrationsFolder: MIGRATIONS_FOLDER,
 		});
 	} finally {
 		try {
