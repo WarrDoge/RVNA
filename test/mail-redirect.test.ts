@@ -124,6 +124,33 @@ test("an explicit null redirect keeps the real recipient", async () => {
 	).toBeUndefined();
 });
 
+test("an address object or list keeps a readable original recipient", () => {
+	const single = redirectMessage(
+		{
+			to: { name: "Ada Lovelace", address: "ada@example.test" },
+			text: "Body",
+		},
+		"redirect@example.test",
+	);
+	expect((single.headers as Record<string, string>)["X-Original-To"]).toBe(
+		"Ada Lovelace <ada@example.test>",
+	);
+
+	const list = redirectMessage(
+		{
+			to: [
+				{ name: "Ada Lovelace", address: "ada@example.test" },
+				{ address: "grace@example.test" },
+			],
+			text: "Body",
+		},
+		"redirect@example.test",
+	);
+	expect((list.headers as Record<string, string>)["X-Original-To"]).toBe(
+		"Ada Lovelace <ada@example.test>, grace@example.test",
+	);
+});
+
 test("the redirect drops every other recipient and a custom envelope", () => {
 	const redirected = redirectMessage(
 		{

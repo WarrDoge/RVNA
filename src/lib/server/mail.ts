@@ -74,7 +74,7 @@ export async function queueEmailEvents(
 		);
 		const windowStart = new Date(now.getTime() - BATCH_WINDOW_MS);
 		const [open] = await tx
-			.select({ id: emailBatches.id })
+			.select({ id: emailBatches.id, sendAfter: emailBatches.sendAfter })
 			.from(emailBatches)
 			.where(
 				and(
@@ -97,7 +97,7 @@ export async function queueEmailEvents(
 				.where(and(eq(emailBatches.id, open.id), isNull(emailBatches.sentAt)))
 				.returning({ id: emailBatches.id });
 			if (appended) {
-				return { id: appended.id, created: false, sendAfter: null };
+				return { id: appended.id, sendAfter: open.sendAfter };
 			}
 		}
 
@@ -115,10 +115,13 @@ export async function queueEmailEvents(
 				createdAt: now,
 			})
 			.returning({ id: emailBatches.id });
-		return { id: created.id, created: true, sendAfter };
+		return { id: created.id, sendAfter };
 	});
 
-	if (result.created && result.sendAfter) {
+	// Re-send on every append: the earlier job may already have run (and skipped
+	// because email was off) or exhausted its retries. The singleton key keeps a
+	// still-pending job from being queued twice.
+	if (result.sendAfter) {
 		try {
 			await scheduler?.({ id: result.id, sendAfter: result.sendAfter });
 		} catch (error) {
@@ -133,8 +136,23 @@ export async function queueEmailEvents(
  * A non-production instance can hold real addresses while SMTP points at a test server.
  * Redirect every message there and keep the original envelope recipient visible.
  */
+function addressText(value: SendMailOptions["to"]): string {
+	if (value === undefined || value === null) return "";
+	if (typeof value === "string") return value;
+	if (Array.isArray(value)) {
+		return value
+			.map((address) => addressText(address))
+			.filter(Boolean)
+			.join(", ");
+	}
+	const address = value.address ?? "";
+	const name = value.name?.trim();
+	if (!name) return address;
+	return address ? `${name} <${address}>` : name;
+}
+
 export function redirectMessage(message: SendMailOptions, redirectTo: string) {
-	const original = singleLine(String(message.to ?? ""));
+	const original = singleLine(addressText(message.to));
 	const notice = `Originally addressed to: ${original}`;
 	const redirected: SendMailOptions = {
 		...message,
@@ -310,6 +328,8 @@ function eventHtml(event: BatchEvent, issueUrl: string, issueKey: string) {
 	const table = changesTable(event, escapeHtml);
 	if (table) parts.push(table);
 
+	// commentHtml is stored after sanitizeBodyHtml; this renderer trusts that
+	// contract and must never receive raw user input.
 	if (event.commentHtml) {
 		parts.push(
 			`<div style="margin:0 0 12px;padding:10px 12px;border-left:3px solid #dfe1e6;font-size:14px;line-height:20px;color:#172b4d">${event.commentHtml}</div>`,
@@ -387,44 +407,58 @@ ${input.events.map((event) => eventHtml(event, issueUrl, input.issue.key)).join(
 
 export async function startEmailQueue(sender: MailTransport) {
 	const instance = await getBoss();
-	await instance.createQueue(EMAIL_QUEUE, {
-		retryLimit: 5,
-		retryDelay: 30,
-		retryBackoff: true,
-		expireInSeconds: 120,
-		retentionSeconds: 24 * 60 * 60,
-	});
-	await instance.work<{ batchId: string }>(
-		EMAIL_QUEUE,
-		{ batchSize: 1, pollingIntervalSeconds: 2 },
-		async ([job]) => {
-			await deliverEmailBatch(job.data.batchId, { transport: sender });
-		},
-	);
-
-	setEmailScheduler(async ({ id, sendAfter }) => {
-		await instance.send(
+	try {
+		await instance.createQueue(EMAIL_QUEUE, {
+			retryLimit: 5,
+			retryDelay: 30,
+			retryBackoff: true,
+			expireInSeconds: 120,
+			retentionSeconds: 24 * 60 * 60,
+		});
+		await instance.work<{ batchId: string }>(
 			EMAIL_QUEUE,
-			{ batchId: id },
-			{ startAfter: sendAfter, singletonKey: id },
-		);
-	});
-
-	// Batches written while the queue was down have no job; a sent batch skips on delivery.
-	const pending = await db
-		.select({ id: emailBatches.id, sendAfter: emailBatches.sendAfter })
-		.from(emailBatches)
-		.where(isNull(emailBatches.sentAt));
-	const now = new Date();
-	for (const batch of pending) {
-		await instance.send(
-			EMAIL_QUEUE,
-			{ batchId: batch.id },
-			{
-				startAfter: batch.sendAfter > now ? batch.sendAfter : now,
-				singletonKey: batch.id,
+			{ batchSize: 1, pollingIntervalSeconds: 2 },
+			async ([job]) => {
+				await deliverEmailBatch(job.data.batchId, { transport: sender });
 			},
 		);
+
+		setEmailScheduler(async ({ id, sendAfter }) => {
+			await instance.send(
+				EMAIL_QUEUE,
+				{ batchId: id },
+				{ startAfter: sendAfter, singletonKey: id },
+			);
+		});
+
+		// Batches written while the queue was down have no job; a sent batch skips on delivery.
+		const pending = await db
+			.select({ id: emailBatches.id, sendAfter: emailBatches.sendAfter })
+			.from(emailBatches)
+			.where(isNull(emailBatches.sentAt));
+		const now = new Date();
+		for (const batch of pending) {
+			try {
+				await instance.send(
+					EMAIL_QUEUE,
+					{ batchId: batch.id },
+					{
+						startAfter: batch.sendAfter > now ? batch.sendAfter : now,
+						singletonKey: batch.id,
+					},
+				);
+			} catch (error) {
+				// One unreadable batch must not leave the rest of the backlog unscheduled.
+				console.error(
+					"notification email: could not recover a pending batch",
+					error,
+				);
+			}
+		}
+	} catch (error) {
+		setEmailScheduler(null);
+		await instance.offWork(EMAIL_QUEUE).catch(() => undefined);
+		throw error;
 	}
 }
 

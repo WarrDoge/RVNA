@@ -11,6 +11,7 @@ import {
 	deliverEmailBatch,
 	queueEmailEvents,
 	renderNotificationMail,
+	setEmailScheduler,
 	setMailTransport,
 	startEmailQueue,
 	stopEmailQueue,
@@ -114,6 +115,44 @@ test("events on one issue batch inside the window and split after it", async () 
 		start.getTime() + BATCH_WINDOW_MS,
 	);
 	expect(batches[1].events).toHaveLength(1);
+});
+
+test("appending to an open batch schedules the batch again", async () => {
+	setMailTransport({ sendMail: async () => ({}) });
+	const scheduled: { id: string; sendAfter: Date }[] = [];
+	setEmailScheduler(async (batch) => {
+		scheduled.push(batch);
+	});
+	const target = {
+		id: randomUUID(),
+		key: `MAILA-${run.slice(0, 4).toUpperCase()}`,
+		summary: "Appended notification",
+	};
+	const start = new Date("2026-02-01T09:00:00.000Z");
+	try {
+		const first = await queueEmailEvents(
+			recipient,
+			target,
+			[event("commented")],
+			["you are watching it"],
+			start,
+		);
+		const second = await queueEmailEvents(
+			recipient,
+			target,
+			[event("updated")],
+			["you are watching it"],
+			new Date(start.getTime() + 30_000),
+		);
+
+		expect(second).toBe(first);
+		expect(scheduled.map((batch) => batch.id)).toEqual([first, first]);
+		expect(scheduled[1].sendAfter.getTime()).toBe(
+			start.getTime() + BATCH_WINDOW_MS,
+		);
+	} finally {
+		setEmailScheduler(null);
+	}
 });
 
 test("a batch is delivered once with the issue thread headers", async () => {
