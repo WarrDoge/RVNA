@@ -153,6 +153,11 @@ export async function upsertRows(
 
 	const columns = getTableColumns(table) as Record<string, PgColumn>;
 	const idColumn = columns.id;
+	const localChangeKey = options.localChangeColumn
+		? (Object.keys(columns).find(
+				(key) => columns[key] === options.localChangeColumn,
+			) ?? options.localChangeColumn.name)
+		: null;
 	const cache = tableCache(tx, table);
 	if (options.keyColumn) {
 		const wanted = rows.map(keyOf).filter((key) => !cache.requested.has(key));
@@ -182,21 +187,17 @@ export async function upsertRows(
 		}
 
 		ids.set(key, String(existing.id));
-		if (
-			options.localChangeColumn &&
-			!options.overwriteLocal &&
-			existing.locallyChangedAt
-		) {
+		if (localChangeKey && !options.overwriteLocal && existing[localChangeKey]) {
 			keptLocalIds.push(String(existing.id));
 			continue;
 		}
 		let changed = false;
 		const updateValues: CachedRow = { ...row };
 		if (columns.updatedAt) updateValues.updatedAt = new Date();
-		if (options.localChangeColumn) {
+		if (localChangeKey) {
 			// The importer always writes this sentinel; the trigger turns it into NULL.
 			// An application update never writes it, so the trigger sets the marker.
-			updateValues.locallyChangedAt = sql`'epoch'::timestamptz`;
+			updateValues[localChangeKey] = sql`'epoch'::timestamptz`;
 		}
 		for (const [column, value] of Object.entries(row)) {
 			if (value === undefined) {
@@ -251,7 +252,7 @@ export async function upsertRows(
 		}
 		counts.updated++;
 		const cached: CachedRow = { ...existing, ...updateValues };
-		if (options.localChangeColumn) cached.locallyChangedAt = null;
+		if (localChangeKey) cached[localChangeKey] = null;
 		for (const column of options.advanceKeys ?? []) {
 			if (row[column] === undefined) continue;
 			cached[column] = Math.max(
