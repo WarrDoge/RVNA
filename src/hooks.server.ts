@@ -18,7 +18,10 @@ import {
 import { withPermissionData } from "#lib/server/permissions.ts";
 import { skipsSessionGuard } from "#lib/server/public-routes.ts";
 import {
+	canonicalTimeZone,
 	dateContext,
+	FALLBACK_LOCALE,
+	FALLBACK_TIME_ZONE,
 	runWithDateContext,
 	runWithRequestCache,
 } from "#lib/server/request-context.ts";
@@ -27,19 +30,6 @@ import { start, stop } from "#lib/server/runtime.ts";
 export const init: ServerInit = start;
 
 setDateProvider(dateContext);
-
-const fallbackTimeZone = "UTC";
-const fallbackLocale = "en-GB";
-
-function canonicalTimeZone(value: string | null | undefined) {
-	if (!value) return null;
-	try {
-		return new Intl.DateTimeFormat("en", { timeZone: value }).resolvedOptions()
-			.timeZone;
-	} catch {
-		return null;
-	}
-}
 
 function canonicalLocale(value: string | null | undefined) {
 	if (!value) return null;
@@ -73,8 +63,8 @@ function dateContextFor(event: Parameters<Handle>[0]["event"]): DateContext {
 
 	return {
 		timeZone:
-			timeZone ?? canonicalTimeZone(fallbackTimeZone) ?? fallbackTimeZone,
-		locale: locale ?? fallbackLocale,
+			timeZone ?? canonicalTimeZone(FALLBACK_TIME_ZONE) ?? FALLBACK_TIME_ZONE,
+		locale: locale ?? FALLBACK_LOCALE,
 		now: Date.now(),
 	};
 }
