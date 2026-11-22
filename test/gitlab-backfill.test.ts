@@ -4,6 +4,7 @@ import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { backfillProject } from "../src/lib/server/gitlab/backfill.ts";
 import { type FetchLike, GitlabApi } from "../src/lib/server/gitlab/client.ts";
 import { issueDevelopment } from "../src/lib/server/gitlab/development.ts";
+import { issues } from "../src/lib/server/schema.ts";
 import {
 	gitlabBranches,
 	gitlabCommits,
@@ -149,6 +150,26 @@ test("backfills branches, commits and merge requests through the paged API", asy
 		mockGitlab(calls),
 	);
 
+	const [first] = await db
+		.select({ typeId: issues.typeId, statusId: issues.statusId })
+		.from(issues)
+		.where(eq(issues.id, fixture.issueId));
+	if (!first) throw new Error("fixture issue missing");
+	const [unreferenced] = await db
+		.insert(issues)
+		.values({
+			sourceId: `${tag}:issue:unreferenced`,
+			projectId: fixture.projectId,
+			number: 99,
+			key: `${fixture.projectKey}-99`,
+			typeId: first.typeId,
+			statusId: first.statusId,
+			summary: "unreferenced",
+			created: new Date("2026-01-01T00:00:00Z"),
+			updated: new Date("2026-01-01T00:00:00Z"),
+		})
+		.returning();
+
 	const result = await backfillProject(api, projectPath, {
 		now: new Date("2026-06-01T00:00:00Z"),
 		days: 90,
@@ -165,6 +186,9 @@ test("backfills branches, commits and merge requests through the paged API", asy
 	expect(calls.some((call) => call.url.includes("since=2026-03-03"))).toBe(
 		true,
 	);
+	expect(
+		calls.some((call) => call.url.includes("updated_after=2026-03-03")),
+	).toBe(true);
 
 	const branches = await db
 		.select()
@@ -193,4 +217,25 @@ test("backfills branches, commits and merge requests through the paged API", asy
 		commits: 2,
 		mergeRequests: 1,
 	});
+	expect((await issueDevelopment(unreferenced.key))?.counts).toEqual({
+		branches: 0,
+		commits: 0,
+		mergeRequests: 0,
+	});
+
+	await db
+		.update(gitlabMergeRequests)
+		.set({ approvals: 2 })
+		.where(eq(gitlabMergeRequests.iid, 21));
+	const rerun = await backfillProject(api, projectPath, {
+		now: new Date("2026-06-01T00:00:00Z"),
+		days: 90,
+	});
+	expect(rerun.mergeRequests).toBe(1);
+	const [refreshed] = await db
+		.select()
+		.from(gitlabMergeRequests)
+		.where(eq(gitlabMergeRequests.iid, 21));
+	expect(refreshed?.approvals).toBe(2);
+	expect(refreshed?.title).toBe(`${fixture.issueKey} backfilled MR`);
 });
