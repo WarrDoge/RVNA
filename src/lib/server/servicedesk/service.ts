@@ -29,6 +29,8 @@ import {
 import { listQueues, runQueue } from "./queues.ts";
 import { issueSla } from "./sla.ts";
 
+type BrowseContext = Awaited<ReturnType<typeof requireIssuePermissionFor>>;
+
 export interface CreatePortalRequestInput {
 	requestTypeId: string;
 	summary?: string;
@@ -269,8 +271,13 @@ export async function deskQueue(
 	}
 }
 
-export async function deskIssueSla(actor: CurrentUser, key: string) {
-	const issue = await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS");
+export async function deskIssueSla(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	const issue =
+		context ?? (await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS"));
 	const desk = await deskByProjectId(issue.project.id);
 	if (!desk) throw new HttpError(404, "Issue not found");
 	if (!(await isAgent(actor, desk))) {
@@ -280,8 +287,13 @@ export async function deskIssueSla(actor: CurrentUser, key: string) {
 }
 
 /** The customer-request panel shown on an issue the user may browse. */
-export async function issueRequestPanel(actor: CurrentUser, key: string) {
-	await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS");
+export async function issueRequestPanel(
+	actor: CurrentUser,
+	key: string,
+	context?: BrowseContext,
+) {
+	const permission =
+		context ?? (await requireIssuePermissionFor(actor, key, "BROWSE_PROJECTS"));
 
 	const [issue] = await db
 		.select({
@@ -292,11 +304,10 @@ export async function issueRequestPanel(actor: CurrentUser, key: string) {
 		})
 		.from(issues)
 		.leftJoin(requestTypes, eq(requestTypes.id, issues.requestTypeId))
-		.where(eq(issues.key, key.toUpperCase()))
+		.where(eq(issues.id, permission.id))
 		.limit(1);
 	if (!issue) throw new HttpError(404, "Issue not found");
 	const desk = await deskByProjectId(issue.projectId);
-	const upper = key.toUpperCase();
 	return {
 		requestType:
 			issue.requestTypeId && issue.requestTypeName
@@ -306,7 +317,7 @@ export async function issueRequestPanel(actor: CurrentUser, key: string) {
 		portalId: desk?.id ?? null,
 		customerUrl:
 			desk && issue.requestTypeId
-				? `/servicedesk/customer/portal/${desk.id}/${upper}`
+				? `/servicedesk/customer/portal/${desk.id}/${permission.key}`
 				: null,
 		isAgent: desk !== null && (await isAgent(actor, desk)),
 	};
