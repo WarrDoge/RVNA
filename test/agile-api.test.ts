@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { getBacklogAssignees } from "../src/lib/server/agile/service.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	boards,
@@ -15,6 +16,7 @@ import {
 	projectWorkflows,
 	sprints,
 	statuses,
+	users,
 	workflowStatuses,
 	workflows,
 	workflowTransitions,
@@ -637,6 +639,52 @@ describe("board data and moves", () => {
 		]);
 	});
 
+	test("rejects a before and after pair that is not in the target list", async () => {
+		const outside = await createIssue(
+			ownerSession,
+			"Anchor outside the sprint",
+			"0|outside",
+		);
+		const response = await move(ownerSession, {
+			issues: [`${projectKey}-4`],
+			sprintId: sprint1Id,
+			before: outside.key,
+			after: outside.key,
+		});
+		expect(response.statusCode).toBe(400);
+		await db.delete(issues).where(eq(issues.id, outside.id));
+	});
+
+	test("a multi-issue epic move sets the epic on every issue", async () => {
+		const epic = await inject("POST", "/api/issues", ownerSession, {
+			project: projectKey,
+			type: epicTypeId,
+			summary: "Move epic",
+		});
+		expect(epic.statusCode).toBe(201);
+		const epicKey = epic.json().key as string;
+		const epicId = epic.json().id as string;
+		const sprint = await createSprint("Epic move sprint");
+		const first = await createIssue(ownerSession, "Epic move one", "0|em1");
+		const second = await createIssue(ownerSession, "Epic move two", "0|em2");
+		const response = await move(ownerSession, {
+			issues: [first.key, second.key],
+			sprintId: sprint.id,
+			epic: epicKey,
+		});
+		expect(response.statusCode).toBe(200);
+		const rows = await db
+			.select({ id: issues.id, epicId: issues.epicId })
+			.from(issues)
+			.where(inArray(issues.id, [first.id, second.id]));
+		expect(rows).toHaveLength(2);
+		expect(rows.every((row) => row.epicId === epicId)).toBe(true);
+		await db.delete(sprints).where(eq(sprints.id, sprint.id));
+		await db
+			.delete(issues)
+			.where(inArray(issues.id, [first.id, second.id, epicId]));
+	});
+
 	test("a column-only move puts the issue into the active sprint", async () => {
 		const issue = await createIssue(ownerSession, "Column only issue", "0|co");
 		const progress = scrumBoard.columns.find(
@@ -885,6 +933,43 @@ describe("sprints", () => {
 			ownerSession,
 		);
 		expect(deleted.statusCode).toBe(204);
+	});
+
+	test("a sprint removed during completion does not crash the answer", async () => {
+		const sprint = await createSprint("Disappearing sprint");
+		await startSprint(sprint.id);
+		const issue = await createIssue(
+			ownerSession,
+			"Disappearing sprint issue",
+			"0|ds",
+		);
+		await move(ownerSession, { issues: [issue.key], sprintId: sprint.id });
+		const functionName = `test_delete_closed_sprint_${run}`;
+		await pool.query(`
+			create or replace function ${functionName}() returns trigger
+			language plpgsql as $$
+			begin
+				if new.id = '${sprint.id}' and new.state = 'closed' then
+					delete from sprints where id = new.id;
+				end if;
+				return new;
+			end $$`);
+		await pool.query(
+			`create trigger ${functionName} after update on sprints for each row execute function ${functionName}()`,
+		);
+		try {
+			const response = await inject(
+				"POST",
+				`/api/sprints/${sprint.id}/complete`,
+				ownerSession,
+				{},
+			);
+			expect(response.statusCode).toBe(200);
+		} finally {
+			await pool.query(`drop trigger if exists ${functionName} on sprints`);
+			await pool.query(`drop function if exists ${functionName}()`);
+			await db.delete(issues).where(eq(issues.id, issue.id));
+		}
 	});
 
 	test("issues moved into a sprint during completion are counted and moved", {
@@ -1174,6 +1259,76 @@ describe("configuration", () => {
 		const data = await boardData("", configBoard.rapidViewId);
 		expect(data.swimlanes[0].name).toBe("Blocked lane");
 		expect(data.swimlanes[0].issues.map((row) => row.key)).toEqual([issue.key]);
+	});
+
+	test("a database failure while replacing columns is not a validation error", async () => {
+		const functionName = `test_fail_replace_columns_${run}`;
+		await pool.query(`
+			create or replace function ${functionName}() returns trigger
+			language plpgsql as $$
+			begin
+				if new.board_id = '${configBoard.id}' then
+					raise exception 'column replacement failed';
+				end if;
+				return new;
+			end $$`);
+		await pool.query(
+			`create trigger ${functionName} before insert on board_columns for each row execute function ${functionName}()`,
+		);
+		try {
+			const response = await inject(
+				"PUT",
+				`/api/boards/${configBoard.rapidViewId}/columns`,
+				ownerSession,
+				{ columns: [{ name: "Only", statuses: [todoStatusId] }] },
+			);
+			expect(response.statusCode).toBe(500);
+		} finally {
+			await pool.query(
+				`drop trigger if exists ${functionName} on board_columns`,
+			);
+			await pool.query(`drop function if exists ${functionName}()`);
+		}
+	});
+
+	test("a broken stored filter is a 400 for the assignee choices", async () => {
+		const [owner] = await db
+			.select({
+				id: users.id,
+				username: users.username,
+				displayName: users.displayName,
+			})
+			.from(users)
+			.where(eq(users.username, `t-${run}-owner`))
+			.limit(1);
+		if (!owner) throw new Error("The owner is missing");
+		await db
+			.update(boards)
+			.set({ filterJql: "project =" })
+			.where(eq(boards.id, configBoard.id));
+		try {
+			await expect(
+				getBacklogAssignees(
+					{
+						id: owner.id,
+						username: owner.username,
+						displayName: owner.displayName,
+						email: null,
+						avatarUrl: null,
+						groups: [],
+						isAdmin: false,
+						mustChangePassword: false,
+						hasPassword: true,
+					},
+					configBoard.rapidViewId,
+				),
+			).rejects.toMatchObject({ status: 400 });
+		} finally {
+			await db
+				.update(boards)
+				.set({ filterJql: `project = ${projectKey}` })
+				.where(eq(boards.id, configBoard.id));
+		}
 	});
 });
 

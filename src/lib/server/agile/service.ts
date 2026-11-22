@@ -182,9 +182,12 @@ async function loadStatuses(statusIds: string[]): Promise<StatusRow[]> {
 		.where(inArray(statuses.id, statusIds));
 }
 
-async function statusesForProject(projectId: string | null) {
+async function statusesForProject(
+	projectId: string | null,
+	executor: typeof db | Transaction = db,
+) {
 	if (!projectId) return [];
-	const rows = await db
+	const rows = await executor
 		.selectDistinct({
 			id: statuses.id,
 			name: statuses.name,
@@ -199,7 +202,7 @@ async function statusesForProject(projectId: string | null) {
 		.where(eq(projectWorkflows.projectId, projectId))
 		.orderBy(asc(statuses.name));
 	if (rows.length > 0) return rows;
-	return db
+	return executor
 		.selectDistinct({
 			id: statuses.id,
 			name: statuses.name,
@@ -1154,33 +1157,7 @@ async function deriveColumns(
 	boardId: string,
 	projectId: string,
 ) {
-	const rows = await tx
-		.selectDistinct({
-			id: statuses.id,
-			name: statuses.name,
-			category: statuses.category,
-		})
-		.from(projectWorkflows)
-		.innerJoin(
-			workflowStatuses,
-			eq(workflowStatuses.workflowId, projectWorkflows.workflowId),
-		)
-		.innerJoin(statuses, eq(statuses.id, workflowStatuses.statusId))
-		.where(eq(projectWorkflows.projectId, projectId))
-		.orderBy(asc(statuses.name));
-	const list =
-		rows.length > 0
-			? rows
-			: await tx
-					.selectDistinct({
-						id: statuses.id,
-						name: statuses.name,
-						category: statuses.category,
-					})
-					.from(issues)
-					.innerJoin(statuses, eq(statuses.id, issues.statusId))
-					.where(eq(issues.projectId, projectId))
-					.orderBy(asc(statuses.name));
+	const list = await statusesForProject(projectId, tx);
 
 	const groups: { name: string; category: StatusRow["category"] }[] = [
 		{ name: "To Do", category: "new" },
@@ -1405,16 +1382,12 @@ export async function listBoards(actor: CurrentUser) {
 			),
 		)
 		.orderBy(asc(boards.name));
-	const visibleRows: (typeof rows)[number][] = [];
-	for (const row of rows) {
-		if (
-			row.projectId === null &&
-			!(await canAccessProjectlessBoard(row, actor))
-		) {
-			continue;
-		}
-		visibleRows.push(row);
-	}
+	const access = await Promise.all(
+		rows.map((row) =>
+			row.projectId === null ? canAccessProjectlessBoard(row, actor) : true,
+		),
+	);
+	const visibleRows = rows.filter((_, index) => access[index]);
 	return visibleRows.map((row) => ({
 		...boardRef(row),
 		canAdminister:
@@ -1560,14 +1533,7 @@ export async function replaceBoardColumns(
 	if (!(await canManageBoard(board, actor, "ADMINISTER_PROJECTS"))) {
 		throw new HttpError(403, "Only board administrators can change this board");
 	}
-	try {
-		await replaceColumns(board.id, body.columns);
-	} catch (error) {
-		throw new HttpError(
-			400,
-			error instanceof Error ? error.message : "Invalid columns",
-		);
-	}
+	await replaceColumns(board.id, body.columns);
 	const config = await loadBoardConfig(board.rapidViewId);
 	if (!config) throw new HttpError(404, "Board not found");
 	return boardConfig(config.board, config);
@@ -1745,12 +1711,12 @@ export async function getBacklogAssignees(
 	await requireBoard(actor, rapidViewId);
 	const config = await loadBoardConfig(rapidViewId);
 	if (!config) throw new HttpError(404, "Board not found");
-	const conditions = await boardFilterConditions(
-		config.board,
-		actor,
-		{},
-		config,
-	);
+	let conditions: SQL[];
+	try {
+		conditions = await boardFilterConditions(config.board, actor, {}, config);
+	} catch (error) {
+		jqlFailure(error);
+	}
 	const rows = await db
 		.selectDistinct({
 			id: users.id,
@@ -1833,6 +1799,7 @@ export async function moveIssues(
 		}
 	}
 
+	let epicId: string | null = null;
 	if (body.epic !== undefined && body.epic !== null) {
 		const [epic] = await db
 			.select({ id: issues.id })
@@ -1847,6 +1814,7 @@ export async function moveIssues(
 			.limit(1);
 		if (!epic) throw new HttpError(400, "Unknown epic");
 		await requireBrowseIssue(actor, epic.id);
+		epicId = epic.id;
 	}
 
 	const transitions = new Map<
@@ -1989,6 +1957,15 @@ export async function moveIssues(
 			if (body.before && body.after) {
 				nextKey = body.before.toUpperCase();
 				previousKey = body.after.toUpperCase();
+				if (!containerKeys.includes(nextKey)) {
+					throw new HttpError(
+						400,
+						"The before issue is not in the target list",
+					);
+				}
+				if (!containerKeys.includes(previousKey)) {
+					throw new HttpError(400, "The after issue is not in the target list");
+				}
 			} else if (body.before) {
 				nextKey = body.before.toUpperCase();
 				const index = containerKeys.indexOf(nextKey);
@@ -2050,17 +2027,7 @@ export async function moveIssues(
 						.where(eq(issues.id, row.id));
 				}
 				if (body.epic !== undefined) {
-					const [epic] = body.epic
-						? await tx
-								.select({ id: issues.id })
-								.from(issues)
-								.where(eq(issues.key, body.epic.toUpperCase()))
-								.limit(1)
-						: [];
-					await tx
-						.update(issues)
-						.set({ epicId: epic?.id ?? null })
-						.where(eq(issues.id, row.id));
+					await tx.update(issues).set({ epicId }).where(eq(issues.id, row.id));
 				}
 			}
 			if (targetPlan?.writesSprint) {
@@ -2372,7 +2339,7 @@ export async function completeSprint(
 		}
 		targetSprintId = target.id;
 	}
-	const counts = await db.transaction(async (tx) => {
+	const result = await db.transaction(async (tx) => {
 		await lockBoard(tx, board.id);
 		const [current] = await tx
 			.select()
@@ -2398,14 +2365,16 @@ export async function completeSprint(
 				),
 			);
 		const incompleteRows = issueRows.filter((row) => !row.done);
-		await tx
+		const [closed] = await tx
 			.update(sprints)
 			.set({
 				state: "closed",
 				completeDate: new Date(),
 				updatedAt: new Date(),
 			})
-			.where(eq(sprints.id, current.id));
+			.where(eq(sprints.id, current.id))
+			.returning();
+		if (!closed) throw new HttpError(404, "Sprint not found");
 		await tx
 			.update(issueSprints)
 			.set({ isOpen: false })
@@ -2426,19 +2395,15 @@ export async function completeSprint(
 				});
 		}
 		return {
+			sprint: closed,
 			completed: issueRows.filter((row) => row.done).length,
 			incomplete: incompleteRows.length,
 		};
 	});
-	const [closed] = await db
-		.select()
-		.from(sprints)
-		.where(eq(sprints.id, sprint.id))
-		.limit(1);
 	return {
-		sprint: sprintPayload(closed),
-		completed: counts.completed,
-		incomplete: counts.incomplete,
+		sprint: sprintPayload(result.sprint),
+		completed: result.completed,
+		incomplete: result.incomplete,
 		movedToSprintId: targetSprintId,
 	};
 }
