@@ -106,3 +106,16 @@ test("project and issue keys are capped at Fastify's 100-character max", async (
 		expect([url, response.statusCode]).toEqual([url, 400]);
 	}
 });
+
+test("comment, worklog and watcher issue keys are capped too", async () => {
+	const long = "A".repeat(101);
+	const id = randomUUID();
+	for (const [method, url, payload] of [
+		["PATCH", `/api/issues/${long}/comments/${id}`, { body: "x" }],
+		["DELETE", `/api/issues/${long}/worklogs/${id}`, undefined],
+		["DELETE", `/api/issues/${long}/watchers/${id}`, undefined],
+	] as const) {
+		const response = await send(method, url, payload);
+		expect([method, response.statusCode]).toEqual([method, 400]);
+	}
+});

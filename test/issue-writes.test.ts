@@ -327,6 +327,29 @@ afterAll(async () => {
 	await pool.end();
 });
 
+test("an issue description is capped like a comment", async () => {
+	const tooLong = await createIssue(userSession, {
+		description: "x".repeat(200_001),
+	});
+	expect(tooLong.statusCode).toBe(400);
+	expect(tooLong.json()).toMatchObject({ error: "Bad Request" });
+
+	const created = await createIssue(userSession, { description: "short" });
+	expect(created.statusCode).toBe(201);
+	const key = created.json().key as string;
+	const update = await inject("PATCH", `/api/issues/${key}`, userSession, {
+		description: "x".repeat(200_001),
+	});
+	expect(update.statusCode).toBe(400);
+});
+
+test("an issue project key is capped at the project-key limit", async () => {
+	const response = await createIssue(userSession, {
+		project: "P".repeat(101),
+	});
+	expect(response.statusCode).toBe(400);
+});
+
 test("concurrent transitions from one status: one wins, the other is rejected", async () => {
 	const created = await createIssue(userSession);
 	expect(created.statusCode).toBe(201);

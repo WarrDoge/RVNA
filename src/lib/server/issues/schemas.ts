@@ -13,15 +13,15 @@ import { editableCustomFieldSchema } from "../custom-fields.ts";
 
 export const issueParams = z.object({ key: z.string().min(1).max(100) });
 export const commentParams = z.object({
-	key: z.string().min(1),
+	key: z.string().min(1).max(100),
 	id: z.uuid(),
 });
 export const worklogParams = z.object({
-	key: z.string().min(1),
+	key: z.string().min(1).max(100),
 	id: z.uuid(),
 });
 export const watcherParams = z.object({
-	key: z.string().min(1),
+	key: z.string().min(1).max(100),
 	userId: z.uuid(),
 });
 export const linkParams = z.object({ id: z.uuid() });
@@ -31,10 +31,10 @@ export const issueDetailWithCustomFieldsSchema = issueDetailSchema.extend({
 });
 
 export const createIssueBody = z.object({
-	project: z.string().trim().min(1),
+	project: z.string().trim().min(1).max(100),
 	type: z.uuid(),
 	summary: z.string().trim().min(1).max(255),
-	description: z.string().nullable().optional(),
+	description: z.string().max(200_000).nullable().optional(),
 	priority: z.uuid().nullable().optional(),
 	assignee: z.uuid().nullable().optional(),
 	reporter: z.uuid().nullable().optional(),
@@ -54,7 +54,7 @@ export const cloneIssueBody = z
 
 export const updateIssueBody = z.object({
 	summary: z.string().trim().min(1).max(255).optional(),
-	description: z.string().nullable().optional(),
+	description: z.string().max(200_000).nullable().optional(),
 	priority: z.uuid().nullable().optional(),
 	assignee: z.uuid().nullable().optional(),
 	reporter: z.uuid().nullable().optional(),
@@ -98,10 +98,7 @@ export const linkBody = z.object({
 	direction: z.enum(["outward", "inward"]),
 });
 
-export const watchResponse = z.object({
-	count: z.number().int(),
-	watching: z.boolean(),
-});
+export const watchResponse = issueDetailSchema.shape.watchers;
 export const watchersResponse = z.object({
 	watchers: z.array(userRefSchema),
 });
