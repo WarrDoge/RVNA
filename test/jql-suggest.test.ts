@@ -6,6 +6,12 @@ import { loadCatalog } from "../src/lib/server/jql/catalog.ts";
 import * as suggestModule from "../src/lib/server/jql/suggest.ts";
 import { runWithRequestCache } from "../src/lib/server/request-context.ts";
 import {
+	boards,
+	fieldOptions,
+	fields,
+	sprints,
+} from "../src/lib/server/schema.ts";
+import {
 	createProjectFixture,
 	dropProjectFixture,
 	fixtureKey,
@@ -44,10 +50,69 @@ beforeAll(async () => {
 			{ summary: "Zephyr two", labels: ["gamma"] },
 		],
 	});
+
+	const customFields = await db
+		.insert(fields)
+		.values([
+			{
+				sourceId: `customfield_9${run}sprint`,
+				name: `Sprint field ${run}`,
+				type: "array",
+				customKey: "com.example:gh-sprint",
+			},
+			{
+				sourceId: `customfield_9${run}participants`,
+				name: `Participants field ${run}`,
+				type: "array",
+				customKey: "com.example:sd-request-participants",
+			},
+			{
+				sourceId: `customfield_9${run}user`,
+				name: `User field ${run}`,
+				type: "array",
+				customKey: "com.example:multiuserpicker",
+			},
+		])
+		.returning();
+	const userField = customFields.find((field) =>
+		field.sourceId.endsWith("user"),
+	);
+	if (!userField) throw new Error("the user field was not created");
+	await db.insert(fieldOptions).values({
+		sourceId: `${run}-user-option`,
+		fieldId: userField.id,
+		value: `Suggest Option ${run}`,
+	});
+
+	const [board] = await db
+		.insert(boards)
+		.values({
+			rapidViewId: 1_000_000 + Number.parseInt(run.slice(0, 6), 16),
+			sourceId: `fixture:${run}:suggest-board`,
+			name: `Suggest board ${run}`,
+			type: "scrum",
+			filterJql: `project = ${key}`,
+			projectId: fixture.projectId,
+		})
+		.returning();
+	if (!board) throw new Error("the suggestion board was not created");
+	await db.insert(sprints).values({
+		sourceId: `fixture:${run}:suggest-sprint`,
+		boardId: board.id,
+		name: `Suggest Sprint ${run}`,
+		state: "active",
+		sequence: 1,
+	});
 });
 
 afterAll(async () => {
 	if (client) {
+		await pool.query("delete from boards where source_id = $1", [
+			`fixture:${run}:suggest-board`,
+		]);
+		await pool.query("delete from fields where source_id like $1", [
+			`customfield_9${run}%`,
+		]);
 		await dropProjectFixture(client, run);
 		await client.end();
 	}
@@ -85,6 +150,20 @@ test("status, priority and resolution values come from the catalog", async () =>
 test("user fields suggest usernames", async () => {
 	const values = (await suggest("assignee", `t-${run}`)).json().values;
 	expect(values).toContain(`t-${run}-suggest`);
+});
+
+test("custom user fields suggest users by username or display name", async () => {
+	for (const field of [`User field ${run}`, `Participants field ${run}`]) {
+		const values = (await suggest(field, "Suggest")).json().values;
+		expect(values).toContain(`t-${run}-suggest`);
+		expect(values).not.toContain(`Suggest Option ${run}`);
+	}
+});
+
+test("a custom sprint field suggests sprint names", async () => {
+	const values = (await suggest(`Sprint field ${run}`, "Suggest")).json()
+		.values;
+	expect(values).toContain(`Suggest Sprint ${run}`);
 });
 
 test("labels and issue keys are suggested", async () => {

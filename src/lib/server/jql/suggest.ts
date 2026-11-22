@@ -40,29 +40,56 @@ async function issueKeys(prefix: string, limit: number, visible: string[]) {
 	return (result.rows as { key: string }[]).map((row) => row.key);
 }
 
-function customValues(
-	catalog: JqlCatalog,
-	sourceId: string,
+function suggestUsers(
+	users: JqlCatalog["users"],
+	usernames: Set<string>,
 	prefix: string,
 	limit: number,
-	usernames: Set<string>,
 ) {
-	const field = catalog.customFields.find((item) => item.sourceId === sourceId);
-	if (!field || !isVisibleCustomField(field)) return [];
-	const options = catalog.fieldOptions
-		.filter((option) => option.fieldId === field.id)
-		.map((option) => option.value);
-	const matching = options.filter((value) => startsWith(value, prefix));
-	if (matching.length > 0 || !field.customKey?.endsWith(":multiuserpicker")) {
-		return unique(matching).slice(0, limit);
-	}
-	return catalog.users
+	return users
 		.filter(
 			(user) =>
-				startsWith(user.username, prefix) && usernames.has(user.username),
+				usernames.has(user.username) &&
+				(startsWith(user.username, prefix) ||
+					startsWith(user.displayName, prefix)),
 		)
 		.map((user) => user.username)
 		.slice(0, limit);
+}
+
+async function customValues(
+	catalog: JqlCatalog,
+	field: JqlCatalog["customFields"][number],
+	prefix: string,
+	limit: number,
+	usernames: Set<string>,
+	viewer: PermissionUser,
+) {
+	if (!isVisibleCustomField(field)) return [];
+	const customKey = field.customKey ?? "";
+	if (field.type === "array" && customKey.endsWith(":gh-sprint")) {
+		const visible = new Set(await visibleProjectIds(viewer));
+		return unique(
+			catalog.sprints
+				.filter((sprint) => visible.has(sprint.projectId))
+				.map((sprint) => sprint.name)
+				.filter((value) => startsWith(value, prefix)),
+		).slice(0, limit);
+	}
+	if (
+		field.type === "array" &&
+		(customKey.endsWith(":multiuserpicker") ||
+			customKey.includes("sd-request-participants"))
+	) {
+		return suggestUsers(catalog.users, usernames, prefix, limit);
+	}
+	const options = catalog.fieldOptions
+		.filter((option) => option.fieldId === field.id)
+		.map((option) => option.value);
+	return unique(options.filter((value) => startsWith(value, prefix))).slice(
+		0,
+		limit,
+	);
 }
 
 async function suggestValues(
@@ -91,10 +118,11 @@ async function suggestValues(
 		if (!custom) return [];
 		return customValues(
 			loaded,
-			custom.sourceId,
+			custom,
 			prefix,
 			limit,
 			await visibleUsernames(viewer),
+			viewer,
 		);
 	}
 
@@ -139,15 +167,7 @@ async function suggestValues(
 		case "creator":
 		case "watcher": {
 			const usernames = await visibleUsernames(viewer);
-			return (await getCatalog()).users
-				.filter(
-					(user) =>
-						usernames.has(user.username) &&
-						(startsWith(user.username, prefix) ||
-							startsWith(user.displayName, prefix)),
-				)
-				.map((user) => user.username)
-				.slice(0, limit);
+			return suggestUsers((await getCatalog()).users, usernames, prefix, limit);
 		}
 		case "labels": {
 			const visible = await visibleProjectIds(viewer);
