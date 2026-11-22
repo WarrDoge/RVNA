@@ -43,4 +43,41 @@ describe("sanitizeJiraHtml", () => {
 		expect(sanitizeJiraHtml(null, baseUrl)).toBeNull();
 		expect(sanitizeJiraHtml("", baseUrl)).toBeNull();
 	});
+
+	test("returns the value unchanged when the base address cannot be parsed", () => {
+		expect(rewriteJiraUrl("/browse/FIXT-2", "jira.example.test")).toBe(
+			"/browse/FIXT-2",
+		);
+	});
+
+	test("rewrites links on a Jira deployment under a context path", () => {
+		const context = "https://jira.example.test/jira";
+		expect(rewriteJiraUrl("/jira/browse/FIXT-2", context)).toBe(
+			"/browse/FIXT-2",
+		);
+		expect(
+			rewriteJiraUrl(
+				"https://jira.example.test/jira/secure/attachment/67890/fixture.pdf",
+				context,
+			),
+		).toBe("/api/attachments/67890");
+	});
+
+	test("keeps the query string and hash of an issue link", () => {
+		expect(
+			rewriteJiraUrl(
+				`${baseUrl}/browse/FIXT-2?focusedCommentId=123#comment-123`,
+				baseUrl,
+			),
+		).toBe("/browse/FIXT-2?focusedCommentId=123#comment-123");
+	});
+
+	test("adds a safe rel to links that open another window", () => {
+		const html = sanitizeJiraHtml(
+			`<a href="https://example.test/page" target="_blank">example</a>`,
+			baseUrl,
+		);
+		expect(html).toContain('target="_blank"');
+		expect(html).toContain('rel="noopener noreferrer"');
+	});
 });
