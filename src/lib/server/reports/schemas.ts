@@ -1,8 +1,7 @@
 import { z } from "zod";
 
-export const boardParams = z.object({
-	rapidViewId: z.coerce.number().int().positive(),
-});
+export { boardParams } from "../agile/schemas.ts";
+
 export const projectParams = z.object({ key: z.string().min(1).max(100) });
 export const versionParams = z.object({
 	key: z.string().min(1).max(100),
@@ -18,7 +17,7 @@ export const reportQuery = z.object({
 });
 export const velocityQuery = z.object({ estimation: estimationSchema });
 export const cfdQuery = z.object({
-	from: z.string().optional(),
-	to: z.string().optional(),
+	from: z.iso.date().optional(),
+	to: z.iso.date().optional(),
 	assignee: z.string().optional(),
 });
