@@ -840,3 +840,71 @@ test("assigning a project leaves the global scheme untouched", async () => {
 		}
 	}
 });
+test("concurrent assignments keep both projects assigned", async () => {
+	const [local] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `test:${run}:concurrent-local`,
+			name: `Concurrent local ${run}`,
+			projectIds: [],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	const original = db.transaction.bind(db);
+	let release = () => {};
+	let entered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const started = new Promise<void>((resolve) => {
+		entered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const first = injectAs(
+			app,
+			admin.session,
+			"POST",
+			`/api/admin/permission-schemes/${importedSchemeId}/projects`,
+			{ projectId: otherProject.projectId },
+		);
+		await started;
+		restore();
+		const second = await injectAs(
+			app,
+			admin.session,
+			"POST",
+			`/api/admin/permission-schemes/${local.id}/projects`,
+			{ projectId: project.projectId },
+		);
+		expect(second.statusCode).toBe(200);
+		release();
+		const firstResponse = await first;
+		expect(firstResponse.statusCode).toBe(200);
+
+		const rows = await db
+			.select({
+				id: permissionSchemes.id,
+				projectIds: permissionSchemes.projectIds,
+			})
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.sourceId, `test:${run}:concurrent-local`));
+		const [imported] = await db
+			.select({ projectIds: permissionSchemes.projectIds })
+			.from(permissionSchemes)
+			.where(eq(permissionSchemes.id, importedSchemeId));
+		expect(imported.projectIds).toContain(otherProject.projectId);
+		expect(imported.projectIds).not.toContain(project.projectId);
+		expect(rows[0]?.projectIds).toContain(project.projectId);
+		expect(rows[0]?.projectIds).not.toContain(otherProject.projectId);
+	} finally {
+		restore();
+		await db
+			.delete(permissionSchemes)
+			.where(eq(permissionSchemes.id, local.id));
+	}
+});
