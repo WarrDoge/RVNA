@@ -32,8 +32,8 @@ const EXPERIMENTAL = { "X-ExperimentalApi": "opt-in" };
 
 interface Paged<T> {
 	values?: T[];
+	start?: number;
 	isLastPage?: boolean;
-	isLast?: boolean;
 }
 
 function issueAssignee(user: JiraUser | null | undefined) {
@@ -161,6 +161,16 @@ async function fetchPaged<T>(
 			{ headers: EXPERIMENTAL },
 		);
 		const pageValues = page.values ?? [];
+		if (
+			pageValues.length > 0 &&
+			typeof page.start === "number" &&
+			page.start !== start
+		) {
+			console.warn(
+				`pagination did not advance at ${path}: asked for ${start}, got ${page.start}`,
+			);
+			break;
+		}
 		values.push(...pageValues);
 		if (page.isLastPage || pageValues.length === 0) break;
 		start += pageValues.length;
@@ -171,9 +181,8 @@ async function fetchPaged<T>(
 async function fetchServiceDesks(
 	client: JiraClient,
 	projectKeys: Set<string>,
-	options: PrivateApiOptions = {},
+	metricsEnabled: boolean,
 ): Promise<JiraServiceDeskData[]> {
-	const metricsEnabled = !skipPrivateApi(options, "service desk SLA metrics");
 	const desks = await fetchPaged<JiraServiceDeskRef>(
 		client,
 		"/rest/servicedeskapi/servicedesk",
@@ -220,21 +229,27 @@ async function fetchServiceDesks(
 	return result;
 }
 
+async function fetchBoards(client: JiraClient): Promise<{ id: number }[]> {
+	const boards: { id: number }[] = [];
+	for (let startAt = 0; ; ) {
+		const page = await client.getJson<{
+			values?: { id: number }[];
+			isLast?: boolean;
+		}>("/rest/agile/1.0/board", { startAt, maxResults: PAGE_SIZE });
+		const values = page.values ?? [];
+		boards.push(...values);
+		if (page.isLast || values.length === 0) break;
+		startAt += values.length;
+	}
+	return boards;
+}
+
 async function fetchAgileBoards(client: JiraClient): Promise<JiraAgileData> {
-	const boards: JiraBoardData[] = [];
 	try {
-		for (let startAt = 0; ; ) {
-			const page = await client.getJson<{
-				values?: { id: number }[];
-				isLast?: boolean;
-			}>("/rest/agile/1.0/board", { startAt, maxResults: PAGE_SIZE });
-			const values = page.values ?? [];
-			for (const board of values) {
-				boards.push({ id: String(board.id), sprints: [] });
-			}
-			if (page.isLast || values.length === 0) break;
-			startAt += values.length;
-		}
+		const boards = await fetchBoards(client);
+		return {
+			boards: boards.map((board) => ({ id: String(board.id), sprints: [] })),
+		};
 	} catch (error) {
 		if (
 			error instanceof JiraRequestError &&
@@ -244,63 +259,61 @@ async function fetchAgileBoards(client: JiraClient): Promise<JiraAgileData> {
 		}
 		throw error;
 	}
-	return { boards };
 }
 
 async function fetchAgile(client: JiraClient): Promise<JiraAgileData> {
 	const boards: JiraBoardData[] = [];
-	for (let startAt = 0; ; ) {
-		const page = await client.getJson<{
-			values?: { id: number; name?: string }[];
-			isLast?: boolean;
-		}>("/rest/agile/1.0/board", { startAt, maxResults: PAGE_SIZE });
-		const values = page.values ?? [];
-		for (const board of values) {
-			const sprints: JiraSprintData[] = [];
-			try {
-				for (let sprintStart = 0; ; ) {
-					const sprintPage = await client.getJson<{
-						values?: { id: number; state: string }[];
-						isLast?: boolean;
-					}>(`/rest/agile/1.0/board/${board.id}/sprint`, {
-						startAt: sprintStart,
-						maxResults: PAGE_SIZE,
-					});
-					const sprintValues = sprintPage.values ?? [];
-					for (const sprint of sprintValues) {
-						let issueCount = 0;
-						try {
-							const issues = await client.getJson<{ total?: number }>(
-								`/rest/agile/1.0/sprint/${sprint.id}/issue`,
-								{ startAt: 0, maxResults: 0 },
-							);
-							issueCount = issues.total ?? 0;
-						} catch (error) {
-							if (
-								!(error instanceof JiraRequestError) ||
-								error.status !== 404
-							) {
-								throw error;
-							}
-						}
-						sprints.push({
-							id: String(sprint.id),
-							state: sprint.state,
-							issueCount,
-						});
+	for (const board of await fetchBoards(client)) {
+		const sprints: JiraSprintData[] = [];
+		for (let sprintStart = 0; ; ) {
+			const sprintPage = await client
+				.getJson<{
+					values?: { id: number; state: string }[];
+					isLast?: boolean;
+				}>(`/rest/agile/1.0/board/${board.id}/sprint`, {
+					startAt: sprintStart,
+					maxResults: PAGE_SIZE,
+				})
+				.catch((error) => {
+					// Jira answers 400 for a board that has no sprint endpoint.
+					if (error instanceof JiraRequestError && error.status === 400) {
+						return null;
 					}
-					if (sprintPage.isLast || sprintValues.length === 0) break;
-					sprintStart += sprintValues.length;
-				}
-			} catch (error) {
-				if (!(error instanceof JiraRequestError) || error.status !== 400) {
 					throw error;
+				});
+			if (!sprintPage) break;
+			const sprintValues = sprintPage.values ?? [];
+			for (const sprint of sprintValues) {
+				let issueCount = 0;
+				try {
+					const issues = await client.getJson<{ total?: number }>(
+						`/rest/agile/1.0/sprint/${sprint.id}/issue`,
+						{ startAt: 0, maxResults: 1 },
+					);
+					issueCount = issues.total ?? 0;
+				} catch (error) {
+					if (
+						!(error instanceof JiraRequestError) ||
+						(error.status !== 400 && error.status !== 404)
+					) {
+						throw error;
+					}
+					if (error.status === 400) {
+						console.warn(
+							`Skipping issue count for sprint ${sprint.id}: request answered 400`,
+						);
+					}
 				}
+				sprints.push({
+					id: String(sprint.id),
+					state: sprint.state,
+					issueCount,
+				});
 			}
-			boards.push({ id: String(board.id), sprints });
+			if (sprintPage.isLast || sprintValues.length === 0) break;
+			sprintStart += sprintValues.length;
 		}
-		if (page.isLast || values.length === 0) break;
-		startAt += values.length;
+		boards.push({ id: String(board.id), sprints });
 	}
 	return { boards };
 }
@@ -310,26 +323,28 @@ async function fetchFilters(
 	client: JiraClient,
 	ids: string[],
 ): Promise<JiraFilterData[]> {
-	const filters: JiraFilterData[] = [];
-	for (const id of ids) {
-		try {
-			const filter = await client.getJson<{
-				id: string | number;
-				name?: string;
-				jql?: string;
-			}>(`/rest/api/2/filter/${encodeURIComponent(id)}`);
-			filters.push({
-				id: String(filter.id),
-				name: filter.name ?? "",
-				jql: filter.jql ?? "",
-			});
-		} catch (error) {
-			if (!(error instanceof JiraRequestError) || error.status !== 404) {
+	const filters = await Promise.all(
+		ids.map(async (id) => {
+			try {
+				const filter = await client.getJson<{
+					id: string | number;
+					name?: string;
+					jql?: string;
+				}>(`/rest/api/2/filter/${encodeURIComponent(id)}`);
+				return {
+					id: String(filter.id),
+					name: filter.name ?? "",
+					jql: filter.jql ?? "",
+				};
+			} catch (error) {
+				if (error instanceof JiraRequestError && error.status === 404) {
+					return null;
+				}
 				throw error;
 			}
-		}
-	}
-	return filters;
+		}),
+	);
+	return filters.filter((filter): filter is JiraFilterData => filter !== null);
 }
 
 async function fetchWorkflowResolutionTransitions(
@@ -382,31 +397,43 @@ export async function fetchJiraLive(
 		fetchUsers(client),
 	]);
 
+	const projectResults = await Promise.all(
+		projects.map(async (project) => {
+			const [data, projectIssues] = await Promise.all([
+				fetchProject(client, project),
+				fetchIssues(client, project.key),
+			]);
+			return { data, projectIssues };
+		}),
+	);
 	const projectData: JiraProjectData[] = [];
 	const issues = new Map<string, JiraIssueData>();
-	for (const project of projects) {
-		const [data, projectIssues] = await Promise.all([
-			fetchProject(client, project),
-			fetchIssues(client, project.key),
-		]);
+	for (const { data, projectIssues } of projectResults) {
 		projectData.push(data);
 		for (const issue of projectIssues) issues.set(issue.key, issue);
 	}
 
 	const projectKeys = new Set(projects.map((project) => project.key));
+	const workflowSkipped = skipPrivateApi(options, "workflow layouts");
+	const serviceDeskMetricsSkipped =
+		options.serviceDesks && skipPrivateApi(options, "service desk SLA metrics");
+	let agileRequest: Promise<JiraAgileData | null>;
+	if (options.agile) {
+		agileRequest = fetchAgile(client);
+	} else if (options.boardsOnly) {
+		agileRequest = fetchAgileBoards(client);
+	} else {
+		agileRequest = Promise.resolve(null);
+	}
 	const [workflowResolutionTransitions, serviceDesks, agile, filters] =
 		await Promise.all([
-			skipPrivateApi(options, "workflow layouts")
+			workflowSkipped
 				? Promise.resolve(new Map<string, string[]>())
 				: fetchWorkflowResolutionTransitions(client, options),
 			options.serviceDesks
-				? fetchServiceDesks(client, projectKeys, options)
+				? fetchServiceDesks(client, projectKeys, !serviceDeskMetricsSkipped)
 				: Promise.resolve(null),
-			options.agile
-				? fetchAgile(client)
-				: options.boardsOnly
-					? fetchAgileBoards(client)
-					: Promise.resolve(null),
+			agileRequest,
 			options.filters
 				? fetchFilters(client, options.filterIds ?? [])
 				: Promise.resolve(null),
@@ -428,10 +455,9 @@ export async function fetchJiraLive(
 		resolutions: resolutions.map((resolution) => resolution.id),
 		linkTypes: linkTypes.map((linkType) => linkType.id),
 		workflowResolutionTransitions,
-		workflowResolutionSkipped: options.privateApis !== true,
+		workflowResolutionSkipped: workflowSkipped,
 		serviceDesks,
-		serviceDeskMetricsSkipped:
-			options.serviceDesks === true && options.privateApis !== true,
+		serviceDeskMetricsSkipped,
 		agile,
 		filters,
 	};
