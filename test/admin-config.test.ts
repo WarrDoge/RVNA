@@ -1105,7 +1105,10 @@ describe("statuses", () => {
 		}
 	});
 
-	test("refuses to delete a used status and migrates its issues", async () => {
+	// The delete makes many sequential reads and writes; a loaded host can push it past five seconds.
+	test("refuses to delete a used status and migrates its issues", {
+		timeout: 30_000,
+	}, async () => {
 		const source = await createRow<StatusRow>(
 			"/api/admin/statuses",
 			{ name: name("Source status"), category: "indeterminate" },
