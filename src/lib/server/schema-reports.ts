@@ -39,19 +39,15 @@ export const boardSprints = pgTable(
  * Sprint field can keep sprints an issue was moved out of, so history alone
  * cannot always tell which issues were punted at sprint close.
  */
-export const sprintReports = pgTable(
-	"sprint_reports",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		sprintId: uuid("sprint_id")
-			.notNull()
-			.unique()
-			.references(() => sprints.id, { onDelete: "cascade" }),
-		rapidViewId: integer("rapid_view_id").notNull(),
-		contents: jsonb("contents").notNull(),
-		fetchedAt: timestamp("fetched_at", { withTimezone: true })
-			.notNull()
-			.defaultNow(),
-	},
-	(table) => [index("sprint_reports_sprint_idx").on(table.sprintId)],
-);
+export const sprintReports = pgTable("sprint_reports", {
+	id: uuid("id").primaryKey().defaultRandom(),
+	sprintId: uuid("sprint_id")
+		.notNull()
+		.unique()
+		.references(() => sprints.id, { onDelete: "cascade" }),
+	rapidViewId: integer("rapid_view_id").notNull(),
+	contents: jsonb("contents").$type<Record<string, unknown>>().notNull(),
+	fetchedAt: timestamp("fetched_at", { withTimezone: true })
+		.notNull()
+		.defaultNow(),
+});
