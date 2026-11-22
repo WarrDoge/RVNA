@@ -28,9 +28,10 @@ export function mapSpacePermission(
 	return null;
 }
 
+/** A stable label for the skip report when the entry has no app permission. */
 export function spacePermissionKey(
 	targetType: string | undefined,
 	operationKey: string | undefined,
-) {
+): string {
 	return `${targetType ?? "unknown"}:${operationKey ?? "unknown"}`;
 }
