@@ -2468,6 +2468,38 @@ describe("review regressions", () => {
 });
 
 describe("review follow-ups", () => {
+	function sprint(id: number, name: string) {
+		return `com.atlassian.greenhopper.service.sprint.Sprint@[activatedDate=2026-10-01T09:00:00.000Z,id=${id},name=${name},state=ACTIVE]`;
+	}
+
+	function createdRule(fieldId: string, name: string) {
+		return {
+			trigger: {
+				type: "jira.issue.event.trigger:created",
+				value: { eventKey: "jira:issue_created" },
+			},
+			conditions: [],
+			actions: [
+				{
+					type: "jira.issue.edit",
+					value: {
+						operations: [
+							{
+								type: "SET",
+								fieldId,
+								fieldType: "com.pyxis.greenhopper.jira:gh-sprint",
+								value: { type: "REFERENCE", value: "CURRENT" },
+							},
+						],
+					},
+				},
+			],
+			name,
+			enabled: true,
+			raw: {},
+		};
+	}
+
 	test("a project with two desks resolves one desk deterministically", async () => {
 		const duplicateId = "00000000-0000-4000-8000-000000000001";
 		await pool.query(
@@ -2541,5 +2573,177 @@ describe("review follow-ups", () => {
 			await db.delete(watchers).where(eq(watchers.sourceId, watchSource));
 			await db.delete(comments).where(eq(comments.sourceId, commentSource));
 		}
+	});
+	test("a sprint name keeps brackets and comma-word sequences", async () => {
+		const fieldId = `${tag}:customfield:sprint-name`;
+		const raw = sprint(91, "Sprint [Q3], phase=2");
+		await pool.query(
+			"update issues set custom = custom || $1::jsonb where id = $2",
+			[JSON.stringify({ [fieldId]: [raw] }), seededIssueId],
+		);
+		const [rule] = await db
+			.insert(automationRules)
+			.values({
+				sourceId: `${tag}:rule:sprint-name`,
+				deskId,
+				...createdRule(fieldId, `${tag} Sprint name`),
+			})
+			.returning();
+		try {
+			const outcome = await applyCreateAutomation(seededIssueId);
+			expect(outcome.applied).toContain(
+				`${rule.name}: ${fieldId}=Sprint [Q3], phase=2`,
+			);
+		} finally {
+			await db.delete(automationRules).where(eq(automationRules.id, rule.id));
+			await pool.query("update issues set custom = custom - $1 where id = $2", [
+				fieldId,
+				seededIssueId,
+			]);
+		}
+	});
+
+	test("a broken automation rule does not fail request creation", async () => {
+		const ruleId = randomUUID();
+		await pool.query(
+			`insert into automation_rules
+			 (id, source_id, desk_id, name, enabled, trigger, conditions, actions, raw)
+			 values ($1, $2, $3, $4, true, $5::jsonb, '[]'::jsonb, '{}'::jsonb, '{}'::jsonb)`,
+			[
+				ruleId,
+				`${tag}:rule:broken`,
+				deskId,
+				`${tag} Broken rule`,
+				JSON.stringify({
+					type: "jira.issue.event.trigger:created",
+					value: { eventKey: "jira:issue_created" },
+				}),
+			],
+		);
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const response = await createRequest(customerSession, {
+				summary: "Automation failure",
+			});
+			expect(response.statusCode).toBe(201);
+		} finally {
+			errorSpy.mockRestore();
+			await pool.query("delete from automation_rules where id = $1", [ruleId]);
+		}
+	});
+
+	test("the rule query does not read the raw payload", async () => {
+		const querySpy = vi.spyOn(Pool.prototype, "query");
+		await applyCreateAutomation(seededIssueId);
+		const queries = querySpy.mock.calls.map((call) =>
+			typeof call[0] === "string"
+				? call[0]
+				: ((call[0] as { text?: string }).text ?? ""),
+		);
+		querySpy.mockRestore();
+		const ruleQuery = queries.find((text) =>
+			text.includes('from "automation_rules"'),
+		);
+		expect(ruleQuery).toBeDefined();
+		expect(ruleQuery).not.toContain('"raw"');
+		expect(ruleQuery).toContain('"trigger"');
+	});
+
+	test("an automation update keeps a concurrent custom-field write", async () => {
+		const fieldId = `${tag}:customfield:sprint-race`;
+		const concurrentKey = `${tag}:customfield:concurrent`;
+		const raw = sprint(92, "Sprint race");
+		const [seed] = await db
+			.select({ typeId: issues.typeId, statusId: issues.statusId })
+			.from(issues)
+			.where(eq(issues.id, seededIssueId));
+		if (!seed) throw new Error("fixture issue missing");
+		const [source] = await db
+			.insert(issues)
+			.values({
+				sourceId: `${tag}:issue:sprint-race`,
+				projectId,
+				number: 9000,
+				key: `${projectKey}-9000`,
+				typeId: seed.typeId,
+				statusId: seed.statusId,
+				summary: "Sprint race source",
+				custom: { [fieldId]: [raw] },
+			})
+			.returning({ id: issues.id });
+		const [rule] = await db
+			.insert(automationRules)
+			.values({
+				sourceId: `${tag}:rule:sprint-race`,
+				deskId,
+				...createdRule(fieldId, `${tag} Sprint race`),
+			})
+			.returning();
+
+		const originalUpdate = db.update;
+		let injected = false;
+		const wrap = (target: object): object =>
+			new Proxy(target, {
+				get(builder, property) {
+					if (property === "then") {
+						return (
+							resolve: (value: unknown) => void,
+							reject: (reason: unknown) => void,
+						) => {
+							void (async () => {
+								if (!injected) {
+									injected = true;
+									await pool.query(
+										"update issues set custom = custom || $1::jsonb where id = $2",
+										[
+											JSON.stringify({ [concurrentKey]: "kept" }),
+											seededIssueId,
+										],
+									);
+								}
+								resolve(await (builder as PromiseLike<unknown>));
+							})().catch(reject);
+						};
+					}
+					const value = Reflect.get(builder, property);
+					return typeof value === "function"
+						? (...args: unknown[]) => wrap(value.apply(builder, args))
+						: value;
+				},
+			});
+		db.update = ((table: Parameters<typeof originalUpdate>[0]) =>
+			wrap(originalUpdate(table))) as typeof db.update;
+		try {
+			await applyCreateAutomation(seededIssueId);
+			const [row] = await db
+				.select({ custom: issues.custom })
+				.from(issues)
+				.where(eq(issues.id, seededIssueId));
+			expect((row.custom as Record<string, unknown>)[concurrentKey]).toBe(
+				"kept",
+			);
+		} finally {
+			db.update = originalUpdate;
+			await pool.query("update issues set custom = custom - $1 where id = $2", [
+				concurrentKey,
+				seededIssueId,
+			]);
+			await db.delete(automationRules).where(eq(automationRules.id, rule.id));
+			await db.delete(issues).where(eq(issues.id, source.id));
+		}
+	});
+
+	test("an automation that changes nothing leaves the issue timestamp alone", async () => {
+		const [before] = await db
+			.select({ updated: issues.updated })
+			.from(issues)
+			.where(eq(issues.id, seededIssueId));
+		const outcome = await applyCreateAutomation(seededIssueId);
+		const [after] = await db
+			.select({ updated: issues.updated })
+			.from(issues)
+			.where(eq(issues.id, seededIssueId));
+		expect(outcome.applied.length).toBeGreaterThan(0);
+		expect(after.updated).toEqual(before.updated);
 	});
 });
