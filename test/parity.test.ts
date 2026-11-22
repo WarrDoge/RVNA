@@ -1561,7 +1561,7 @@ describe("parity checks", () => {
 		expect(right?.status).toBe("OK");
 	});
 
-	test("table detection skips optional checks on a database without those tables", () => {
+	test("table detection skips optional checks without their tables or columns", () => {
 		const tables: TableSet = {
 			has: (table) => table === "spaces" || table === "pages",
 			columns: () => new Set(),
@@ -1603,6 +1603,25 @@ describe("parity checks", () => {
 		);
 		for (const check of skipped) {
 			expect(check.note).toBeTruthy();
+		}
+
+		const missingColumns: TableSet = {
+			has: () => true,
+			columns: () => new Set(),
+			hasColumns: (table) =>
+				!["page_versions", "page_comments", "page_attachments"].includes(table),
+		};
+		const columnChecks = wikiChecks(live, database, missingColumns);
+		for (const name of [
+			"confluence.versions",
+			"confluence.comments",
+			"confluence.attachments",
+			"confluence.attachments.sample",
+			"confluence.attachments.sample_bytes",
+		]) {
+			expect(columnChecks.find((check) => check.name === name)?.status).toBe(
+				"SKIPPED",
+			);
 		}
 	});
 

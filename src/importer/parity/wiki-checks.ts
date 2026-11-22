@@ -4,6 +4,7 @@ import {
 	skipped,
 	sorted,
 	symmetricDifference,
+	wikiRequiredColumns,
 } from "./checks.ts";
 import type {
 	CheckResult,
@@ -109,7 +110,7 @@ export function wikiChecks(
 		);
 	}
 
-	if (tables.has("page_versions")) {
+	if (tables.hasColumns("page_versions", wikiRequiredColumns.page_versions)) {
 		const liveVersions = withoutLocal(live.versions, localPages);
 		const dbVersions = withoutLocal(database.versions, localPages);
 		const pages = unionKeys(liveVersions.keys(), dbVersions.keys());
@@ -126,11 +127,14 @@ export function wikiChecks(
 		checks.push(check("confluence.versions", liveTotal, dbTotal, details));
 	} else {
 		checks.push(
-			skipped("confluence.versions", "page_versions table is not present"),
+			skipped(
+				"confluence.versions",
+				"page_versions table or its columns are not present",
+			),
 		);
 	}
 
-	if (tables.has("page_comments")) {
+	if (tables.hasColumns("page_comments", wikiRequiredColumns.page_comments)) {
 		const liveComments = withoutLocal(live.comments, localPages);
 		const dbComments = withoutLocal(database.comments, localPages);
 		const pages = unionKeys(liveComments.keys(), dbComments.keys());
@@ -151,11 +155,16 @@ export function wikiChecks(
 		}
 	} else {
 		checks.push(
-			skipped("confluence.comments", "page_comments table is not present"),
+			skipped(
+				"confluence.comments",
+				"page_comments table or its columns are not present",
+			),
 		);
 	}
 
-	if (tables.has("page_attachments")) {
+	if (
+		tables.hasColumns("page_attachments", wikiRequiredColumns.page_attachments)
+	) {
 		const liveAttachments = withoutLocal(live.attachments, localPages);
 		const dbAttachments = withoutLocal(database.attachments, localPages);
 		const pages = unionKeys(liveAttachments.keys(), dbAttachments.keys());
@@ -227,20 +236,20 @@ export function wikiChecks(
 		checks.push(
 			skipped(
 				"confluence.attachments",
-				"page_attachments table is not present",
+				"page_attachments table or its columns are not present",
 			),
 			skipped(
 				"confluence.attachments.sample",
-				"page_attachments table is not present",
+				"page_attachments table or its columns are not present",
 			),
 			skipped(
 				"confluence.attachments.sample_bytes",
-				"page_attachments table is not present",
+				"page_attachments table or its columns are not present",
 			),
 		);
 	}
 
-	if (tables.has("page_labels")) {
+	if (tables.hasColumns("page_labels", wikiRequiredColumns.page_labels)) {
 		const liveLabels = new Map(
 			[...livePages.entries()].map(([key, page]) => [key, page.labels]),
 		);
@@ -261,11 +270,19 @@ export function wikiChecks(
 		checks.push(check("confluence.labels", liveTotal, dbTotal, details));
 	} else {
 		checks.push(
-			skipped("confluence.labels", "page_labels table is not present"),
+			skipped(
+				"confluence.labels",
+				"page_labels table or its columns are not present",
+			),
 		);
 	}
 
-	if (tables.has("page_restrictions")) {
+	if (
+		tables.hasColumns(
+			"page_restrictions",
+			wikiRequiredColumns.page_restrictions,
+		)
+	) {
 		const liveRestrictions = new Map(
 			[...livePages.entries()].map(([key, page]) => [key, page.restrictions]),
 		);
@@ -288,12 +305,17 @@ export function wikiChecks(
 		checks.push(
 			skipped(
 				"confluence.restrictions",
-				"page_restrictions table is not present",
+				"page_restrictions table or its columns are not present",
 			),
 		);
 	}
 
-	if (tables.has("space_permissions")) {
+	if (
+		tables.hasColumns(
+			"space_permissions",
+			wikiRequiredColumns.space_permissions,
+		)
+	) {
 		const spaces = unionKeys(
 			live.spaces.map((space) => space.key),
 			database.spaces.map((space) => space.key),
@@ -314,15 +336,12 @@ export function wikiChecks(
 		checks.push(
 			skipped(
 				"confluence.permissions",
-				"space_permissions table is not present",
+				"space_permissions table or its columns are not present",
 			),
 		);
 	}
 
-	if (
-		tables.has("page_watchers") &&
-		tables.hasColumns("page_watchers", ["source_id"])
-	) {
+	if (tables.hasColumns("page_watchers", wikiRequiredColumns.page_watchers)) {
 		checks.push(
 			live.watchersSkipped
 				? skipped(
@@ -337,14 +356,14 @@ export function wikiChecks(
 		);
 	} else {
 		checks.push(
-			skipped("wiki.page_watchers", "page_watchers.source_id is not present"),
+			skipped(
+				"wiki.page_watchers",
+				"page_watchers table or its columns are not present",
+			),
 		);
 	}
 
-	if (
-		tables.has("space_watchers") &&
-		tables.hasColumns("space_watchers", ["source_id"])
-	) {
+	if (tables.hasColumns("space_watchers", wikiRequiredColumns.space_watchers)) {
 		checks.push(
 			live.watchersSkipped
 				? skipped(
@@ -359,14 +378,14 @@ export function wikiChecks(
 		);
 	} else {
 		checks.push(
-			skipped("wiki.space_watchers", "space_watchers.source_id is not present"),
+			skipped(
+				"wiki.space_watchers",
+				"space_watchers table or its columns are not present",
+			),
 		);
 	}
 
-	if (
-		tables.has("page_likes") &&
-		tables.hasColumns("page_likes", ["source_id"])
-	) {
+	if (tables.hasColumns("page_likes", wikiRequiredColumns.page_likes)) {
 		checks.push(
 			live.pageLikesSkipped
 				? skipped("wiki.page_likes", "likes are skipped without --private-apis")
@@ -378,7 +397,10 @@ export function wikiChecks(
 		);
 	} else {
 		checks.push(
-			skipped("wiki.page_likes", "page_likes.source_id is not present"),
+			skipped(
+				"wiki.page_likes",
+				"page_likes table or its columns are not present",
+			),
 		);
 	}
 

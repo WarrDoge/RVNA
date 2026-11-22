@@ -1,5 +1,24 @@
 import type { CheckResult, CheckStatus } from "./types.ts";
 
+/** The columns each optional wiki parity query reads. */
+export const wikiRequiredColumns = {
+	page_versions: ["source_id", "page_id"],
+	page_comments: ["page_id", "inline"],
+	page_attachments: ["page_id", "source_id", "size", "sha256"],
+	page_labels: ["page_id", "label"],
+	page_restrictions: ["page_id", "operation", "group_name", "user_id"],
+	space_permissions: [
+		"space_id",
+		"permission",
+		"anonymous",
+		"group_name",
+		"user_id",
+	],
+	page_watchers: ["page_id", "source_id"],
+	space_watchers: ["space_id", "source_id"],
+	page_likes: ["page_id", "source_id"],
+} satisfies Record<string, string[]>;
+
 export function sorted(values: Iterable<string>) {
 	return [...new Set(values)].sort();
 }

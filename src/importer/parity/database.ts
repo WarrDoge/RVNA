@@ -6,6 +6,7 @@ import {
 	issueSprints,
 	sprints,
 } from "../../lib/server/schema.ts";
+import { wikiRequiredColumns } from "./checks.ts";
 import type {
 	JiraAgileData,
 	JiraBoardData,
@@ -572,7 +573,7 @@ export async function loadWikiSnapshot(
 		);
 		for (const row of rows.rows) localPages.add(row.source_id);
 	}
-	if (tables.hasColumns("page_versions", ["source_id", "page_id"])) {
+	if (tables.hasColumns("page_versions", wikiRequiredColumns.page_versions)) {
 		const rows = await pool.query<{ source_id: string }>(
 			`select distinct page.source_id
 			 from page_versions version
@@ -622,7 +623,7 @@ export async function loadWikiSnapshot(
 	}
 
 	const versions = new Map<string, number>();
-	if (tables.hasColumns("page_versions", ["source_id", "page_id"])) {
+	if (tables.hasColumns("page_versions", wikiRequiredColumns.page_versions)) {
 		const rows = await pool.query<{ page_source_id: string; count: number }>(
 			`
 			select page.source_id as page_source_id, count(*)::int as count
@@ -640,7 +641,7 @@ export async function loadWikiSnapshot(
 	}
 
 	const comments = new Map<string, { page: number; inline: number }>();
-	if (tables.hasColumns("page_comments", ["page_id", "inline"])) {
+	if (tables.hasColumns("page_comments", wikiRequiredColumns.page_comments)) {
 		const rows = await pool.query<{
 			page_source_id: string;
 			page: number;
@@ -667,12 +668,7 @@ export async function loadWikiSnapshot(
 
 	const attachments = new Map<string, WikiAttachmentData[]>();
 	if (
-		tables.hasColumns("page_attachments", [
-			"page_id",
-			"source_id",
-			"size",
-			"sha256",
-		])
+		tables.hasColumns("page_attachments", wikiRequiredColumns.page_attachments)
 	) {
 		const rows = await pool.query<{
 			page_source_id: string;
@@ -701,7 +697,7 @@ export async function loadWikiSnapshot(
 	}
 
 	const labels = new Map<string, string[]>();
-	if (tables.hasColumns("page_labels", ["page_id", "label"])) {
+	if (tables.hasColumns("page_labels", wikiRequiredColumns.page_labels)) {
 		const rows = await pool.query<{ page_source_id: string; label: string }>(
 			`
 			select page.source_id as page_source_id, label.label
@@ -722,12 +718,10 @@ export async function loadWikiSnapshot(
 
 	const restrictions = new Map<string, string[]>();
 	if (
-		tables.hasColumns("page_restrictions", [
-			"page_id",
-			"operation",
-			"group_name",
-			"user_id",
-		])
+		tables.hasColumns(
+			"page_restrictions",
+			wikiRequiredColumns.page_restrictions,
+		)
 	) {
 		const rows = await pool.query<{
 			page_source_id: string;
@@ -761,13 +755,10 @@ export async function loadWikiSnapshot(
 
 	const permissions = new Map<string, string[]>();
 	if (
-		tables.hasColumns("space_permissions", [
-			"space_id",
-			"permission",
-			"anonymous",
-			"group_name",
-			"user_id",
-		])
+		tables.hasColumns(
+			"space_permissions",
+			wikiRequiredColumns.space_permissions,
+		)
 	) {
 		const rows = await pool.query<{
 			space_key: string;
@@ -802,7 +793,7 @@ export async function loadWikiSnapshot(
 	}
 
 	const pageWatchers = new Map<string, number>();
-	if (tables.hasColumns("page_watchers", ["page_id", "source_id"])) {
+	if (tables.hasColumns("page_watchers", wikiRequiredColumns.page_watchers)) {
 		const rows = await pool.query<{ page_source_id: string; count: number }>(
 			`
 			select page.source_id as page_source_id, count(*)::int as count
@@ -820,7 +811,7 @@ export async function loadWikiSnapshot(
 	}
 
 	const spaceWatchers = new Map<string, number>();
-	if (tables.hasColumns("space_watchers", ["space_id", "source_id"])) {
+	if (tables.hasColumns("space_watchers", wikiRequiredColumns.space_watchers)) {
 		const rows = await pool.query<{ space_key: string; count: number }>(
 			`
 			select space.key as space_key, count(*)::int as count
@@ -837,7 +828,7 @@ export async function loadWikiSnapshot(
 	}
 
 	const pageLikes = new Map<string, number>();
-	if (tables.hasColumns("page_likes", ["page_id", "source_id"])) {
+	if (tables.hasColumns("page_likes", wikiRequiredColumns.page_likes)) {
 		const rows = await pool.query<{ page_source_id: string; count: number }>(
 			`
 			select page.source_id as page_source_id, count(*)::int as count
