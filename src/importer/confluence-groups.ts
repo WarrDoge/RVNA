@@ -63,6 +63,12 @@ export async function importConfluenceGroups(client: ConfluenceGroupClient) {
 	const userIds = new Map(
 		userRows.map((row) => [row.username.toLowerCase(), row.id]),
 	);
+	const groupRows = await db
+		.select({ id: groups.id, name: groups.name })
+		.from(groups);
+	const groupIds = new Map(
+		groupRows.map((row) => [row.name.toLowerCase(), row.id]),
+	);
 
 	const result = {
 		referenced: wanted.size,
@@ -71,31 +77,55 @@ export async function importConfluenceGroups(client: ConfluenceGroupClient) {
 		removed: 0,
 		membersWithoutUser: 0,
 	};
+	const desiredByGroup = new Map<string, Set<string>>();
 
 	for (const [lower, name] of wanted) {
 		const remoteName = remoteNames.get(lower);
 		if (!remoteName) {
 			result.missingInConfluence++;
+			const groupId = groupIds.get(lower);
+			if (groupId) {
+				const removed = await db
+					.delete(userGroups)
+					.where(
+						and(eq(userGroups.groupId, groupId), eq(userGroups.source, SOURCE)),
+					)
+					.returning({ userId: userGroups.userId });
+				result.removed += removed.length;
+			}
 			continue;
 		}
-		const members = await allPages<{ username?: string }>(
-			client,
-			`/rest/api/group/${encodeURIComponent(remoteName)}/member`,
-		);
 
-		let [group] = await db
-			.select({ id: groups.id })
-			.from(groups)
-			.where(sql`lower(${groups.name}) = ${lower}`)
-			.limit(1);
-		if (!group) {
-			[group] = await db
+		let members: { username?: string }[];
+		try {
+			members = await allPages<{ username?: string }>(
+				client,
+				`/rest/api/group/${encodeURIComponent(remoteName)}/member`,
+			);
+		} catch {
+			result.missingInConfluence++;
+			continue;
+		}
+
+		let groupId = groupIds.get(lower);
+		if (!groupId) {
+			const [inserted] = await db
 				.insert(groups)
 				.values({ name })
 				.onConflictDoNothing()
 				.returning({ id: groups.id });
+			groupId = inserted?.id;
+			if (!groupId) {
+				const [existing] = await db
+					.select({ id: groups.id })
+					.from(groups)
+					.where(sql`lower(${groups.name}) = ${lower}`)
+					.limit(1);
+				groupId = existing?.id;
+			}
+			if (!groupId) continue;
+			groupIds.set(lower, groupId);
 		}
-		if (!group) continue;
 
 		const desired = new Set<string>();
 		for (const member of members) {
@@ -103,30 +133,51 @@ export async function importConfluenceGroups(client: ConfluenceGroupClient) {
 			if (id) desired.add(id);
 			else result.membersWithoutUser++;
 		}
+		desiredByGroup.set(groupId, desired);
+	}
 
+	const wantedGroupIds = [...desiredByGroup.keys()];
+	const existingByGroup = new Map<string, Set<string>>();
+	if (wantedGroupIds.length > 0) {
 		const existing = await db
-			.select({ userId: userGroups.userId })
+			.select({ groupId: userGroups.groupId, userId: userGroups.userId })
 			.from(userGroups)
 			.where(
-				and(eq(userGroups.groupId, group.id), eq(userGroups.source, SOURCE)),
+				and(
+					inArray(userGroups.groupId, wantedGroupIds),
+					eq(userGroups.source, SOURCE),
+				),
 			);
-		const existingIds = new Set(existing.map((row) => row.userId));
-
-		for (const userId of desired) {
-			if (existingIds.has(userId)) continue;
-			await db
-				.insert(userGroups)
-				.values({ userId, groupId: group.id, source: SOURCE })
-				.onConflictDoNothing();
-			result.memberships++;
+		for (const row of existing) {
+			const set = existingByGroup.get(row.groupId) ?? new Set<string>();
+			set.add(row.userId);
+			existingByGroup.set(row.groupId, set);
 		}
-		const stale = [...existingIds].filter((id) => !desired.has(id));
+	}
+
+	const inserts: { userId: string; groupId: string; source: string }[] = [];
+	for (const [groupId, desired] of desiredByGroup) {
+		const existing = existingByGroup.get(groupId) ?? new Set<string>();
+		for (const userId of desired) {
+			if (!existing.has(userId)) {
+				inserts.push({ userId, groupId, source: SOURCE });
+			}
+		}
+	}
+	if (inserts.length > 0) {
+		await db.insert(userGroups).values(inserts).onConflictDoNothing();
+		result.memberships += inserts.length;
+	}
+
+	for (const [groupId, desired] of desiredByGroup) {
+		const existing = existingByGroup.get(groupId) ?? new Set<string>();
+		const stale = [...existing].filter((id) => !desired.has(id));
 		if (stale.length > 0) {
 			await db
 				.delete(userGroups)
 				.where(
 					and(
-						eq(userGroups.groupId, group.id),
+						eq(userGroups.groupId, groupId),
 						eq(userGroups.source, SOURCE),
 						inArray(userGroups.userId, stale),
 					),

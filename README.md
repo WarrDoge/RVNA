@@ -1169,7 +1169,8 @@ npm run import -- confluence-groups
 ```
 
 Only the groups that space permissions or page restrictions name are fetched (`GET /rest/api/group` and
-`GET /rest/api/group/{name}/member`); their members are stored with the source `confluence`.
+`GET /rest/api/group/{name}/member`); their members are stored with the source `confluence`, and a
+group that is no longer listed in Confluence loses its imported memberships.
 
 Service desk projects are imported too: the desk and portal text, request type groups, request
 types and their customer fields, queues with Jira's reported issue counts, SLA metrics, goals and
