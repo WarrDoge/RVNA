@@ -17,16 +17,26 @@ pool.on("error", (error) => {
 /** Takes the lock the server takes, so an import and a starting server never migrate together. */
 export async function runMigrations() {
 	const client = await pool.connect();
+	let failed = false;
+	let unlockError: unknown;
 	try {
 		await client.query("select pg_advisory_lock($1)", [MIGRATION_LOCK]);
 		await migrate(drizzle(client), {
 			migrationsFolder: resolve("drizzle"),
 		});
+	} catch (error) {
+		failed = true;
+		throw error;
 	} finally {
+		let unlocked = false;
 		try {
 			await client.query("select pg_advisory_unlock($1)", [MIGRATION_LOCK]);
-		} finally {
-			client.release();
+			unlocked = true;
+		} catch (error) {
+			unlockError = error;
 		}
+		if (failed || !unlocked) client.release(true);
+		else client.release();
 	}
+	if (unlockError) throw unlockError;
 }
