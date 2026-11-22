@@ -123,6 +123,15 @@ export async function runParity(
 
 	const checks: CheckResult[] = [];
 	const notes: string[] = [];
+	if (liveWiki?.socialShapeKeys && liveWiki.socialShapeKeys.size > 0) {
+		notes.push(
+			`confluence watchers/likes: unexpected response shape; keys: ${[
+				...liveWiki.socialShapeKeys,
+			]
+				.sort()
+				.join(", ")}`,
+		);
+	}
 	let watermark: string | null = null;
 	let changedSinceImport: { count: number; issues: string[] } = {
 		count: 0,
@@ -131,7 +140,6 @@ export async function runParity(
 	if (jiraDb && liveJira) {
 		const result = jiraChecks(liveJira, jiraDb);
 		checks.push(...result.checks);
-		notes.push(...result.notes);
 		watermark = result.watermark;
 		changedSinceImport = {
 			count: result.changedSinceImport.length,
