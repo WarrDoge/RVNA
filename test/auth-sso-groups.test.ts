@@ -186,7 +186,7 @@ beforeAll(async () => {
 				.select({ id: groups.id })
 				.from(groups)
 				.where(eq(groups.name, adminGroup()))
-		).id;
+		)[0]?.id;
 });
 
 afterAll(async () => {

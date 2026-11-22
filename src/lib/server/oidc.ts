@@ -1,6 +1,12 @@
 import { and, eq, isNull, lt, ne, sql } from "drizzle-orm";
 import * as client from "openid-client";
-import { createSession, randomValue, sha256, syncGroups } from "./auth.ts";
+import {
+	createSession,
+	loginPath,
+	randomValue,
+	sha256,
+	syncGroups,
+} from "./auth.ts";
 import { db } from "./db.ts";
 import { env, ssoConfigured } from "./env.ts";
 import { HttpError } from "./http.ts";
