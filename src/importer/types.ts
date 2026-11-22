@@ -48,15 +48,17 @@ export interface JiraLinkType {
 	outward: string;
 }
 
+export interface JiraFieldSchema {
+	type?: string;
+	custom?: string;
+	items?: string;
+}
+
 export interface JiraField {
 	id: string;
 	name: string;
 	custom?: boolean;
-	schema?: {
-		type?: string;
-		custom?: string;
-		items?: string;
-	};
+	schema?: JiraFieldSchema;
 }
 
 export interface JiraFieldOption {
@@ -69,11 +71,7 @@ export interface JiraFieldOption {
 export interface JiraCreateMetaField {
 	fieldId: string;
 	name: string;
-	schema?: {
-		type?: string;
-		custom?: string;
-		items?: string;
-	};
+	schema?: JiraFieldSchema;
 	allowedValues?: JiraFieldOption[];
 }
 
@@ -84,8 +82,10 @@ export interface JiraWorkflow {
 }
 
 export interface JiraWorkflowLayoutStatus {
+	/** The workflow designer's status id, local to this layout (for example `S<1>`). */
 	id: string;
 	name: string;
+	/** Jira's global status id from `/rest/api/2/status`; absent entries are skipped. */
 	statusId?: string | null;
 	statusCategory?: {
 		key?: string;
@@ -329,7 +329,7 @@ export interface JiraIssueData {
 	attachments: ImportedAttachment[];
 	/** Service desk requests only: SLA cycles as Jira reports them. */
 	sla?: JiraRequestSla | null;
-	/** Service desk requests only: portal, email, agent or api. */
+	/** Service desk requests only: portal, email, agent, api or chat. */
 	channel?: string | null;
 }
 
@@ -396,7 +396,7 @@ export interface JiraRequestTypeField {
 	description?: string | null;
 	required?: boolean;
 	validValues?: JiraRequestTypeFieldValue[];
-	jiraSchema?: Record<string, unknown>;
+	jiraSchema?: JiraFieldSchema & Record<string, unknown>;
 	hidden?: boolean;
 	value?: unknown;
 }
