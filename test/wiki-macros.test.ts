@@ -14,7 +14,10 @@ import {
 	users,
 } from "../src/lib/server/schema.ts";
 import { pages, spaces } from "../src/lib/server/schema-wiki.ts";
-import { childPageLinks } from "../src/lib/server/wiki/data.ts";
+import {
+	childPageLinks,
+	pagesWithProperties,
+} from "../src/lib/server/wiki/data.ts";
 import { macroNames } from "../src/lib/server/wiki/macros.ts";
 import { loadWikiAccess } from "../src/lib/server/wiki/permissions.ts";
 import { renderWikiBody } from "../src/lib/server/wiki/render.ts";
@@ -598,6 +601,21 @@ test("raw iframes from storage are limited to the embed allow list", async () =>
 	expect(html).toContain('href="https://evil.test/x"');
 	expect(html).toContain('src="https://www.youtube.com/embed/ok"');
 	expect(html).toContain('src="/download/attachments/1/a.pdf"');
+});
+
+test("page property lookup fills its limit from pages that have property rows", async () => {
+	const access = await loadWikiAccess(user);
+	await createPage(
+		"000 Empty properties",
+		'<ac:structured-macro ac:name="details"><ac:rich-text-body><p>no rows</p></ac:rich-text-body></ac:structured-macro>',
+	);
+	await createPage(
+		"001 Properties page",
+		'<ac:structured-macro ac:name="details"><ac:rich-text-body><tbody><tr><th>Owner</th><td>Team</td></tr></tbody></ac:rich-text-body></ac:structured-macro>',
+	);
+	const rows = await pagesWithProperties(access, [space.id], 1);
+	expect(rows).toHaveLength(1);
+	expect(rows[0]?.values.get("Owner")).toBe("Team");
 });
 
 test("draft and trashed pages are not listed in the tree", async () => {

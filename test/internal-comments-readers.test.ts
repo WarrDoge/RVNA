@@ -193,6 +193,14 @@ test("the wiki issue list macro does not list an issue matched only by an intern
 	}
 });
 
+test("the wiki issue list macro clamps a non-positive row limit", async () => {
+	const table = await jqlTable(`project = ${key}`, ["key"], viewer(agent), -1);
+	expect("error" in table).toBe(false);
+	if (!("error" in table)) {
+		expect(table.rows).toHaveLength(1);
+	}
+});
+
 test("the internal comment is still readable to an agent", async () => {
 	const response = await injectAs(
 		app,

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { JqlError, parseJql } from "../../shared/jql/index.ts";
 import { userAvatarSql } from "../avatars.ts";
 import { db } from "../db.ts";
@@ -31,6 +31,7 @@ export type PageLink = {
 	updated: string | null;
 	author: string | null;
 	level?: number;
+	labels?: string[];
 };
 
 export type AttachmentRow = {
@@ -51,10 +52,6 @@ export type AttachmentRow = {
 
 export function pageUrl(sourceId: string) {
 	return `/pages/viewpage.action?pageId=${sourceId}`;
-}
-
-export function spaceUrl(key: string) {
-	return `/display/${encodeURIComponent(key)}`;
 }
 
 function pageLinkSelect() {
@@ -78,6 +75,7 @@ type PageLinkRow = {
 	updated: Date | string | null;
 	author: string | null;
 	level?: number;
+	labels?: string[] | null;
 };
 
 function toPageLink(row: PageLinkRow): PageLink {
@@ -90,6 +88,7 @@ function toPageLink(row: PageLinkRow): PageLink {
 		updated: row.updated ? new Date(row.updated).toISOString() : null,
 		author: row.author,
 		level: row.level,
+		labels: row.labels ?? undefined,
 	};
 }
 
@@ -209,6 +208,7 @@ export async function pagesWithLabels(
 		.select({
 			...pageLinkSelect(),
 			matches: sql<number>`count(distinct ${pageLabels.label})`,
+			labels: sql<string[]>`array_agg(distinct ${pageLabels.label})`,
 		})
 		.from(pages)
 		.innerJoin(spaces, eq(spaces.id, pages.spaceId))
@@ -417,6 +417,7 @@ export async function jqlTable(
 	limit: number,
 ): Promise<JqlTable | { error: string }> {
 	try {
+		const cappedLimit = Math.min(Math.max(limit, 1), 200);
 		const query = parseJql(jql);
 		const compiled = await compileJql(query, {
 			user,
@@ -447,7 +448,7 @@ export async function jqlTable(
 			left join resolutions res on res.id = issues.resolution_id
 			where ${where}
 			order by ${orderBy}
-			limit ${limit}
+			limit ${cappedLimit}
 		`),
 		);
 		const rows = (result.rows as Record<string, unknown>[]).map((row) => {
@@ -495,47 +496,56 @@ export async function pagesWithProperties(
 	spaceIds: string[],
 	limit = 100,
 ): Promise<PagePropertyRow[]> {
-	if (spaceIds.length === 0) return [];
-	const rows = await db
-		.select({
-			id: pages.id,
-			sourceId: pages.sourceId,
-			title: pages.title,
-			spaceKey: spaces.key,
-			bodyStorage: pages.bodyStorage,
-		})
-		.from(pages)
-		.innerJoin(spaces, eq(spaces.id, pages.spaceId))
-		.where(
-			and(
-				visiblePages(access),
-				inArray(pages.spaceId, spaceIds),
-				sql`${pages.bodyStorage} like '%ac:name="details"%'`,
-			),
-		)
-		.orderBy(sql`lower(${pages.title})`)
-		.limit(limit);
-
+	if (spaceIds.length === 0 || limit <= 0) return [];
+	const batchSize = 200;
 	const result: PagePropertyRow[] = [];
-	for (const row of rows) {
-		const macro = findMacros(row.bodyStorage ?? "").find(
-			(candidate) => candidate.name === "details",
-		);
-		if (!macro) continue;
-		const values = new Map<string, string>();
-		for (const cell of (macro.body ?? "").matchAll(
-			/<tr[^>]*>\s*<th[^>]*>([\s\S]*?)<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/g,
-		)) {
-			values.set(stripTags(cell[1]), stripTags(cell[2]));
+	let offset = 0;
+	while (result.length < limit) {
+		const rows = await db
+			.select({
+				id: pages.id,
+				sourceId: pages.sourceId,
+				title: pages.title,
+				spaceKey: spaces.key,
+				bodyStorage: pages.bodyStorage,
+			})
+			.from(pages)
+			.innerJoin(spaces, eq(spaces.id, pages.spaceId))
+			.where(
+				and(
+					visiblePages(access),
+					inArray(pages.spaceId, spaceIds),
+					sql`${pages.bodyStorage} like '%ac:name="details"%'`,
+				),
+			)
+			.orderBy(sql`lower(${pages.title})`, asc(pages.id))
+			.limit(batchSize)
+			.offset(offset);
+		if (rows.length === 0) break;
+		offset += rows.length;
+
+		for (const row of rows) {
+			const macro = findMacros(row.bodyStorage ?? "").find(
+				(candidate) => candidate.name === "details",
+			);
+			if (!macro) continue;
+			const values = new Map<string, string>();
+			for (const cell of (macro.body ?? "").matchAll(
+				/<tr[^>]*>\s*<th[^>]*>([\s\S]*?)<\/th>\s*<td[^>]*>([\s\S]*?)<\/td>/g,
+			)) {
+				values.set(stripTags(cell[1]), stripTags(cell[2]));
+			}
+			if (values.size === 0) continue;
+			result.push({
+				id: row.id,
+				sourceId: row.sourceId,
+				title: row.title,
+				spaceKey: row.spaceKey,
+				values,
+			});
+			if (result.length >= limit) break;
 		}
-		if (values.size === 0) continue;
-		result.push({
-			id: row.id,
-			sourceId: row.sourceId,
-			title: row.title,
-			spaceKey: row.spaceKey,
-			values,
-		});
+		if (rows.length < batchSize) break;
 	}
 	return result;
 }
