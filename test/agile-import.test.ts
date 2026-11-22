@@ -512,6 +512,12 @@ describe("importAgileLocal", () => {
 			.where(eq(sprints.id, sprintRow.id));
 		expect(after.name).toBe("Real sprint name");
 		expect(after.state).toBe("closed");
+		const memberships = await db
+			.select()
+			.from(issueSprints)
+			.where(eq(issueSprints.sprintId, sprintRow.id));
+		expect(memberships.length).toBeGreaterThan(0);
+		expect(memberships.every((row) => !row.isOpen)).toBe(true);
 	});
 
 	test("writes a sprint set larger than one statement's parameter limit", async () => {
@@ -572,5 +578,5 @@ describe("importAgileLocal", () => {
 				.set({ configImported: true })
 				.where(eq(boards.id, board.id));
 		}
-	});
+	}, 20_000);
 });

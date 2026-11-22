@@ -308,6 +308,7 @@ async function importAgileLocalTransaction(
 	};
 
 	const sprintIds = new Map<string, string>();
+	const sprintStates = new Map<string, SprintState>();
 	const sprintWrites = new Map<
 		string,
 		{
@@ -439,7 +440,11 @@ async function importAgileLocalTransaction(
 	const writes = [...sprintWrites.values()];
 	const existingSprints = writes.length
 		? await database
-				.select({ id: sprints.id, sourceId: sprints.sourceId })
+				.select({
+					id: sprints.id,
+					sourceId: sprints.sourceId,
+					state: sprints.state,
+				})
 				.from(sprints)
 				.where(
 					inArray(
@@ -449,7 +454,7 @@ async function importAgileLocalTransaction(
 				)
 		: [];
 	const existingSprintBySource = new Map(
-		existingSprints.map((row) => [row.sourceId, row.id]),
+		existingSprints.map((row) => [row.sourceId, row]),
 	);
 	const sprintValues = (sprint: (typeof writes)[number]) => ({
 		sourceId: sprint.sourceId,
@@ -481,9 +486,15 @@ async function importAgileLocalTransaction(
 					updatedAt: new Date(),
 				},
 			})
-			.returning({ id: sprints.id, sourceId: sprints.sourceId });
+			.returning({
+				id: sprints.id,
+				sourceId: sprints.sourceId,
+				state: sprints.state,
+			});
 		for (const row of rows) {
-			if (row.sourceId) sprintIds.set(row.sourceId, row.id);
+			if (!row.sourceId) continue;
+			sprintIds.set(row.sourceId, row.id);
+			sprintStates.set(row.sourceId, row.state);
 		}
 	}
 	const notOwned = writes.filter((sprint) => !sprint.ownsConfig);
@@ -494,24 +505,33 @@ async function importAgileLocalTransaction(
 				notOwned.slice(start, start + SPRINT_INSERT_CHUNK).map(sprintValues),
 			)
 			.onConflictDoNothing({ target: sprints.sourceId })
-			.returning({ id: sprints.id, sourceId: sprints.sourceId });
+			.returning({
+				id: sprints.id,
+				sourceId: sprints.sourceId,
+				state: sprints.state,
+			});
 		for (const row of inserted) {
-			if (row.sourceId) sprintIds.set(row.sourceId, row.id);
+			if (!row.sourceId) continue;
+			sprintIds.set(row.sourceId, row.id);
+			sprintStates.set(row.sourceId, row.state);
 		}
 	}
 	for (const sprint of notOwned) {
-		const existingId = existingSprintBySource.get(sprint.sourceId);
-		if (existingId) sprintIds.set(sprint.sourceId, existingId);
+		const existing = existingSprintBySource.get(sprint.sourceId);
+		if (!existing) continue;
+		sprintIds.set(sprint.sourceId, existing.id);
+		sprintStates.set(sprint.sourceId, existing.state);
 	}
 	for (const sprint of writes) counts.sprints[sprint.state] += 1;
 
 	for (const { issueId, sprint } of sprintRows) {
 		const sprintId = sprintIds.get(sprint.sourceId);
 		if (!sprintId) continue;
+		const storedState = sprintStates.get(sprint.sourceId) ?? sprint.state;
 		issueMemberships.push({
 			issueId,
 			sprintId,
-			isOpen: sprint.state !== "closed",
+			isOpen: storedState !== "closed",
 		});
 	}
 
