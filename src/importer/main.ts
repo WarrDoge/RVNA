@@ -17,6 +17,7 @@ import { importerEnv, requiredEnv } from "./env.ts";
 import { fetchDataset } from "./fetch.ts";
 import { importDataset, loadAttachmentIndex } from "./import.ts";
 import { JiraClient } from "./jira.ts";
+import { loadTableSet } from "./parity/database.ts";
 import { runParityCommand } from "./parity/run.ts";
 import { importPermissions } from "./permissions.ts";
 import { skipPrivateApi } from "./private-apis.ts";
@@ -26,6 +27,18 @@ import { importWikiDataset, loadWikiAttachmentIndex } from "./wiki-import.ts";
 
 const usage =
 	"Usage: npm run import -- jira [--project KEY]... [--skip-attachments] [--skip-avatars] [--overwrite-local] [--private-apis] | jira-avatars | jira-agile [--overwrite-local] [--private-apis] | jira-dashboards [--private-apis] | jira-permissions [--project KEY]... | jira-agile-local | confluence [--space KEY]... [--skip-attachments] [--skip-avatars] [--overwrite-local] [--private-apis] | confluence-groups | confluence-avatars | parity [jira|confluence|all] [--json] [--skip-hash] [--private-apis] [--app-url URL --app-token TOKEN]";
+
+let parityCommand = false;
+
+function rejectOptions(values: object, allowed: readonly string[]) {
+	if (
+		Object.entries(values).some(
+			([name, value]) => value !== undefined && !allowed.includes(name),
+		)
+	) {
+		throw new Error(usage);
+	}
+}
 
 function parseCli(argv: string[]) {
 	const { values, positionals } = parseArgs({
@@ -45,22 +58,22 @@ function parseCli(argv: string[]) {
 		},
 	});
 
-	if (positionals.length < 1 || positionals.length > 2) throw new Error(usage);
 	const command = positionals[0];
+	parityCommand = command === "parity";
+	if (positionals.length < 1 || positionals.length > 2) throw new Error(usage);
 
 	if (command === "parity") {
 		const scope = positionals[1] ?? "all";
 		if (scope !== "jira" && scope !== "confluence" && scope !== "all") {
 			throw new Error(usage);
 		}
-		if (
-			values.project ||
-			values.space ||
-			values["skip-attachments"] ||
-			values["overwrite-local"]
-		) {
-			throw new Error(usage);
-		}
+		rejectOptions(values, [
+			"json",
+			"skip-hash",
+			"private-apis",
+			"app-url",
+			"app-token",
+		]);
 		return {
 			command,
 			scope,
@@ -75,6 +88,13 @@ function parseCli(argv: string[]) {
 	if (positionals.length !== 1) throw new Error(usage);
 
 	if (command === "jira") {
+		rejectOptions(values, [
+			"project",
+			"skip-attachments",
+			"skip-avatars",
+			"overwrite-local",
+			"private-apis",
+		]);
 		return {
 			command,
 			projectKeys: values.project,
@@ -87,18 +107,19 @@ function parseCli(argv: string[]) {
 	}
 
 	if (command === "jira-avatars") {
-		if (values.project || values["overwrite-local"]) throw new Error(usage);
+		rejectOptions(values, []);
 		return {
 			command,
 			projectKeys: undefined,
 			spaceKeys: undefined,
 			skipAttachments: false,
 			skipAvatars: false,
-			privateApis: values["private-apis"] ?? false,
+			privateApis: false,
 		} as const;
 	}
 
 	if (command === "jira-agile") {
+		rejectOptions(values, ["overwrite-local", "private-apis"]);
 		return {
 			command,
 			projectKeys: undefined,
@@ -110,19 +131,18 @@ function parseCli(argv: string[]) {
 	}
 
 	if (command === "jira-agile-local") {
+		rejectOptions(values, []);
 		return {
 			command,
 			projectKeys: undefined,
 			spaceKeys: undefined,
 			skipAttachments: false,
-			privateApis: values["private-apis"] ?? false,
+			privateApis: false,
 		} as const;
 	}
 
 	if (command === "jira-dashboards") {
-		if (values.project || values.space || values["overwrite-local"]) {
-			throw new Error(usage);
-		}
+		rejectOptions(values, ["private-apis"]);
 		return {
 			command,
 			projectKeys: undefined,
@@ -133,18 +153,24 @@ function parseCli(argv: string[]) {
 	}
 
 	if (command === "jira-permissions") {
-		if (values["overwrite-local"]) throw new Error(usage);
+		rejectOptions(values, ["project"]);
 		return {
 			command,
 			projectKeys: values.project,
 			spaceKeys: undefined,
 			skipAttachments: true,
-			privateApis: values["private-apis"] ?? false,
+			privateApis: false,
 		} as const;
 	}
 
 	if (command === "confluence") {
-		if (values.project) throw new Error(usage);
+		rejectOptions(values, [
+			"space",
+			"skip-attachments",
+			"skip-avatars",
+			"overwrite-local",
+			"private-apis",
+		]);
 		return {
 			command,
 			projectKeys: undefined,
@@ -157,29 +183,25 @@ function parseCli(argv: string[]) {
 	}
 
 	if (command === "confluence-groups") {
-		if (values.project || values.space || values["overwrite-local"]) {
-			throw new Error(usage);
-		}
+		rejectOptions(values, []);
 		return {
 			command,
 			projectKeys: undefined,
 			spaceKeys: undefined,
 			skipAttachments: true,
-			privateApis: values["private-apis"] ?? false,
+			privateApis: false,
 		} as const;
 	}
 
 	if (command === "confluence-avatars") {
-		if (values.project || values.space || values["overwrite-local"]) {
-			throw new Error(usage);
-		}
+		rejectOptions(values, []);
 		return {
 			command,
 			projectKeys: undefined,
 			spaceKeys: undefined,
 			skipAttachments: false,
 			skipAvatars: false,
-			privateApis: values["private-apis"] ?? false,
+			privateApis: false,
 		} as const;
 	}
 
@@ -454,6 +476,19 @@ async function main() {
 	const options = parseCli(process.argv.slice(2));
 
 	if (options.command === "parity") {
+		const tables = await loadTableSet(pool);
+		const required =
+			options.scope === "jira"
+				? ["projects"]
+				: options.scope === "confluence"
+					? ["spaces"]
+					: ["projects", "spaces"];
+		const missing = required.filter((table) => !tables.has(table));
+		if (missing.length > 0) {
+			throw new Error(
+				`database schema is missing tables (${missing.join(", ")}); run the import or the migrations first`,
+			);
+		}
 		await runParityCommand({
 			scope: options.scope,
 			json: options.json,
@@ -500,8 +535,10 @@ async function main() {
 		await importConfluenceGroupsOnly();
 	} else if (options.command === "confluence-avatars") {
 		await importConfluenceAvatarsOnly();
-	} else {
+	} else if (options.command === "jira-agile-local") {
 		await importAgile();
+	} else {
+		throw new Error(usage);
 	}
 
 	console.log(
@@ -518,7 +555,7 @@ try {
 	} else {
 		console.error(message);
 	}
-	process.exitCode = process.argv[2] === "parity" ? 2 : 1;
+	process.exitCode = parityCommand ? 2 : 1;
 } finally {
 	await pool.end();
 }
