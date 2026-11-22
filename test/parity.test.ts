@@ -343,6 +343,82 @@ function allTables(): TableSet {
 	};
 }
 
+function wikiSnapshots(localPages: Set<string>) {
+	const pages = new Map(
+		["page-1", "local-page"].map((sourceId) => [
+			sourceId,
+			{
+				sourceId,
+				spaceKey: spaceKey,
+				status: "current" as const,
+				type: "page" as const,
+				parentSourceId: null,
+				position: 0,
+				title: sourceId,
+			},
+		]),
+	);
+	const livePages = new Map(
+		[...pages].map(([key, page]) => [
+			key,
+			{ ...page, created: null, labels: [], restrictions: [] },
+		]),
+	);
+	const attachment = (sourceId: string) => ({
+		sourceId,
+		size: 5,
+		sha256: "hash",
+	});
+	const attachments = new Map([
+		["page-1", [attachment("a1")]],
+		["local-page", [attachment("a2")]],
+	]);
+	const spaces = [{ key: spaceKey, sourceId: "1", status: "current" }];
+	const live: WikiLiveSnapshot = {
+		spaces,
+		pages: livePages,
+		versions: new Map(),
+		comments: new Map(),
+		attachments,
+		attachmentSample: [
+			{ sourceId: "a1", pageSourceId: "page-1", size: 5, sha256: "hash" },
+			{
+				sourceId: "a2",
+				pageSourceId: "local-page",
+				size: 5,
+				sha256: "hash",
+			},
+		],
+		permissions: new Map(),
+		tree: new Map(),
+		pageWatchers: new Map([
+			["page-1", 1],
+			["local-page", 2],
+		]),
+		spaceWatchers: new Map(),
+		pageLikes: new Map([
+			["page-1", 1],
+			["local-page", 3],
+		]),
+	};
+	const database: WikiDatabaseSnapshot = {
+		spaces,
+		localPages,
+		pages,
+		versions: new Map(),
+		comments: new Map(),
+		attachments,
+		labels: new Map(),
+		restrictions: new Map(),
+		permissions: new Map(),
+		tree: new Map(),
+		pageWatchers: new Map([["page-1", 1]]),
+		spaceWatchers: new Map(),
+		pageLikes: new Map([["page-1", 1]]),
+	};
+	return { live, database };
+}
+
 describe("parity checks", () => {
 	test("jira checks are OK on the seeded database and name a changed issue", async () => {
 		const tables = await loadTableSet(pool);
@@ -760,6 +836,21 @@ describe("parity checks", () => {
 		expect(live.attachmentSample.map((item) => item.sourceId)).toEqual([
 			"good:1",
 		]);
+	});
+
+	test("attachment samples ignore attachments of local pages", () => {
+		const { live, database } = wikiSnapshots(new Set(["local-page"]));
+		const checks = wikiChecks(live, database, allTables());
+		const sample = checks.find(
+			(check) => check.name === "confluence.attachments.sample",
+		);
+		expect(sample?.status).toBe("OK");
+		expect(sample?.live).toBe(1);
+		const bytes = checks.find(
+			(check) => check.name === "confluence.attachments.sample_bytes",
+		);
+		expect(bytes?.status).toBe("OK");
+		expect(bytes?.live).toBe(5);
 	});
 
 	test("watcher and like parity counts imported rows only", async () => {

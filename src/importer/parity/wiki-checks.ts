@@ -178,12 +178,15 @@ export function wikiChecks(
 				});
 			}
 		}
+		const liveSample = live.attachmentSample.filter(
+			(item) => !localPages.has(item.pageSourceId),
+		);
 		const sampleDetails: string[] = [];
 		const sizeDetails: string[] = [];
 		let sampleMatches = 0;
 		let liveBytes = 0;
 		let dbBytes = 0;
-		for (const item of live.attachmentSample) {
+		for (const item of liveSample) {
 			liveBytes += item.size;
 			const stored = dbSample.get(item.sourceId);
 			dbBytes += stored?.size ?? 0;
@@ -203,7 +206,7 @@ export function wikiChecks(
 		checks.push(
 			check(
 				"confluence.attachments.sample",
-				live.attachmentSample.length,
+				liveSample.length,
 				sampleMatches,
 				sampleDetails,
 			),
