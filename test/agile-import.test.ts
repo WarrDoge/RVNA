@@ -248,6 +248,45 @@ function databaseFailingOn(
 	return wrap(db);
 }
 
+function sqlText(query: unknown): string {
+	const chunks = (query as { queryChunks?: unknown[] }).queryChunks ?? [];
+	return chunks
+		.map((chunk) => {
+			if (typeof chunk === "string") return chunk;
+			const value = (chunk as { value?: unknown }).value;
+			if (Array.isArray(value)) return value.join("");
+			return sqlText(chunk);
+		})
+		.join("");
+}
+
+/** Counts the statements that read the Sprint custom field. */
+function databaseCountingSprintQueries() {
+	let count = 0;
+	const wrap = (base: object): ImportDatabase =>
+		new Proxy(base, {
+			get(target, property) {
+				if (property === "transaction") {
+					return (callback: (tx: object) => unknown) =>
+						Reflect.get(target, property).call(target, (tx: object) =>
+							callback(wrap(tx)),
+						);
+				}
+				if (property === "execute") {
+					return (query: unknown) => {
+						if (sqlText(query).includes("jsonb_array_elements_text")) {
+							count += 1;
+						}
+						return Reflect.get(target, property).call(target, query);
+					};
+				}
+				const value = Reflect.get(target, property);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}) as ImportDatabase;
+	return { database: wrap(db), count: () => count };
+}
+
 describe("importAgileLocal", () => {
 	test("creates the board, sprints and memberships from issue data", async () => {
 		const counts = await importAgileLocal(db);
@@ -404,6 +443,28 @@ describe("importAgileLocal", () => {
 		expect(await membershipCount()).toBe(0);
 	});
 
+	test("a scalar sprint field does not abort the import", async () => {
+		await importAgileLocal(db);
+		await db
+			.update(issues)
+			.set({ custom: { [fixtureFieldIds.sprint]: "not an array" } })
+			.where(eq(issues.id, issueIds[2]));
+		try {
+			await expect(importAgileLocal(db)).resolves.toBeDefined();
+		} finally {
+			await db
+				.update(issues)
+				.set({ custom: {} })
+				.where(eq(issues.id, issueIds[2]));
+		}
+	});
+
+	test("reads the sprint field once per import", async () => {
+		const counter = databaseCountingSprintQueries();
+		await importAgileLocal(counter.database);
+		expect(counter.count()).toBe(1);
+	});
+
 	test("does not overwrite a board whose real configuration was imported", async () => {
 		const [board] = await db
 			.select()
@@ -422,5 +483,34 @@ describe("importAgileLocal", () => {
 			.where(eq(boards.id, board.id));
 		expect(after.name).toBe("Real board name");
 		expect(after.configImported).toBe(true);
+	});
+
+	test("does not overwrite a sprint on a board whose real configuration was imported", async () => {
+		await importAgileLocal(db);
+		const [board] = await db
+			.select()
+			.from(boards)
+			.where(eq(boards.sourceId, String(rapidViewId)));
+		await db
+			.update(boards)
+			.set({ configImported: true })
+			.where(eq(boards.id, board.id));
+		const [sprintRow] = await db
+			.select()
+			.from(sprints)
+			.where(eq(sprints.sourceId, "9001"));
+		await db
+			.update(sprints)
+			.set({ name: "Real sprint name", state: "closed" })
+			.where(eq(sprints.id, sprintRow.id));
+
+		await importAgileLocal(db);
+
+		const [after] = await db
+			.select()
+			.from(sprints)
+			.where(eq(sprints.id, sprintRow.id));
+		expect(after.name).toBe("Real sprint name");
+		expect(after.state).toBe("closed");
 	});
 });

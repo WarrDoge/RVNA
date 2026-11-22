@@ -1291,8 +1291,11 @@ npm run import -- jira-agile --private-apis
 
 It creates one board per distinct `rapidViewId` found in the Sprint values, with columns derived from the
 project's workflow status categories, and marks those boards `config_imported = false`. A later
-board import overwrites them by `source_id`, which is the Jira rapid view id. The remote board
-import reads its board configuration and closed-sprint reports from a non-public API, so it runs
+board import overwrites them by `source_id`, which is the Jira rapid view id. A board whose real
+configuration was imported (`config_imported = true`) keeps the sprints that import wrote: the local
+import only adds missing ones and their memberships, so the issue's Sprint field cannot rename or move
+them. The remote
+board import reads its board configuration and closed-sprint reports from a non-public API, so it runs
 only with `--private-apis`; see the warning under "Import from Jira".
 
 ## GitLab

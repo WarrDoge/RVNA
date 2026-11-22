@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import type { db } from "../lib/server/db.ts";
 import {
 	boardColumnStatuses,
@@ -153,11 +153,16 @@ type BoardPlan = {
 	issueIds: Set<string>;
 };
 
+type PlannedSprint = { issueId: string; sprint: ParsedSprint };
+
 async function planBoards(
 	database: Database,
-	descriptors: Map<string, ParsedSprint>,
 	sprintSourceId: string,
-): Promise<{ plans: Map<string, BoardPlan>; issueIds: Set<string> }> {
+): Promise<{
+	plans: Map<string, BoardPlan>;
+	issueIds: Set<string>;
+	sprintRows: PlannedSprint[];
+}> {
 	const result = await database.execute(sql`
 		select i.id as issue_id, i.project_id, p.key as project_key, p.name as project_name
 		from issues i
@@ -185,10 +190,15 @@ async function planBoards(
 		select i.id as issue_id, value as descriptor
 		from issues i
 		cross join lateral jsonb_array_elements_text(
-			coalesce(i.custom->${sprintSourceId}, '[]'::jsonb)
+			case
+				when jsonb_typeof(i.custom->${sprintSourceId}) = 'array'
+					then i.custom->${sprintSourceId}
+				else '[]'::jsonb
+			end
 		) value
 	`);
 
+	const sprintRows: PlannedSprint[] = [];
 	const plans = new Map<string, BoardPlan>();
 	for (const row of sprintIssues.rows as {
 		issue_id: string;
@@ -196,7 +206,7 @@ async function planBoards(
 	}[]) {
 		const sprint = parseSprintDescriptor(row.descriptor);
 		if (!sprint) continue;
-		descriptors.set(sprint.sourceId, sprint);
+		sprintRows.push({ issueId: row.issue_id, sprint });
 		const project = issueProjects.get(row.issue_id);
 		if (!project) continue;
 
@@ -260,7 +270,11 @@ async function planBoards(
 		plan.statuses = await projectStatuses(database, projectIds);
 	}
 
-	return { plans, issueIds: new Set(issueRows.map((row) => row.issue_id)) };
+	return {
+		plans,
+		issueIds: new Set(issueRows.map((row) => row.issue_id)),
+		sprintRows,
+	};
 }
 
 export async function importAgileLocal(
@@ -274,11 +288,15 @@ export async function importAgileLocal(
 async function importAgileLocalTransaction(
 	database: Database,
 ): Promise<AgileImportCounts> {
-	const descriptors = new Map<string, ParsedSprint>();
 	const sprintSourceId = await sprintFieldSourceId(database);
-	const { plans, issueIds: sprintFieldIssueIds } = sprintSourceId
-		? await planBoards(database, descriptors, sprintSourceId)
-		: { plans: new Map<string, BoardPlan>(), issueIds: new Set<string>() };
+	const planned = sprintSourceId
+		? await planBoards(database, sprintSourceId)
+		: {
+				plans: new Map<string, BoardPlan>(),
+				issueIds: new Set<string>(),
+				sprintRows: [] as PlannedSprint[],
+			};
+	const { plans, issueIds: sprintFieldIssueIds, sprintRows } = planned;
 	const counts: AgileImportCounts = {
 		boards: plans.size,
 		sprints: { future: 0, active: 0, closed: 0 },
@@ -287,6 +305,21 @@ async function importAgileLocalTransaction(
 	};
 
 	const sprintIds = new Map<string, string>();
+	const sprintWrites = new Map<
+		string,
+		{
+			sourceId: string;
+			boardId: string;
+			name: string;
+			goal: string | null;
+			state: SprintState;
+			startDate: Date | null;
+			endDate: Date | null;
+			completeDate: Date | null;
+			sequence: number;
+			ownsConfig: boolean;
+		}
+	>();
 	const issueMemberships: {
 		issueId: string;
 		sprintId: string;
@@ -383,68 +416,95 @@ async function importAgileLocalTransaction(
 		}
 
 		for (const sprint of plan.sprints) {
-			const [existingSprint] = await database
-				.select({ id: sprints.id })
-				.from(sprints)
-				.where(sql`${sprints.sourceId} = ${sprint.sourceId}`)
-				.limit(1);
-			if (existingSprint) {
-				await database
-					.update(sprints)
-					.set({
-						boardId,
-						name: sprint.name,
-						goal: sprint.goal,
-						state: sprint.state,
-						startDate: sprint.startDate,
-						endDate: sprint.endDate,
-						completeDate: sprint.completeDate,
-						sequence: sprint.sequence,
-						updatedAt: new Date(),
-					})
-					.where(sql`${sprints.id} = ${existingSprint.id}`);
-				sprintIds.set(sprint.sourceId, existingSprint.id);
-			} else {
-				const [created] = await database
-					.insert(sprints)
-					.values({
-						sourceId: sprint.sourceId,
-						boardId,
-						name: sprint.name,
-						goal: sprint.goal,
-						state: sprint.state,
-						startDate: sprint.startDate,
-						endDate: sprint.endDate,
-						completeDate: sprint.completeDate,
-						sequence: sprint.sequence,
-					})
-					.returning({ id: sprints.id });
-				sprintIds.set(sprint.sourceId, created.id);
-			}
-			counts.sprints[sprint.state] += 1;
+			sprintWrites.set(sprint.sourceId, {
+				sourceId: sprint.sourceId,
+				boardId,
+				name: sprint.name,
+				goal: sprint.goal,
+				state: sprint.state,
+				startDate: sprint.startDate,
+				endDate: sprint.endDate,
+				completeDate: sprint.completeDate,
+				sequence: sprint.sequence,
+				ownsConfig,
+			});
 		}
 
 		for (const issueId of plan.issueIds) importedIssueIds.add(issueId);
 	}
 
-	const memberships = sprintSourceId
-		? await database.execute(sql`
-				select i.id as issue_id, value as descriptor
-				from issues i
-				cross join lateral jsonb_array_elements_text(
-					coalesce(i.custom->${sprintSourceId}, '[]'::jsonb)
-				) value
-			`)
-		: { rows: [] };
-	for (const row of memberships.rows as {
-		issue_id: string;
-		descriptor: string;
-	}[]) {
-		const sprint = parseSprintDescriptor(row.descriptor);
-		const sprintId = sprint ? sprintIds.get(sprint.sourceId) : undefined;
-		if (!sprint || !sprintId) continue;
+	const writes = [...sprintWrites.values()];
+	const existingSprints = writes.length
+		? await database
+				.select({ id: sprints.id, sourceId: sprints.sourceId })
+				.from(sprints)
+				.where(
+					inArray(
+						sprints.sourceId,
+						writes.map((sprint) => sprint.sourceId),
+					),
+				)
+		: [];
+	const existingSprintBySource = new Map(
+		existingSprints.map((row) => [row.sourceId, row.id]),
+	);
+	const sprintValues = (sprint: (typeof writes)[number]) => ({
+		sourceId: sprint.sourceId,
+		boardId: sprint.boardId,
+		name: sprint.name,
+		goal: sprint.goal,
+		state: sprint.state,
+		startDate: sprint.startDate,
+		endDate: sprint.endDate,
+		completeDate: sprint.completeDate,
+		sequence: sprint.sequence,
+	});
+	const owned = writes.filter((sprint) => sprint.ownsConfig);
+	if (owned.length > 0) {
+		const rows = await database
+			.insert(sprints)
+			.values(owned.map(sprintValues))
+			.onConflictDoUpdate({
+				target: sprints.sourceId,
+				set: {
+					boardId: sql`excluded.board_id`,
+					name: sql`excluded.name`,
+					goal: sql`excluded.goal`,
+					state: sql`excluded.state`,
+					startDate: sql`excluded.start_date`,
+					endDate: sql`excluded.end_date`,
+					completeDate: sql`excluded.complete_date`,
+					sequence: sql`excluded.sequence`,
+					updatedAt: new Date(),
+				},
+			})
+			.returning({ id: sprints.id, sourceId: sprints.sourceId });
+		for (const row of rows) {
+			if (row.sourceId) sprintIds.set(row.sourceId, row.id);
+		}
+	}
+	const notOwned = writes.filter((sprint) => !sprint.ownsConfig);
+	if (notOwned.length > 0) {
+		const inserted = await database
+			.insert(sprints)
+			.values(notOwned.map(sprintValues))
+			.onConflictDoNothing({ target: sprints.sourceId })
+			.returning({ id: sprints.id, sourceId: sprints.sourceId });
+		for (const row of inserted) {
+			if (row.sourceId) sprintIds.set(row.sourceId, row.id);
+		}
+		for (const sprint of notOwned) {
+			const existingId = existingSprintBySource.get(sprint.sourceId);
+			if (existingId) sprintIds.set(sprint.sourceId, existingId);
+		}
+	}
+	for (const sprint of writes) counts.sprints[sprint.state] += 1;
+
+	for (const { issueId, sprint } of sprintRows) {
+		const sprintId = sprintIds.get(sprint.sourceId);
+		if (!sprintId) continue;
 		issueMemberships.push({
-			issueId: row.issue_id,
+			issueId,
 			sprintId,
 			isOpen: sprint.state !== "closed",
 		});
