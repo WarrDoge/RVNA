@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
 	boolean,
 	index,
@@ -124,5 +125,8 @@ export const emailBatches = pgTable(
 			table.issueId,
 			table.createdAt,
 		),
+		index("email_batches_pending_idx")
+			.on(table.sendAfter)
+			.where(sql`${table.sentAt} is null`),
 	],
 );
