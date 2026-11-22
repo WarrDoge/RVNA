@@ -168,3 +168,46 @@ test("the catalog is read once per request", async () => {
 	}
 	expect(calls).toBe(14);
 });
+
+test("label suggestions filter and limit in SQL", async () => {
+	const actor = await userForSession(session);
+	if (!actor) throw new Error("The test session has no user");
+	const database = db as unknown as {
+		transaction: (
+			run: (tx: {
+				execute: (query: unknown) => Promise<unknown>;
+			}) => Promise<unknown>,
+		) => Promise<unknown>;
+	};
+	const original = database.transaction;
+	const queries: string[] = [];
+	database.transaction = (run) =>
+		original(async (tx) => {
+			const execute = tx.execute;
+			tx.execute = (query) => {
+				queries.push(
+					JSON.stringify(
+						(query as unknown as { queryChunks?: unknown }).queryChunks ?? "",
+					),
+				);
+				return execute.call(tx, query);
+			};
+			return run(tx);
+		});
+	try {
+		const result = await suggestModule.suggest(actor, {
+			field: "labels",
+			prefix: "al",
+			limit: 1,
+		});
+		expect(result.values).toEqual(["alpha"]);
+	} finally {
+		database.transaction = original;
+	}
+	const labelQuery = queries.find((query) => query.includes("issue_labels"));
+	if (!labelQuery) throw new Error("the label query was not captured");
+	expect(labelQuery).toContain("ilike");
+	expect(labelQuery).toContain("escape '!'");
+	expect(labelQuery).toContain("limit");
+	expect(labelQuery).toContain("al%");
+});

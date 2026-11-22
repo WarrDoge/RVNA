@@ -1,13 +1,13 @@
 import { sql } from "drizzle-orm";
 import { builtinFieldId } from "../../shared/jql/fields.ts";
 import { isVisibleCustomField } from "../custom-fields.ts";
-import { db } from "../db.ts";
 import {
 	type PermissionUser,
 	visibleProjectIds,
 	visibleUsernames,
 } from "../permissions.ts";
 import { type JqlCatalog, loadCatalog } from "./catalog.ts";
+import { withStatementTimeout } from "./timeout.ts";
 
 export const DEFAULT_SUGGEST_LIMIT = 20;
 
@@ -152,16 +152,19 @@ async function suggestValues(
 		case "labels": {
 			const visible = await visibleProjectIds(viewer);
 			if (visible.length === 0) return [];
-			const rows = await db.execute(sql`
-				select distinct il.label
-				from issue_labels il
-				join issues i on i.id = il.issue_id
-				where i.project_id = any(${sql.param(visible)}::uuid[])
-				order by il.label
-			`);
-			return unique((rows.rows as { label: string }[]).map((row) => row.label))
-				.filter((value) => startsWith(value, prefix))
-				.slice(0, limit);
+			const pattern = `${prefix.replace(/[!%_\\]/g, (character) => `!${character}`)}%`;
+			const rows = await withStatementTimeout(async (tx) =>
+				tx.execute(sql`
+					select distinct il.label
+					from issue_labels il
+					join issues i on i.id = il.issue_id
+					where i.project_id = any(${sql.param(visible)}::uuid[])
+						and il.label ilike ${pattern} escape '!'
+					order by il.label
+					limit ${limit}
+				`),
+			);
+			return unique((rows.rows as { label: string }[]).map((row) => row.label));
 		}
 		case "component": {
 			const loaded = await getCatalog();
