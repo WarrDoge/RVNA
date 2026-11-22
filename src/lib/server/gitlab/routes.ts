@@ -23,6 +23,7 @@ import {
 import { constantTimeEqual, encryptionAvailable } from "./crypto.ts";
 import { issueDevelopment } from "./development.ts";
 import {
+	availableTransitionNames,
 	projectByKey,
 	projectGitlabSettings,
 	saveProjectGitlabSettings,
@@ -230,7 +231,14 @@ export async function acceptGitlabWebhook(
 		) {
 			try {
 				await enqueueGitlabDelivery(existing.id);
-			} catch {
+			} catch (error) {
+				await db
+					.update(gitlabDeliveries)
+					.set({
+						status: "failed",
+						reason: error instanceof Error ? error.message : String(error),
+					})
+					.where(eq(gitlabDeliveries.id, existing.id));
 				throw new HttpError(503, "The webhook queue is unavailable");
 			}
 		}
@@ -321,6 +329,46 @@ export async function getProjectGitlab(_actor: CurrentUser, key: string) {
 	return projectGitlabSettings(project.id);
 }
 
+function validateProjectGitlab(
+	body: ProjectGitlabInput,
+	availableTransitions: string[],
+) {
+	if (
+		body.defaultRepositoryId !== null &&
+		!body.linkedRepositoryIds.includes(body.defaultRepositoryId)
+	) {
+		throw new HttpError(400, "The default repository must be linked");
+	}
+
+	const available = new Set(
+		availableTransitions.map((name) => name.toLowerCase()),
+	);
+	const triggers = [
+		{
+			enabled: body.mergeRequestOpenedEnabled,
+			names: body.mergeRequestOpenedTransitions,
+			label: "opened",
+		},
+		{
+			enabled: body.mergeRequestMergedEnabled,
+			names: body.mergeRequestMergedTransitions,
+			label: "merged",
+		},
+	];
+	for (const trigger of triggers) {
+		if (trigger.enabled && trigger.names.length === 0) {
+			throw new HttpError(
+				400,
+				`Choose at least one transition for merge requests that are ${trigger.label}`,
+			);
+		}
+		const unknown = trigger.names.find(
+			(name) => !available.has(name.toLowerCase()),
+		);
+		if (unknown) throw new HttpError(400, `Unknown transition: ${unknown}`);
+	}
+}
+
 export async function updateProjectGitlab(
 	_actor: CurrentUser,
 	key: string,
@@ -329,6 +377,7 @@ export async function updateProjectGitlab(
 	requireAdminActor(_actor);
 	const project = await projectByKey(key);
 	if (!project) throw new HttpError(404, "Project not found");
+	validateProjectGitlab(body, await availableTransitionNames(project.id));
 	await saveProjectGitlabSettings(project.id, body);
 	return projectGitlabSettings(project.id);
 }

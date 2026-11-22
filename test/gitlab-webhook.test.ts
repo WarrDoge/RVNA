@@ -42,6 +42,20 @@ vi.mock("../src/lib/server/gitlab/crypto.ts", async (importOriginal) => {
 	};
 });
 
+const queueFailure = vi.hoisted(() => ({ fail: false }));
+
+vi.mock("../src/lib/server/gitlab/queue.ts", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("../src/lib/server/gitlab/queue.ts")>();
+	return {
+		...actual,
+		enqueueGitlabDelivery: async (deliveryId: string) => {
+			if (queueFailure.fail) throw new Error("the queue is unavailable");
+			return actual.enqueueGitlabDelivery(deliveryId);
+		},
+	};
+});
+
 const secret = "gitlab-webhook-secret";
 const tag = uniqueTag();
 let fixture: GitlabFixture;
@@ -413,6 +427,33 @@ describe("webhook delivery", () => {
 			.from(gitlabBranches)
 			.where(eq(gitlabBranches.name, "idempotent"));
 		expect(branches).toHaveLength(1);
+	});
+
+	test("marks a duplicate delivery failed when the queue is unavailable", async () => {
+		const key = `${tag}:duplicate-queue-failure`;
+		const payload = pushPayload(fixture, "duplicate-queue-failure", [
+			{ sha: "4".repeat(40), title: "duplicate queue failure" },
+		]);
+		await db.insert(gitlabDeliveries).values({
+			idempotencyKey: `Push Hook:${key}`,
+			event: "Push Hook",
+			payload,
+		});
+
+		queueFailure.fail = true;
+		try {
+			const response = await delivery(app, secret, "Push Hook", payload, key);
+			expect(response.statusCode).toBe(503);
+		} finally {
+			queueFailure.fail = false;
+		}
+
+		const [stored] = await db
+			.select()
+			.from(gitlabDeliveries)
+			.where(eq(gitlabDeliveries.idempotencyKey, `Push Hook:${key}`));
+		expect(stored?.status).toBe("failed");
+		expect(stored?.reason).toContain("queue is unavailable");
 	});
 
 	test("keeps the merge request lifecycle and the dominant state", async () => {

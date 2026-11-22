@@ -124,6 +124,7 @@ describe("admin configuration", () => {
 			adminSession,
 		);
 		expect(generated.statusCode).toBe(200);
+		expect(generated.headers["cache-control"]).toBe("no-store");
 		const secret = generated.json().secret as string;
 		expect(secret.length).toBeGreaterThan(20);
 		expect(generated.json().hasWebhookSecret).toBe(true);
@@ -196,6 +197,63 @@ describe("admin configuration", () => {
 				text: async () => "401 Unauthorized",
 			})),
 		).rejects.toThrow("401");
+	});
+
+	test("rejects a default repository that is not linked", async () => {
+		const response = await inject(
+			"PATCH",
+			`/api/projects/${fixture.projectKey}/gitlab`,
+			adminSession,
+			{
+				linkedRepositoryIds: [],
+				defaultRepositoryId: repositoryId,
+				smartCommitsEnabled: false,
+				mergeRequestOpenedEnabled: false,
+				mergeRequestOpenedTransitions: [],
+				mergeRequestMergedEnabled: false,
+				mergeRequestMergedTransitions: [],
+			},
+		);
+		expect(response.statusCode).toBe(400);
+		expect(response.json().error).toContain("default repository");
+	});
+
+	test("rejects transitions the project does not offer", async () => {
+		const response = await inject(
+			"PATCH",
+			`/api/projects/${fixture.projectKey}/gitlab`,
+			adminSession,
+			{
+				linkedRepositoryIds: [repositoryId],
+				defaultRepositoryId: repositoryId,
+				smartCommitsEnabled: false,
+				mergeRequestOpenedEnabled: true,
+				mergeRequestOpenedTransitions: ["No such transition"],
+				mergeRequestMergedEnabled: false,
+				mergeRequestMergedTransitions: [],
+			},
+		);
+		expect(response.statusCode).toBe(400);
+		expect(response.json().error).toContain("No such transition");
+	});
+
+	test("rejects an enabled trigger without a transition", async () => {
+		const response = await inject(
+			"PATCH",
+			`/api/projects/${fixture.projectKey}/gitlab`,
+			adminSession,
+			{
+				linkedRepositoryIds: [repositoryId],
+				defaultRepositoryId: repositoryId,
+				smartCommitsEnabled: false,
+				mergeRequestOpenedEnabled: false,
+				mergeRequestOpenedTransitions: [],
+				mergeRequestMergedEnabled: true,
+				mergeRequestMergedTransitions: [],
+			},
+		);
+		expect(response.statusCode).toBe(400);
+		expect(response.json().error).toContain("transition");
 	});
 
 	test("saves the per-project repository and automation settings", async () => {
