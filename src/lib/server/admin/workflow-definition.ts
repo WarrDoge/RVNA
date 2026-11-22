@@ -39,6 +39,12 @@ export function shapeProblem(definition: Definition): string | null {
 	if (statusIds.size !== definition.statuses.length) {
 		return "A status is listed twice";
 	}
+	if (
+		definition.initialStatusId !== null &&
+		!statusIds.has(definition.initialStatusId)
+	) {
+		return "The initial status is not one of the statuses of the workflow";
+	}
 	const transitionIds = new Set<string>();
 	for (const transition of definition.transitions) {
 		if (transitionIds.has(transition.id)) {
@@ -92,6 +98,17 @@ export function orderStatuses(
 	const ordered: string[] = [];
 	const seen = new Set<string>();
 	const statusIds = new Set(definition.statuses);
+	const fromAnyStatus: string[] = [];
+	const fromStatus = new Map<string, string[]>();
+	for (const transition of definition.transitions) {
+		if (transition.fromStatusId === null) {
+			fromAnyStatus.push(transition.toStatusId);
+			continue;
+		}
+		const list = fromStatus.get(transition.fromStatusId);
+		if (list) list.push(transition.toStatusId);
+		else fromStatus.set(transition.fromStatusId, [transition.toStatusId]);
+	}
 	const queue: string[] = [];
 	const visit = (id: string) => {
 		if (seen.has(id)) return;
@@ -108,14 +125,9 @@ export function orderStatuses(
 	}
 	for (let head = 0; head < queue.length; head++) {
 		const current = queue[head];
-		const next = definition.transitions
-			.filter(
-				(transition) =>
-					transition.fromStatusId === null ||
-					transition.fromStatusId === current,
-			)
-			.map((transition) => transition.toStatusId)
-			.sort(byName);
+		const next = [...fromAnyStatus, ...(fromStatus.get(current) ?? [])].sort(
+			byName,
+		);
 		for (const id of next) visit(id);
 	}
 	for (const id of [...definition.statuses].sort(byName)) visit(id);
@@ -198,10 +210,7 @@ export function validateDefinition(input: ValidationInput): Problem[] {
 		if (statusIds.has(id)) continue;
 		const issueCount = issueCounts.get(id) ?? 0;
 		const replacement = mapping[id];
-		if (
-			replacement !== undefined &&
-			(!statusIds.has(replacement) || !names.has(replacement))
-		) {
+		if (replacement !== undefined && !statusIds.has(replacement)) {
 			problems.push({
 				code: "invalid_mapping",
 				message: `${nameOf(id)} cannot be mapped to a status that is not part of the workflow`,

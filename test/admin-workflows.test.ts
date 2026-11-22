@@ -419,6 +419,22 @@ describe("workflow definition rules", () => {
 		).toEqual(["invalid_mapping"]);
 	});
 
+	test("a mapping to an unknown status is reported once, as unknown_status", () => {
+		const unknown = randomUUID();
+		const definition: Definition = {
+			initialStatusId: a,
+			statuses: [a, b, unknown],
+			transitions: [transition(a, b), transition(a, unknown)],
+		};
+		const problems = validate(definition, {
+			liveStatusIds: new Set([a, b, c]),
+			issueCounts: new Map([[c, 1]]),
+			statusMapping: { [c]: unknown },
+		});
+		expect(codes(problems)).toEqual(["unknown_status"]);
+		expect(problems[0].statusId).toBe(unknown);
+	});
+
 	test("shape checks reject transitions that leave the workflow's statuses", () => {
 		const ok: Definition = {
 			initialStatusId: null,
@@ -430,6 +446,7 @@ describe("workflow definition rules", () => {
 			shapeProblem({ ...ok, transitions: [transition(a, c)] }),
 		).not.toBeNull();
 		expect(shapeProblem({ ...ok, statuses: [a, a, b] })).not.toBeNull();
+		expect(shapeProblem({ ...ok, initialStatusId: c })).not.toBeNull();
 		expect(
 			shapeProblem({ ...ok, transitions: [transition(a, a)] }),
 		).not.toBeNull();
@@ -752,6 +769,8 @@ describe("workflow administration API", () => {
 		const unknown = definitionOf("open", ["open"], []);
 		unknown.statuses.push(randomUUID());
 		expect((await putDraft(wf.id, unknown)).statusCode).toBe(400);
+		const orphanInitial = definitionOf("open", ["work"], []);
+		expect((await putDraft(wf.id, orphanInitial)).statusCode).toBe(400);
 		const repeated = definitionOf(
 			"open",
 			["open", "work"],
