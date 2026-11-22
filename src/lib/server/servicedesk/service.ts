@@ -20,8 +20,10 @@ import {
 } from "./access.ts";
 import {
 	addCustomerComment,
+	countMyRequests,
 	createRequest,
 	customerRequest,
+	type MyRequestFilters,
 	myRequests,
 	portalGroups,
 	requestTypeForm,
@@ -39,11 +41,7 @@ export interface CreatePortalRequestInput {
 	attachmentCount?: number;
 }
 
-export interface MyRequestFilters {
-	status: "open" | "closed" | "all";
-	scope: "created" | "participating" | "all";
-	query: string;
-}
+export type { MyRequestFilters } from "./portal.ts";
 
 export interface DeskSettingsInput {
 	openAccess: boolean;
@@ -78,9 +76,9 @@ export async function portalDetail(actor: CurrentUser, portalId: string) {
 		throw new HttpError(404, "Portal not found");
 	}
 
-	const [groups, open] = await Promise.all([
+	const [groups, openCount] = await Promise.all([
 		portalGroups(desk),
-		myRequests(actor, {
+		countMyRequests(actor, {
 			status: "open",
 			scope: "all",
 			query: "",
@@ -95,7 +93,7 @@ export async function portalDetail(actor: CurrentUser, portalId: string) {
 		projectKey: desk.projectKey,
 		projectName: desk.projectName,
 		groups,
-		openRequestCount: open.length,
+		openRequestCount: openCount,
 	};
 }
 
@@ -218,24 +216,28 @@ export async function updateDeskSettings(
 	);
 
 	const { openAccess } = input;
-	if (openAccess !== desk.openAccess) {
-		await db.transaction(async (tx) => {
-			await tx
-				.update(serviceDesks)
-				.set({ openAccess, updatedAt: new Date() })
-				.where(eq(serviceDesks.id, desk.id));
-			await audit(tx, actor, {
-				action: "servicedesk.update",
-				entityType: "project",
-				entityId: desk.projectId,
-				summary: `Set open access of the service desk ${desk.projectKey} to ${openAccess ? "on" : "off"}`,
-				changes: {
-					from: { openAccess: desk.openAccess },
-					to: { openAccess },
-				},
-			});
+	await db.transaction(async (tx) => {
+		const [current] = await tx
+			.select({ openAccess: serviceDesks.openAccess })
+			.from(serviceDesks)
+			.where(eq(serviceDesks.id, desk.id))
+			.for("update");
+		if (!current || current.openAccess === openAccess) return;
+		await tx
+			.update(serviceDesks)
+			.set({ openAccess, updatedAt: new Date() })
+			.where(eq(serviceDesks.id, desk.id));
+		await audit(tx, actor, {
+			action: "servicedesk.update",
+			entityType: "project",
+			entityId: desk.projectId,
+			summary: `Set open access of the service desk ${desk.projectKey} to ${openAccess ? "on" : "off"}`,
+			changes: {
+				from: { openAccess: current.openAccess },
+				to: { openAccess },
+			},
 		});
-	}
+	});
 	return { openAccess };
 }
 

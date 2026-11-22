@@ -48,6 +48,7 @@ import {
 	myRequests,
 } from "../src/lib/server/servicedesk/portal.ts";
 import { runQueue } from "../src/lib/server/servicedesk/queues.ts";
+import { updateDeskSettings } from "../src/lib/server/servicedesk/service.ts";
 import { issueSla } from "../src/lib/server/servicedesk/sla.ts";
 import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page.server.ts";
 import { load as loadQueue } from "../src/routes/projects/[key]/queues/custom/[queueId]/+page.server.ts";
@@ -2359,6 +2360,38 @@ describe("portal access when the desk is open", () => {
 			"delete from audit_log where action = 'servicedesk.update' and entity_id = $1",
 			[projectId],
 		);
+	});
+
+	test("concurrent open-access changes audit the value each one replaced", async () => {
+		const actor = await userFor(adminSession);
+		const deleteAudit = () =>
+			pool.query(
+				"delete from audit_log where action = 'servicedesk.update' and entity_id = $1",
+				[projectId],
+			);
+		await deleteAudit();
+		try {
+			const results = await Promise.all([
+				updateDeskSettings(actor, projectKey, { openAccess: false }),
+				updateDeskSettings(actor, projectKey, { openAccess: true }),
+			]);
+			expect(results.map((result) => result.openAccess)).toEqual([false, true]);
+			const audited = await pool.query<{ fromValue: boolean }>(
+				"select (changes->'from'->>'openAccess')::boolean as \"fromValue\" from audit_log where action = 'servicedesk.update' and entity_id = $1",
+				[projectId],
+			);
+			expect(audited.rows.map((row) => row.fromValue).sort()).toEqual([
+				false,
+				true,
+			]);
+			const deskRow = await pool.query<{ openAccess: boolean }>(
+				'select open_access as "openAccess" from service_desks where id = $1',
+				[deskId],
+			);
+			expect(deskRow.rows[0]?.openAccess).toBe(true);
+		} finally {
+			await deleteAudit();
+		}
 	});
 });
 
