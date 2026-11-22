@@ -248,6 +248,24 @@ test("Assigned to Me returns the viewer's open issues", async () => {
 	expect(other.issueList.issues[0].key).toBe(`${key}-3`);
 });
 
+test("an offset far past the data is rejected", async () => {
+	const gadget = await addGadget("assigned-to-me", { rows: 10 });
+
+	const response = await request(
+		"GET",
+		`/api/gadgets/${gadget.id}/data?startAt=100000000`,
+		session,
+	);
+	expect(response.statusCode).toBe(400);
+
+	const atLimit = await request(
+		"GET",
+		`/api/gadgets/${gadget.id}/data?startAt=10000`,
+		session,
+	);
+	expect(atLimit.statusCode).toBe(200);
+});
+
 test("Watched Issues returns the issues the viewer watches", async () => {
 	const gadget = await addGadget("watched-issues", { rows: 10 });
 	const body = await data(gadget.id);

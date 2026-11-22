@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { userForSession } from "../src/lib/server/auth.ts";
+import { dashboardSummarySchema } from "../src/lib/server/dashboards/schemas.ts";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
 import { loadGadgetData } from "../src/lib/server/gadget-data.ts";
 import { SYSTEM_DASHBOARD_ID } from "../src/lib/server/schema.ts";
@@ -331,6 +332,12 @@ test("a gadget can be added at a chosen column and row", async () => {
 		["assigned-to-me", 1, 0],
 		["introduction", 1, 1],
 	]);
+});
+
+test("a dashboard response only accepts a known layout", () => {
+	const layout = dashboardSummarySchema.shape.layout;
+	expect(layout.safeParse("AAA").success).toBe(true);
+	expect(layout.safeParse("ZZ").success).toBe(false);
 });
 
 test("the imported System Dashboard is the landing page by source id", async () => {

@@ -1,12 +1,29 @@
 import { z } from "zod";
-import { GADGET_TYPES, type GadgetType } from "../../shared/gadgets.ts";
+import {
+	DASHBOARD_LAYOUTS,
+	type DashboardLayout,
+	GADGET_TYPES,
+	type GadgetType,
+} from "../../shared/gadgets.ts";
 import { userRefSchema } from "../api-schemas.ts";
 
 const gadgetTypeSchema = z.enum(
 	GADGET_TYPES.map((gadget) => gadget.type) as [GadgetType, ...GadgetType[]],
 );
 
-const layoutSchema = z.enum(["A", "AA", "AB", "BA", "AAA"]);
+const layoutSchema = z.enum(
+	DASHBOARD_LAYOUTS.map((layout) => layout.value) as [
+		DashboardLayout,
+		...DashboardLayout[],
+	],
+);
+
+const MAX_LAYOUT_COLUMNS = Math.max(
+	...DASHBOARD_LAYOUTS.map((layout) => layout.columns),
+);
+
+/** Deeper offsets only make Postgres scan rows the gadget will never show. */
+const MAX_GADGET_START_AT = 10_000;
 
 export const gadgetSchema = z.object({
 	id: z.uuid(),
@@ -25,7 +42,7 @@ export const dashboardSummarySchema = z.object({
 	sourceId: z.string().nullable(),
 	name: z.string(),
 	description: z.string().nullable(),
-	layout: z.string(),
+	layout: layoutSchema,
 	shared: z.boolean(),
 	owner: userRefSchema,
 	favourite: z.boolean(),
@@ -76,7 +93,12 @@ export const gadgetBody = z.object({
 	color: z.string().max(32).optional(),
 	refreshSeconds: z.number().int().min(0).max(86_400).optional(),
 	config: z.record(z.string(), z.unknown()).optional(),
-	column: z.number().int().min(0).max(2).optional(),
+	column: z
+		.number()
+		.int()
+		.min(0)
+		.max(MAX_LAYOUT_COLUMNS - 1)
+		.optional(),
 	row: z.number().int().min(0).max(10_000).optional(),
 });
 
@@ -88,11 +110,11 @@ export const gadgetPatchBody = z.object({
 });
 
 export const layoutBody = z.object({
-	columns: z.array(z.array(z.uuid()).max(200)).max(3),
+	columns: z.array(z.array(z.uuid()).max(200)).max(MAX_LAYOUT_COLUMNS),
 });
 
 export const gadgetDataQuery = z.object({
-	startAt: z.coerce.number().int().min(0).default(0),
+	startAt: z.coerce.number().int().min(0).max(MAX_GADGET_START_AT).default(0),
 });
 
 export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
@@ -105,4 +127,3 @@ export type GadgetBody = z.infer<typeof gadgetBody>;
 export type GadgetPatchBody = z.infer<typeof gadgetPatchBody>;
 export type LayoutBody = z.infer<typeof layoutBody>;
 export type FavouriteResult = z.infer<typeof favouriteSchema>;
-export type GadgetDataQuery = z.infer<typeof gadgetDataQuery>;
