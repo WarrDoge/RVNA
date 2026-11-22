@@ -12,19 +12,25 @@ import {
 } from "./messenger/worker.ts";
 
 export async function start() {
-	await runMigrations();
-	await bootstrapAdmin();
+	try {
+		await runMigrations();
+		await bootstrapAdmin();
 
-	const transport = createSmtpTransport();
-	if (transport) {
-		await startMail(transport);
-	} else {
-		console.log("SMTP_URL is not set; notification email is disabled");
+		const transport = createSmtpTransport();
+		if (transport) {
+			await startMail(transport);
+		} else {
+			console.log("SMTP_URL is not set; notification email is disabled");
+		}
+
+		await startGitlabQueue();
+		await startMessengerQueue();
+		startMessengerWorker();
+	} catch (error) {
+		console.error("startup failed", error);
+		await stop();
+		throw error;
 	}
-
-	await startGitlabQueue();
-	await startMessengerQueue();
-	startMessengerWorker();
 }
 
 export async function stop() {
