@@ -191,11 +191,18 @@ async function fetchServiceDesks(
 				{ includeCount: "true" },
 			),
 			metricsEnabled
-				? client.getJson<JiraSlaMetricsResponse>(
-						`/rest/servicedesk/1/servicedesk/agent/${encodeURIComponent(desk.projectKey)}/sla/metrics`,
-						undefined,
-						{ headers: EXPERIMENTAL },
-					)
+				? client
+						.getJson<JiraSlaMetricsResponse>(
+							`/rest/servicedesk/1/servicedesk/agent/${encodeURIComponent(desk.projectKey)}/sla/metrics`,
+							undefined,
+							{ headers: EXPERIMENTAL },
+						)
+						.catch((error) => {
+							console.warn(
+								`Skipping SLA metrics for ${desk.projectKey}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							return {} as JiraSlaMetricsResponse;
+						})
 				: Promise.resolve({} as JiraSlaMetricsResponse),
 		]);
 		result.push({

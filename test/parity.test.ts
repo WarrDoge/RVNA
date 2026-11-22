@@ -1029,6 +1029,57 @@ describe("parity checks", () => {
 		expect([...live.issues.keys()]).toEqual(["P-1", "P-2"]);
 	});
 
+	test("an unavailable SLA metrics endpoint does not abort the live snapshot", async () => {
+		const jiraFetch = (async (input: string | URL | Request) => {
+			const url = new URL(String(input));
+			const path = url.pathname;
+			if (path === "/rest/api/2/project") {
+				return new Response(JSON.stringify([{ id: "1", key: "P" }]));
+			}
+			if (path === "/rest/api/2/issueLinkType") {
+				return new Response(JSON.stringify({ issueLinkTypes: [] }));
+			}
+			if (path === "/rest/api/2/search") {
+				return new Response(JSON.stringify({ total: 0, issues: [] }));
+			}
+			if (path === "/rest/servicedeskapi/servicedesk") {
+				return new Response(
+					JSON.stringify({
+						values: [{ id: "1", projectKey: "P" }],
+						isLastPage: true,
+					}),
+				);
+			}
+			if (path.includes("/sla/metrics")) {
+				return new Response("forbidden", { status: 403 });
+			}
+			if (path.endsWith("/requesttype") || path.endsWith("/queue")) {
+				return new Response(JSON.stringify({ values: [], isLastPage: true }));
+			}
+			return new Response("[]");
+		}) as typeof fetch;
+		const client = new JiraClient({
+			baseUrl: "https://jira.example.test",
+			token: "token",
+			fetchImpl: jiraFetch,
+		});
+		const live = await fetchJiraLive(client, {
+			privateApis: true,
+			serviceDesks: true,
+			agile: false,
+			filters: false,
+		});
+		expect(live.serviceDesks).toEqual([
+			{
+				sourceId: "1",
+				projectKey: "P",
+				requestTypes: [],
+				queues: [],
+				metrics: [],
+			},
+		]);
+	});
+
 	test("live fetches only issue GET requests", async () => {
 		const calls: string[] = [];
 		const jiraFetch = (async (
