@@ -280,13 +280,21 @@ export async function upsertRows(
 			counts.inserted += returned.length;
 			continue;
 		}
-		const returned = (await insert.returning({ id: idColumn })) as {
-			id: string;
-		}[];
-		for (let index = 0; index < chunk.length; index++) {
-			const key = keyOf(chunk[index]);
-			ids.set(key, String(returned[index].id));
-			cache.rows.set(key, { ...chunk[index], id: returned[index].id });
+		const returned = (await insert.returning()) as CachedRow[];
+		if (returned.length !== chunk.length) {
+			throw new Error(
+				`inserting ${chunk.length} rows returned ${returned.length} rows`,
+			);
+		}
+		const returnedByKey = new Map(returned.map((row) => [keyOf(row), row]));
+		for (const row of chunk) {
+			const key = keyOf(row);
+			const inserted = returnedByKey.get(key);
+			if (!inserted) {
+				throw new Error(`inserting rows did not return ${key}`);
+			}
+			ids.set(key, String(inserted.id));
+			cache.rows.set(key, inserted);
 		}
 		counts.inserted += chunk.length;
 	}

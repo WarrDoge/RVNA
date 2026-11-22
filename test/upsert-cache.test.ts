@@ -26,7 +26,7 @@ function fakeExecutor(rows: Record<string, unknown>[]) {
 				values(chunk: Record<string, unknown>[]) {
 					return {
 						returning: async () =>
-							chunk.map((_row, index) => ({ id: `inserted-${index}` })),
+							chunk.map((row, index) => ({ ...row, id: `inserted-${index}` })),
 					};
 				},
 			};
@@ -199,5 +199,44 @@ describe("upsert local change markers", () => {
 		expect(result.counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
 		expect(updates).toHaveLength(1);
 		expect(updates[0]).toHaveProperty("marker");
+	});
+});
+
+describe("upsert insert results", () => {
+	test("fails clearly when the insert returns fewer rows than values", async () => {
+		const { tx } = trackingExecutor([], (chunk) =>
+			chunk.slice(0, 1).map((row, index) => ({ ...row, id: `row-${index}` })),
+		);
+
+		await expect(
+			upsertRows(
+				tx,
+				markerTable,
+				[
+					{ sourceId: "a", name: "A" },
+					{ sourceId: "b", name: "B" },
+				],
+				(row) => String(row.sourceId),
+			),
+		).rejects.toThrow(/inserting 2 rows returned 1 rows/);
+	});
+
+	test("maps inserted rows back by their key, not their position", async () => {
+		const { tx } = trackingExecutor([], (chunk) =>
+			chunk.map((row, index) => ({ ...row, id: `row-${index}` })).reverse(),
+		);
+
+		const result = await upsertRows(
+			tx,
+			markerTable,
+			[
+				{ sourceId: "a", name: "A" },
+				{ sourceId: "b", name: "B" },
+			],
+			(row) => String(row.sourceId),
+		);
+
+		expect(result.ids.get("a")).toBe("row-0");
+		expect(result.ids.get("b")).toBe("row-1");
 	});
 });
