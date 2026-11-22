@@ -7,6 +7,7 @@ import { type CurrentUser, userForSession } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	automationRules,
+	comments,
 	components,
 	fieldOptions,
 	fields,
@@ -28,11 +29,17 @@ import {
 	slaGoals,
 	slaMetrics,
 	statuses,
+	watchers,
 	workflowStatuses,
 	workflows,
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
-import { canViewRequest } from "../src/lib/server/servicedesk/access.ts";
+import {
+	canViewRequest,
+	deskByProjectId,
+	isParticipant,
+	participatingIssueIds,
+} from "../src/lib/server/servicedesk/access.ts";
 import { applyCreateAutomation } from "../src/lib/server/servicedesk/automation.ts";
 import { issueSla } from "../src/lib/server/servicedesk/sla.ts";
 import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page.server.ts";
@@ -2456,6 +2463,83 @@ describe("review regressions", () => {
 			await db
 				.delete(slaCalendars)
 				.where(eq(slaCalendars.id, secondCalendar.id));
+		}
+	});
+});
+
+describe("review follow-ups", () => {
+	test("a project with two desks resolves one desk deterministically", async () => {
+		const duplicateId = "00000000-0000-4000-8000-000000000001";
+		await pool.query(
+			"insert into service_desks (id, source_id, project_id, portal_name) values ($1, $2, $3, $4)",
+			[duplicateId, `${tag}:desk:duplicate`, projectId, "Duplicate portal"],
+		);
+		try {
+			expect((await deskByProjectId(projectId))?.id).toBe(duplicateId);
+		} finally {
+			await pool.query("delete from service_desks where id = $1", [
+				duplicateId,
+			]);
+		}
+	});
+
+	test("participation checks read watchers and commenters in one query", async () => {
+		const watched = await createRequest(customerSession, {
+			summary: "Participation watched",
+		});
+		const commented = await createRequest(customerSession, {
+			summary: "Participation commented",
+		});
+		const [watchedIssue] = await db
+			.select({ id: issues.id })
+			.from(issues)
+			.where(eq(issues.key, watched.json().key));
+		const [commentedIssue] = await db
+			.select({ id: issues.id })
+			.from(issues)
+			.where(eq(issues.key, commented.json().key));
+		if (!watchedIssue || !commentedIssue) {
+			throw new Error("created issue missing");
+		}
+		const watchSource = `${tag}:watch:participation`;
+		const commentSource = `${tag}:comment:participation`;
+		await db.insert(watchers).values({
+			sourceId: watchSource,
+			issueId: watchedIssue.id,
+			userId: customerId,
+		});
+		await db.insert(comments).values({
+			sourceId: commentSource,
+			issueId: commentedIssue.id,
+			authorId: customerId,
+			bodyHtml: "<p>I am following this</p>",
+			bodySource: "I am following this",
+			created: new Date(),
+			updated: new Date(),
+		});
+		try {
+			const querySpy = vi.spyOn(Pool.prototype, "query");
+			const commenter = await isParticipant(customerId, commentedIssue.id);
+			const commenterQueries = querySpy.mock.calls.length;
+			querySpy.mockClear();
+			const ids = await participatingIssueIds(customerId);
+			const listQueries = querySpy.mock.calls.length;
+			querySpy.mockClear();
+			const watcher = await isParticipant(customerId, watchedIssue.id);
+			const watcherQueries = querySpy.mock.calls.length;
+			querySpy.mockRestore();
+
+			expect(commenter).toBe(true);
+			expect(commenterQueries).toBe(1);
+			expect(watcher).toBe(true);
+			expect(watcherQueries).toBe(1);
+			expect(listQueries).toBe(1);
+			expect(ids).toContain(watchedIssue.id);
+			expect(ids).toContain(commentedIssue.id);
+			expect(new Set(ids).size).toBe(ids.length);
+		} finally {
+			await db.delete(watchers).where(eq(watchers.sourceId, watchSource));
+			await db.delete(comments).where(eq(comments.sourceId, commentSource));
 		}
 	});
 });

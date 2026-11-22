@@ -59,11 +59,14 @@ export async function deskByPortalId(id: string): Promise<Desk | null> {
 }
 
 export async function deskByProjectId(projectId: string): Promise<Desk | null> {
+	// The importer writes one desk per project; the order keeps a database that
+	// holds more than one picking the same desk on every check.
 	const [row] = await db
 		.select(deskColumns)
 		.from(serviceDesks)
 		.innerJoin(projects, eq(projects.id, serviceDesks.projectId))
 		.where(eq(serviceDesks.projectId, projectId))
+		.orderBy(serviceDesks.id)
 		.limit(1);
 	return row ?? null;
 }
@@ -151,18 +154,20 @@ export async function isParticipant(
 	userId: string,
 	issueId: string,
 ): Promise<boolean> {
-	const [watcher] = await db
-		.select({ id: watchers.id })
+	const [row] = await db
+		.select({ found: sql<number>`1` })
 		.from(watchers)
 		.where(and(eq(watchers.issueId, issueId), eq(watchers.userId, userId)))
+		.union(
+			db
+				.select({ found: sql<number>`1` })
+				.from(comments)
+				.where(
+					and(eq(comments.issueId, issueId), eq(comments.authorId, userId)),
+				),
+		)
 		.limit(1);
-	if (watcher) return true;
-	const [comment] = await db
-		.select({ id: comments.id })
-		.from(comments)
-		.where(and(eq(comments.issueId, issueId), eq(comments.authorId, userId)))
-		.limit(1);
-	return comment !== undefined;
+	return row !== undefined;
 }
 
 export async function canViewRequest(
@@ -212,21 +217,24 @@ export async function canViewRequestIssue(
 
 /** Issue ids a customer participates in, for the "my requests" filters. */
 export async function participatingIssueIds(userId: string): Promise<string[]> {
-	const watched = await db
+	const rows = await db
 		.select({ issueId: watchers.issueId })
 		.from(watchers)
-		.where(eq(watchers.userId, userId));
-	const commented = await db
-		.select({ issueId: comments.issueId })
-		.from(comments)
-		.where(eq(comments.authorId, userId));
-	return [...new Set([...watched, ...commented].map((row) => row.issueId))];
+		.where(eq(watchers.userId, userId))
+		.union(
+			db
+				.select({ issueId: comments.issueId })
+				.from(comments)
+				.where(eq(comments.authorId, userId)),
+		);
+	return rows.map((row) => row.issueId);
 }
 
 /**
- * Where a signed-in user who may not browse an issue is sent when it is their own
- * request on a service desk: the customer view of it, as Jira does. Anyone else
- * gets null and the usual not-found screen.
+ * Where a signed-in user who may not browse an issue is sent when the request
+ * admits them: the customer view of it, as Jira does. That includes the reporter,
+ * the creator, watchers, commenters and desk agents. Anyone else gets null and
+ * the usual not-found screen.
  */
 export async function customerRequestPath(
 	user: CurrentUser,
