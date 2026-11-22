@@ -123,3 +123,63 @@ test("a second run changes nothing and a removed member loses only the confluenc
 		.where(and(eq(userGroups.groupId, group.id), eq(userGroups.userId, carol)));
 	expect(kept).toHaveLength(2);
 });
+
+test("reads the next page when the server returns fewer rows than requested", async () => {
+	const dummyGroups = Array.from({ length: 100 }, (_, index) => ({
+		name: `t-${run}-dummy-${index}`,
+	}));
+	const paged = {
+		async getJson<T>(path: string, params?: Record<string, unknown>) {
+			const start = Number(params?.start ?? 0);
+			if (path === "/rest/api/group") {
+				if (start === 0) return { results: dummyGroups } as T;
+				if (start === 100) return { results: [{ name: groupName }] } as T;
+				return { results: [] } as T;
+			}
+			if (path === `/rest/api/group/${encodeURIComponent(groupName)}/member`) {
+				return {
+					results: start === 0 ? [{ username: `t-${run}-bob` }] : [],
+				} as T;
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+
+	const result = await importConfluenceGroups(paged);
+	expect(result.memberships).toBe(1);
+	expect(await sources(bob)).toEqual(["confluence"]);
+});
+
+test("tolerates a page without a results array", async () => {
+	const empty = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/group") return {} as T;
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+
+	const result = await importConfluenceGroups(empty);
+	expect(result.missingInConfluence).toBeGreaterThan(0);
+});
+
+test("stops a pagination loop that never ends", async () => {
+	let calls = 0;
+	const endless = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/group") {
+				calls++;
+				return {
+					results: Array.from({ length: 200 }, (_, index) => ({
+						name: `loop-${index}`,
+					})),
+				} as T;
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+
+	await expect(importConfluenceGroups(endless)).rejects.toThrow(
+		/did not finish/,
+	);
+	expect(calls).toBe(1000);
+});

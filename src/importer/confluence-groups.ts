@@ -14,6 +14,7 @@ interface Paged<T> {
 }
 
 const PAGE_SIZE = 200;
+const MAX_PAGES = 1000;
 const SOURCE = "confluence";
 
 async function allPages<T>(
@@ -21,14 +22,20 @@ async function allPages<T>(
 	path: string,
 ): Promise<T[]> {
 	const collected: T[] = [];
-	for (let start = 0; ; start += PAGE_SIZE) {
-		const page = await client.getJson<Paged<T>>(path, {
+	let start = 0;
+	for (let page = 0; page < MAX_PAGES; page++) {
+		const response = await client.getJson<Paged<T>>(path, {
 			start,
 			limit: PAGE_SIZE,
 		});
-		collected.push(...page.results);
-		if (page.results.length < PAGE_SIZE) return collected;
+		const results = response.results ?? [];
+		collected.push(...results);
+		if (results.length === 0) return collected;
+		start += results.length;
 	}
+	throw new Error(
+		`pagination for ${path} did not finish after ${MAX_PAGES} pages`,
+	);
 }
 
 /**
