@@ -200,10 +200,18 @@ async function readText(request: Request, limit: number) {
 	const decoder = new TextDecoder();
 	let received = 0;
 	let text = "";
-	for await (const chunk of request.body) {
-		received += chunk.length;
-		if (received > limit) throw bodyTooLarge();
-		text += decoder.decode(chunk, { stream: true });
+	try {
+		for await (const chunk of request.body) {
+			received += chunk.length;
+			if (received > limit) throw bodyTooLarge();
+			text += decoder.decode(chunk, { stream: true });
+		}
+	} catch (error) {
+		if (error instanceof BodyParseError) throw error;
+		throw bodyParserError(
+			"FST_ERR_CTP_INVALID_BODY",
+			"Request body could not be read",
+		);
 	}
 	return text + decoder.decode();
 }
@@ -269,6 +277,7 @@ async function requestBody(request: Request, limit: number): Promise<unknown> {
 		);
 	} catch (error) {
 		if (error instanceof BodyParseError) {
+			// A parser error keeps its Fastify-shaped body even when the route has its own formatter.
 			throw new ValidationError(error.body, error.status);
 		}
 		throw error;
@@ -312,8 +321,12 @@ function schemaFor(response: EndpointOptions["response"], status: number) {
 	return isSchema(response) ? response : response[status];
 }
 
-function jiraError(status: number, message: string) {
-	return jsonResponse({ errorMessages: [message], errors: {} }, { status });
+/** Jira's error body has no field for `details`; response headers still apply. */
+function jiraError(status: number, message: string, headers?: HeadersInit) {
+	return jsonResponse(
+		{ errorMessages: [message], errors: {} },
+		{ status, headers },
+	);
 }
 
 function errorResponse(
@@ -329,7 +342,8 @@ function errorResponse(
 				typeof body.message === "string" ? body.message : "Invalid input",
 			);
 		}
-		if (isHttpError(error)) return jiraError(error.status, error.message);
+		if (isHttpError(error))
+			return jiraError(error.status, error.message, error.headers);
 		console.error(error);
 		return jiraError(500, "Internal server error");
 	}
