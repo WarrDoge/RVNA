@@ -853,6 +853,16 @@ describe("parity checks", () => {
 		expect(bytes?.live).toBe(5);
 	});
 
+	test("page watchers ignore pages kept locally", () => {
+		const { live, database } = wikiSnapshots(new Set(["local-page"]));
+		const check = wikiChecks(live, database, allTables()).find(
+			(item) => item.name === "wiki.page_watchers",
+		);
+		expect(check?.status).toBe("OK");
+		expect(check?.live).toBe(1);
+		expect(check?.database).toBe(1);
+	});
+
 	test("watcher and like parity counts imported rows only", async () => {
 		const importedUser = await pool.query<{ id: string }>(
 			"select id from users where username = $1",

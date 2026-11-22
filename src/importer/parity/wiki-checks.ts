@@ -352,8 +352,8 @@ export function wikiChecks(
 					)
 				: socialCheck(
 						"wiki.page_watchers",
-						live.pageWatchers,
-						database.pageWatchers,
+						withoutLocal(live.pageWatchers, localPages),
+						withoutLocal(database.pageWatchers, localPages),
 					),
 		);
 	} else {
