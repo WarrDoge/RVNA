@@ -13,7 +13,9 @@ import {
 } from "../src/lib/server/schema.ts";
 import { appSettings, auditLog } from "../src/lib/server/schema-admin.ts";
 import {
+	defaultIssueTypeKey,
 	readSettingValues,
+	readSiteSettings,
 	settingKeys,
 	siteTitleKey,
 } from "../src/lib/server/site.ts";
@@ -380,6 +382,36 @@ describe("general configuration", () => {
 		expect(json<{ error: string }>(subtask).error).toBe(
 			"The default issue type cannot be a sub-task",
 		);
+	});
+
+	test("a stored default that became a sub-task falls back to null", async () => {
+		const [existing] = await db
+			.select()
+			.from(appSettings)
+			.where(eq(appSettings.key, defaultIssueTypeKey));
+		try {
+			await db
+				.insert(appSettings)
+				.values({ key: defaultIssueTypeKey, value: subtaskTypeId })
+				.onConflictDoUpdate({
+					target: appSettings.key,
+					set: { value: subtaskTypeId, updatedAt: new Date() },
+				});
+
+			const settings = await readSiteSettings();
+			expect(settings.defaultIssueTypeId).toBeNull();
+		} finally {
+			if (existing) {
+				await db
+					.update(appSettings)
+					.set({ value: existing.value, updatedAt: existing.updatedAt })
+					.where(eq(appSettings.key, defaultIssueTypeKey));
+			} else {
+				await db
+					.delete(appSettings)
+					.where(eq(appSettings.key, defaultIssueTypeKey));
+			}
+		}
 	});
 
 	test("writes one audit row with only the changed keys", async () => {

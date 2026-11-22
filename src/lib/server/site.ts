@@ -1,4 +1,4 @@
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import type { CurrentUser } from "./auth.ts";
 import { db } from "./db.ts";
@@ -58,7 +58,9 @@ export async function readSiteSettings(): Promise<SiteSettings> {
 			? db
 					.select({ id: issueTypes.id })
 					.from(issueTypes)
-					.where(eq(issueTypes.id, issueTypeId))
+					.where(
+						and(eq(issueTypes.id, issueTypeId), eq(issueTypes.subtask, false)),
+					)
 			: [],
 		priorityId
 			? db
