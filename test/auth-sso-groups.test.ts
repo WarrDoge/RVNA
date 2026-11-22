@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
+import { syncGroups } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	groups,
@@ -18,7 +19,13 @@ import {
 	fixtureKey,
 	type SeedResult,
 } from "./fixtures/project.ts";
-import { adminGroup, buildServer, cleanupTestData, login } from "./helpers.ts";
+import {
+	adminGroup,
+	buildServer,
+	cleanupTestData,
+	login,
+	swapTransaction,
+} from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = randomUUID().slice(0, 8);
@@ -294,6 +301,71 @@ test("the administrator group in the claim compares without case", async () => {
 		await isAdminAfterLogin(`t-${run}-case`, [adminGroup().toUpperCase()]),
 	).toBe(true);
 	expect(await isAdminAfterLogin(`t-${run}-case`, [])).toBe(false);
+});
+
+test("concurrent logins with two spellings of one group create one group", async () => {
+	const groupName = `t-${run}-race`;
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	const fn = `group_sync_delay_${run}`;
+	await pool.query(`drop trigger if exists ${fn} on groups`);
+	await pool.query(`drop function if exists ${fn}()`);
+	await pool.query(
+		`create function ${fn}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.4); return new; end $$`,
+	);
+	await pool.query(
+		`create trigger ${fn} before insert on groups for each row when (lower(new.name) = '${groupName.toLowerCase()}') execute function ${fn}()`,
+	);
+	try {
+		const first = syncGroups(importedId, [groupName]);
+		const second = syncGroups(importedId, [groupName.toUpperCase()]);
+		await both;
+		restore();
+		release();
+		await Promise.all([first, second]);
+
+		const rows = await db
+			.select({ id: groups.id })
+			.from(groups)
+			.where(sql`lower(${groups.name}) = ${groupName.toLowerCase()}`);
+		expect(rows).toHaveLength(1);
+		const memberships = await db
+			.select()
+			.from(userGroups)
+			.where(
+				and(
+					eq(userGroups.userId, importedId),
+					eq(userGroups.groupId, rows[0]?.id as string),
+				),
+			);
+		expect(memberships).toHaveLength(1);
+	} finally {
+		restore();
+		await pool.query(`drop trigger if exists ${fn} on groups`);
+		await pool.query(`drop function if exists ${fn}()`);
+		await db
+			.delete(userGroups)
+			.where(
+				sql`${userGroups.groupId} in (select id from groups where lower(name) = ${groupName.toLowerCase()})`,
+			);
+		await db
+			.delete(groups)
+			.where(sql`lower(${groups.name}) = ${groupName.toLowerCase()}`);
+	}
 });
 
 test("a membership of the administrator group from an import or the app survives an SSO login", async () => {

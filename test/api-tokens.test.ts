@@ -84,6 +84,70 @@ test("a token is returned once, stored hashed, and authenticates as a bearer", a
 	expect(used.lastUsedAt).not.toBeNull();
 });
 
+test("a bearer request does not rewrite last_used_at on every call", async () => {
+	const created = await createToken({ name: "Throttled touch" });
+	const { id, token } = created.json();
+	const request = () =>
+		app.inject({
+			method: "GET",
+			url: "/api/me",
+			headers: { authorization: `Bearer ${token}` },
+		});
+
+	expect((await request()).statusCode).toBe(200);
+	const first = await db.select().from(apiTokens).where(eq(apiTokens.id, id));
+	expect(first[0]?.lastUsedAt).not.toBeNull();
+
+	const recent = new Date(Date.now() - 60_000);
+	await db
+		.update(apiTokens)
+		.set({ lastUsedAt: recent })
+		.where(eq(apiTokens.id, id));
+	expect((await request()).statusCode).toBe(200);
+	const afterRecent = await db
+		.select()
+		.from(apiTokens)
+		.where(eq(apiTokens.id, id));
+	expect(afterRecent[0]?.lastUsedAt?.getTime()).toBe(recent.getTime());
+
+	const stale = new Date(Date.now() - 10 * 60_000);
+	await db
+		.update(apiTokens)
+		.set({ lastUsedAt: stale })
+		.where(eq(apiTokens.id, id));
+	expect((await request()).statusCode).toBe(200);
+	const afterStale = await db
+		.select()
+		.from(apiTokens)
+		.where(eq(apiTokens.id, id));
+	expect(afterStale[0]?.lastUsedAt?.getTime()).toBeGreaterThan(stale.getTime());
+});
+
+test("a failed last-used write does not reject a valid token", async () => {
+	const created = await createToken({ name: "Touch failure" });
+	const { id, token } = created.json();
+	const fn = `token_touch_fail_${run}`;
+	await pool.query(`drop trigger if exists ${fn} on api_tokens`);
+	await pool.query(`drop function if exists ${fn}()`);
+	await pool.query(
+		`create function ${fn}() returns trigger language plpgsql as $$ begin raise exception 'touch failed'; end $$`,
+	);
+	await pool.query(
+		`create trigger ${fn} before update on api_tokens for each row when (old.id = '${id}') execute function ${fn}()`,
+	);
+	try {
+		const response = await app.inject({
+			method: "GET",
+			url: "/api/me",
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+	} finally {
+		await pool.query(`drop trigger if exists ${fn} on api_tokens`);
+		await pool.query(`drop function if exists ${fn}()`);
+	}
+});
+
 test("a bearer token cannot create, list or revoke tokens", async () => {
 	const created = await createToken({ name: "Bearer create" });
 	const token = created.json().token;

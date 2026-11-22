@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { sha256 } from "../src/lib/server/auth.ts";
+import { requestPath, sha256 } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { sessions, users } from "../src/lib/server/schema.ts";
 import {
@@ -27,6 +27,13 @@ afterAll(async () => {
 	await cleanupTestData(run);
 	await app.close();
 	await pool.end();
+});
+
+test("requestPath decodes like the router without decoding separators", () => {
+	expect(requestPath("/%61pi/me")).toBe("/api/me");
+	expect(requestPath("/api%2Fme")).toBe("/api%2Fme");
+	expect(requestPath("/%2e%2e/api/me")).toBe("/../api/me");
+	expect(requestPath("/api/me?x=1")).toBe("/api/me");
 });
 
 test("OIDC login sets a session and /api/me returns the user with groups", async () => {

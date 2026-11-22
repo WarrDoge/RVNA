@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import { userAvatarUrl } from "./avatars.ts";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
@@ -15,6 +15,9 @@ import {
 
 export const SESSION_COOKIE = "sid";
 export const TRANSACTION_COOKIE = "oidc_transaction";
+
+/** A bearer token's last use is a coarse hint, not a write on every request. */
+const TOKEN_TOUCH_MS = 5 * 60 * 1000;
 
 export type CurrentUser = {
 	id: string;
@@ -190,28 +193,60 @@ export async function syncGroups(userId: string, groupNames: string[]) {
 		await tx
 			.delete(userGroups)
 			.where(and(eq(userGroups.userId, userId), eq(userGroups.source, "oidc")));
+
+		// Jira and the claim spell a group differently ("Jira-Users" and
+		// "jira-users"): one name without case is one group. Lock the names in
+		// order so two logins cannot both insert the same logical group.
+		const names = new Map<string, string>();
 		for (const name of groupNames) {
-			// Jira and the claim spell a group differently ("Jira-Users" and
-			// "jira-users"): one name without case is one group.
-			let [group] = await tx
-				.select()
-				.from(groups)
-				.where(sql`lower(${groups.name}) = ${name.toLowerCase()}`)
-				.orderBy(groups.name)
-				.limit(1);
-			if (!group) {
-				[group] = await tx
-					.insert(groups)
-					.values({ name, local: false })
-					.onConflictDoUpdate({ target: groups.name, set: { name } })
-					.returning();
+			const lower = name.toLowerCase();
+			if (!names.has(lower)) names.set(lower, name);
+		}
+		const lowerNames = [...names.keys()].sort();
+		if (lowerNames.length > 0) {
+			await tx.execute(sql`
+				select pg_advisory_xact_lock(hashtext(n)::bigint)
+				from (
+					select unnest(${sql.param(lowerNames)}::text[]) as n order by 1
+				) sorted
+			`);
+		}
+
+		const existing = lowerNames.length
+			? await tx
+					.select()
+					.from(groups)
+					.where(
+						sql`lower(${groups.name}) = any(${sql.param(lowerNames)}::text[])`,
+					)
+					.orderBy(groups.name)
+			: [];
+		const byLower = new Map<string, (typeof existing)[number]>();
+		for (const group of existing) {
+			const lower = group.name.toLowerCase();
+			if (!byLower.has(lower)) byLower.set(lower, group);
+		}
+
+		const missing = [...names].filter(([lower]) => !byLower.has(lower));
+		if (missing.length > 0) {
+			const inserted = await tx
+				.insert(groups)
+				.values(missing.map(([, name]) => ({ name, local: false })))
+				.onConflictDoUpdate({
+					target: groups.name,
+					set: { name: sql`excluded.name` },
+				})
+				.returning();
+			for (const group of inserted) {
+				byLower.set(group.name.toLowerCase(), group);
 			}
-			if (group && !group.local) {
-				await tx
-					.insert(userGroups)
-					.values({ userId, groupId: group.id, source: "oidc" })
-					.onConflictDoNothing();
-			}
+		}
+
+		const newMemberships = [...byLower.values()]
+			.filter((group) => !group.local)
+			.map((group) => ({ userId, groupId: group.id, source: "oidc" }));
+		if (newMemberships.length > 0) {
+			await tx.insert(userGroups).values(newMemberships).onConflictDoNothing();
 		}
 
 		const memberships = await tx
@@ -233,9 +268,13 @@ export async function syncGroups(userId: string, groupNames: string[]) {
 	});
 }
 
-/** The router matches the decoded path ("/%61pi" is "/api"), so path tests must too. */
-export function requestPath(url: string) {
-	const path = url.split("?")[0] ?? url;
+/**
+ * The router matches the decoded path ("/%61pi" is "/api"), so path tests must
+ * too. It does not decode `%2F` or resolve dot segments, and neither does this.
+ */
+export function requestPath(pathname: string) {
+	const query = pathname.indexOf("?");
+	const path = query === -1 ? pathname : pathname.slice(0, query);
 	try {
 		return decodeURI(path);
 	} catch {
@@ -262,7 +301,16 @@ export async function userForToken(token: string): Promise<CurrentUser | null> {
 	await db
 		.update(apiTokens)
 		.set({ lastUsedAt: new Date() })
-		.where(eq(apiTokens.tokenHash, tokenHash));
+		.where(
+			and(
+				eq(apiTokens.tokenHash, tokenHash),
+				or(
+					isNull(apiTokens.lastUsedAt),
+					lt(apiTokens.lastUsedAt, new Date(Date.now() - TOKEN_TOUCH_MS)),
+				),
+			),
+		)
+		.catch(() => undefined);
 
 	return loadUser(row.userId);
 }
