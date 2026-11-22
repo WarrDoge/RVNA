@@ -1,7 +1,8 @@
 /**
  * Every Jira URL shape this app answers. `redirect` entries are handled by the
  * server and say where they go; `spa` entries render the single page app and
- * name the route that takes them.
+ * name the route that takes them; `rest` entries answer Jira-shaped JSON in
+ * place, without a redirect.
  */
 export const LEGACY_URLS: {
 	pattern: string;
@@ -18,13 +19,13 @@ export const LEGACY_URLS: {
 	{
 		pattern: "/browse/<KEY>",
 		example: "/browse/DEMO",
-		target: "/projects/DEMO/summary",
+		target: "/projects/<KEY>/summary",
 		kind: "redirect",
 	},
 	{
 		pattern: "/projects/<KEY>/issues/<KEY>-<n>",
 		example: "/projects/DEMO/issues/DEMO-1",
-		target: "/browse/DEMO-1",
+		target: "/browse/<KEY>-<n>",
 		kind: "redirect",
 	},
 	{
@@ -46,16 +47,16 @@ export const LEGACY_URLS: {
 		kind: "redirect",
 	},
 	{
-		pattern: "/secure/IssueNavigator.jspa",
-		example: "/secure/IssueNavigator.jspa?mode=hide",
-		target: "/secure/IssueNavigator.jspa",
-		kind: "spa",
-	},
-	{
 		pattern: "/secure/IssueNavigator.jspa?jqlQuery=",
 		example:
 			"/secure/IssueNavigator.jspa?mode=hide&jqlQuery=project%20%3D%20TER",
 		target: "/issues/?jql=",
+		kind: "spa",
+	},
+	{
+		pattern: "/secure/IssueNavigator.jspa",
+		example: "/secure/IssueNavigator.jspa?mode=hide",
+		target: "/secure/IssueNavigator.jspa",
 		kind: "spa",
 	},
 	{
@@ -79,14 +80,14 @@ export const LEGACY_URLS: {
 	{
 		pattern: "/secure/attachmentzip/<issue id>.zip",
 		example: "/secure/attachmentzip/10001.zip",
-		target: "not implemented",
+		target: "501 Not Implemented",
 		kind: "redirect",
 	},
 	{
 		pattern: "/secure/CreateIssue!default.jspa",
 		example: "/secure/CreateIssue!default.jspa",
-		target: "/secure/CreateIssue!default.jspa",
-		kind: "spa",
+		target: "/issues/?create=1",
+		kind: "redirect",
 	},
 	{
 		pattern: "/secure/ManageFilters.jspa",
@@ -113,8 +114,14 @@ export const LEGACY_URLS: {
 		kind: "redirect",
 	},
 	{
-		pattern: "/secure/Dashboard.jspa",
+		pattern: "/secure/Dashboard.jspa?selectPageId=<source id>",
 		example: "/secure/Dashboard.jspa?selectPageId=10000",
+		target: "/secure/Dashboard.jspa?selectPageId=<uuid>",
+		kind: "redirect",
+	},
+	{
+		pattern: "/secure/Dashboard.jspa",
+		example: "/secure/Dashboard.jspa",
 		target: "/secure/Dashboard.jspa",
 		kind: "spa",
 	},

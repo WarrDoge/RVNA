@@ -123,6 +123,43 @@ test("every Jira URL shape is in the table", () => {
 	}
 });
 
+test("the URL table says how each address is actually served", () => {
+	const find = (pattern: string) => {
+		const entry = LEGACY_URLS.find((item) => item.pattern === pattern);
+		if (!entry) throw new Error(`missing URL pattern: ${pattern}`);
+		return entry;
+	};
+
+	expect(find("/browse/<KEY>").target).toBe("/projects/<KEY>/summary");
+	expect(find("/projects/<KEY>/issues/<KEY>-<n>").target).toBe(
+		"/browse/<KEY>-<n>",
+	);
+	expect(find("/secure/attachmentzip/<issue id>.zip").target).toContain("501");
+	expect(find("/secure/CreateIssue!default.jspa")).toMatchObject({
+		kind: "redirect",
+		target: "/issues/?create=1",
+	});
+	expect(find("/secure/Dashboard.jspa?selectPageId=<source id>")).toMatchObject(
+		{
+			kind: "redirect",
+			target: "/secure/Dashboard.jspa?selectPageId=<uuid>",
+		},
+	);
+
+	for (const entry of LEGACY_URLS) {
+		expect(entry.target).not.toContain("DEMO");
+	}
+
+	const index = (pattern: string) =>
+		LEGACY_URLS.findIndex((item) => item.pattern === pattern);
+	expect(index("/secure/IssueNavigator.jspa?jqlQuery=")).toBeLessThan(
+		index("/secure/IssueNavigator.jspa"),
+	);
+	expect(index("/secure/Dashboard.jspa?selectPageId=<source id>")).toBeLessThan(
+		index("/secure/Dashboard.jspa"),
+	);
+});
+
 test("the Jira URLs redirect to the screen that serves them", async () => {
 	const rows: {
 		url: string;
