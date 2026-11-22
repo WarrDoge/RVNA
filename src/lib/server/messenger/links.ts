@@ -16,6 +16,11 @@ const CODE_TTL_MS = 10 * 60 * 1000;
 const UNKNOWN_NOTICE_MS = 60 * 60 * 1000;
 const WRONG_CODE_LIMIT = 5;
 const WRONG_CODE_WINDOW_MS = 10 * 60 * 1000;
+const WRONG_CODE_WINDOW_MINUTES = WRONG_CODE_WINDOW_MS / 60_000;
+const CODE_ATTEMPTS = 5;
+const CODE_ALREADY_USED =
+	"That code has already been used. Generate a new one on your profile.";
+const TOO_MANY_WRONG_CODES = `Too many wrong codes. Try again in ${WRONG_CODE_WINDOW_MINUTES} minutes.`;
 
 // One process holds the worker lock and handles every chat message, so memory is enough.
 const wrongCodes = new Map<string, number[]>();
@@ -29,12 +34,20 @@ function recentWrongCodes(matrixId: string, now: number) {
 	return recent;
 }
 
+/** Keys are kept in the order of their last failure, so expired ones are dropped from the front. */
+function pruneWrongCodes(now: number) {
+	for (const [matrixId, times] of wrongCodes) {
+		if (now - (times[times.length - 1] ?? 0) < WRONG_CODE_WINDOW_MS) break;
+		wrongCodes.delete(matrixId);
+	}
+}
+
 function recordWrongCode(matrixId: string) {
 	const now = Date.now();
-	if (wrongCodes.size > 1000) {
-		for (const id of [...wrongCodes.keys()]) recentWrongCodes(id, now);
-	}
-	wrongCodes.set(matrixId, [...recentWrongCodes(matrixId, now), now]);
+	if (wrongCodes.size > 1000) pruneWrongCodes(now);
+	const recent = recentWrongCodes(matrixId, now);
+	wrongCodes.delete(matrixId);
+	wrongCodes.set(matrixId, [...recent, now]);
 }
 
 export function generateLinkCode() {
@@ -65,26 +78,31 @@ export async function createMessengerLinkCode(actor: CurrentUser) {
 		throw new HttpError(400, "Messenger is not connected");
 	}
 	const now = new Date();
-	await db
-		.update(messengerLinkCodes)
-		.set({ usedAt: now })
-		.where(
-			and(
-				eq(messengerLinkCodes.userId, actor.id),
-				isNull(messengerLinkCodes.usedAt),
-			),
-		);
-	const [row] = await db
-		.insert(messengerLinkCodes)
-		.values({
-			userId: actor.id,
-			code: generateLinkCode(),
-			expiresAt: new Date(now.getTime() + CODE_TTL_MS),
-		})
-		.returning({
-			code: messengerLinkCodes.code,
-			expiresAt: messengerLinkCodes.expiresAt,
-		});
+	const expiresAt = new Date(now.getTime() + CODE_TTL_MS);
+	const [row] = await db.transaction(async (tx) => {
+		await tx
+			.update(messengerLinkCodes)
+			.set({ usedAt: now })
+			.where(
+				and(
+					eq(messengerLinkCodes.userId, actor.id),
+					isNull(messengerLinkCodes.usedAt),
+				),
+			);
+		// A collision on the code keeps the transaction open, so the retry cannot lose the old codes.
+		for (let attempt = 0; attempt < CODE_ATTEMPTS; attempt += 1) {
+			const [inserted] = await tx
+				.insert(messengerLinkCodes)
+				.values({ userId: actor.id, code: generateLinkCode(), expiresAt })
+				.onConflictDoNothing()
+				.returning({
+					code: messengerLinkCodes.code,
+					expiresAt: messengerLinkCodes.expiresAt,
+				});
+			if (inserted) return [inserted];
+		}
+		throw new HttpError(500, "Could not generate a link code");
+	});
 	return {
 		code: row.code,
 		expiresAt: row.expiresAt.toISOString(),
@@ -112,7 +130,7 @@ export async function redeemMessengerLinkCode(
 	if (recentWrongCodes(matrixId, Date.now()).length >= WRONG_CODE_LIMIT) {
 		return {
 			ok: false,
-			message: "Too many wrong codes. Try again in 10 minutes.",
+			message: TOO_MANY_WRONG_CODES,
 		};
 	}
 	const wrong = (message: string): LinkResult => {
@@ -134,21 +152,18 @@ export async function redeemMessengerLinkCode(
 		.where(eq(messengerLinkCodes.code, code))
 		.limit(1);
 	if (!row) return wrong("That code is not valid.");
-	if (row.usedAt) {
-		return wrong(
-			"That code has already been used. Generate a new one on your profile.",
-		);
-	}
+	if (row.usedAt) return wrong(CODE_ALREADY_USED);
 	if (row.expiresAt.getTime() <= Date.now()) {
 		return wrong("That code has expired. Generate a new one on your profile.");
 	}
 	if (!row.active) return wrong("That RVNA account is not active.");
 
 	try {
+		const usedAt = new Date();
 		await db.transaction(async (tx) => {
 			const [claimed] = await tx
 				.update(messengerLinkCodes)
-				.set({ usedAt: new Date() })
+				.set({ usedAt })
 				.where(
 					and(
 						eq(messengerLinkCodes.id, row.id),
@@ -157,9 +172,19 @@ export async function redeemMessengerLinkCode(
 				)
 				.returning({ id: messengerLinkCodes.id });
 			if (!claimed) throw new Error("code already used");
+			// Another code from the same profile must not overwrite this link later.
+			await tx
+				.update(messengerLinkCodes)
+				.set({ usedAt })
+				.where(
+					and(
+						eq(messengerLinkCodes.userId, row.userId),
+						isNull(messengerLinkCodes.usedAt),
+					),
+				);
 			await tx
 				.update(users)
-				.set({ messengerMatrixId: matrixId, updatedAt: new Date() })
+				.set({ messengerMatrixId: matrixId, updatedAt: usedAt })
 				.where(eq(users.id, row.userId));
 		});
 	} catch (error) {
@@ -175,9 +200,7 @@ export async function redeemMessengerLinkCode(
 			};
 		}
 		if (error instanceof Error && error.message === "code already used") {
-			return wrong(
-				"That code has already been used. Generate a new one on your profile.",
-			);
+			return wrong(CODE_ALREADY_USED);
 		}
 		throw error;
 	}
