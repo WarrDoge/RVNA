@@ -1,7 +1,6 @@
 import type { CurrentUser } from "../auth.ts";
+import { issueKeyPattern } from "../project-keys.ts";
 import { customerRequestPath } from "../servicedesk/access.ts";
-
-const issueKeyPattern = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 
 export type ProjectPageOutcome =
 	| { kind: "redirect"; location: string }
@@ -35,7 +34,7 @@ export async function projectPage(
 
 	if (browse && /^[A-Za-z][A-Za-z0-9_]*$/.test(resolved)) {
 		return redirect(
-			`/projects/${encodeURIComponent(resolved.toUpperCase())}/summary`,
+			`/projects/${encodeURIComponent(resolved.toUpperCase())}/summary${input.search}`,
 		);
 	}
 

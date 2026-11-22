@@ -21,3 +21,15 @@ test("a previous key redirects to the current key in upper case", async () => {
 		location: "/projects/NEW-KEY/summary?tab=1",
 	});
 });
+
+test("a project address keeps its query string", async () => {
+	const outcome = await projectPage(null, {
+		pathname: "/browse/DEMO",
+		search: "?jql=project%20%3D%20DEMO",
+		resolvedKey: "DEMO",
+	});
+	expect(outcome).toEqual({
+		kind: "redirect",
+		location: "/projects/DEMO/summary?jql=project%20%3D%20DEMO",
+	});
+});
