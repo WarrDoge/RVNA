@@ -3,7 +3,7 @@ import { JqlError } from "../shared/jql/index.ts";
 import { issueTypeRefSchema, statusRefSchema } from "./api-schemas.ts";
 import type { CurrentUser } from "./auth.ts";
 import { HttpError } from "./http.ts";
-import { loadNavigatorPage } from "./navigator/service.ts";
+import { loadNavigatorPage, MAX_PAGE } from "./navigator/service.ts";
 import { searchPages } from "./search-pages.ts";
 
 const PAGE_LIMIT = 5;
@@ -48,37 +48,44 @@ export async function globalSearch(
 	user: CurrentUser,
 	query: { q: string; startAt: number; maxResults: number },
 ): Promise<GlobalSearchResult> {
+	const startAt = Math.max(0, query.startAt);
+	const maxResults = Math.min(MAX_PAGE, Math.max(1, query.maxResults));
+
 	if (query.q === "") {
 		return {
 			issues: {
 				total: 0,
-				startAt: 0,
-				maxResults: query.maxResults,
+				startAt,
+				maxResults,
 				items: [],
 			},
 			pages: { total: 0, items: [] },
 		};
 	}
 
-	const pages = await searchPages(user, query.q, PAGE_LIMIT);
-
-	let page: Awaited<ReturnType<typeof loadNavigatorPage>>;
-	try {
-		page = await loadNavigatorPage(
-			{
-				jql: `text ~ "${escapeJql(query.q)}" ORDER BY updated DESC`,
-				startAt: query.startAt,
-				maxResults: query.maxResults,
-				columns: ["type", "key", "summary", "status", "updated"],
-			},
-			user,
-		);
-	} catch (error) {
-		if (error instanceof JqlError) {
-			throw new HttpError(400, error.jiraMessage);
+	const issueSearch = (async () => {
+		try {
+			return await loadNavigatorPage(
+				{
+					jql: `text ~ "${escapeJql(query.q)}" ORDER BY updated DESC`,
+					startAt,
+					maxResults,
+					columns: ["type", "key", "summary", "status", "updated"],
+				},
+				user,
+			);
+		} catch (error) {
+			if (error instanceof JqlError) {
+				throw new HttpError(400, error.jiraMessage);
+			}
+			throw error;
 		}
-		throw error;
-	}
+	})();
+
+	const [pages, page] = await Promise.all([
+		searchPages(user, query.q, PAGE_LIMIT),
+		issueSearch,
+	]);
 
 	return {
 		issues: {
