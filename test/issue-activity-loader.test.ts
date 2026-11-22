@@ -1,5 +1,6 @@
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { describeHistoryItem } from "../src/lib/issue/history.ts";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
 import { loadIssueActivity } from "../src/lib/server/issues/view-activity.ts";
@@ -46,7 +47,10 @@ beforeAll(async () => {
 	visible = await createProjectFixture(client, {
 		run: visibleRun,
 		key: `VA${run.slice(0, 5).toUpperCase()}`,
-		issues: [{ summary: "Activity loader issue" }],
+		issues: [
+			{ summary: "Activity loader issue" },
+			{ summary: "No history issue" },
+		],
 	});
 	hidden = await createProjectFixture(client, {
 		run: hiddenRun,
@@ -199,6 +203,34 @@ beforeAll(async () => {
 			"Desk internal",
 		],
 	);
+
+	const deskHistory = await client.query<{ id: string }>(
+		`insert into issue_history (source_id, issue_id, author_id, created)
+		 values ($1, $2, $3, now()) returning id`,
+		[`test:${run}:desk-history`, deskIssueId, actor.id],
+	);
+	for (const [sequence, field, fromValue, fromText, toValue, toText] of [
+		[0, "Attachment", null, null, "10001", null],
+		[1, "Link", null, null, "DEMO-2", null],
+		[2, "timespent", "3600", null, "7200", null],
+	] as const) {
+		await client.query(
+			`insert into issue_history_items
+			 (source_id, history_id, field, field_type, from_value, from_string,
+			  to_value, to_string, sequence)
+			 values ($1, $2, $3, 'jira', $4, $5, $6, $7, $8)`,
+			[
+				`test:${run}:desk-history-item-${sequence}`,
+				deskHistory.rows[0]?.id,
+				field,
+				fromValue,
+				fromText,
+				toValue,
+				toText,
+				sequence,
+			],
+		);
+	}
 });
 
 afterAll(async () => {
@@ -299,6 +331,12 @@ describe("loadIssueActivity", () => {
 		);
 	});
 
+	test("an issue without history returns an empty history", async () => {
+		const data = await loadIssueActivity(actor, visible.issueKeys[1] as string);
+
+		expect(data.history).toEqual([]);
+	});
+
 	test("internal comments are hidden from a customer on a service desk project", async () => {
 		const data = await loadIssueActivity(actor, desk.issueKeys[0] as string);
 
@@ -306,5 +344,19 @@ describe("loadIssueActivity", () => {
 			"<p>Desk public</p>",
 		]);
 		expect(JSON.stringify(data.comments)).not.toContain("Desk internal");
+	});
+
+	test("history entries without display text still describe attachments, links and time", async () => {
+		const data = await loadIssueActivity(actor, desk.issueKeys[0] as string);
+		const items = data.history[0]?.items ?? [];
+
+		expect(items.every((item) => !("from" in item) && !("to" in item))).toBe(
+			true,
+		);
+		expect(items.map((item) => describeHistoryItem(item))).toEqual([
+			"added an attachment",
+			"added a link: DEMO-2",
+			"changed time spent from 1h to 2h",
+		]);
 	});
 });
