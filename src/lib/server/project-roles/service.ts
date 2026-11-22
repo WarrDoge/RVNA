@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { audit } from "../admin/audit.ts";
 import { type CurrentUser, effectiveGroups } from "../auth.ts";
@@ -228,7 +228,10 @@ async function schemeForProject(projectId: string) {
 	return scheme ?? null;
 }
 
-async function loadRoleData(projectId: string) {
+async function loadRoleData(
+	projectId: string,
+	options: { withGroups?: boolean } = {},
+) {
 	const [scheme, actorRows, groupRows] = await Promise.all([
 		schemeForProject(projectId),
 		db
@@ -243,10 +246,12 @@ async function loadRoleData(projectId: string) {
 			})
 			.from(projectRoleActors)
 			.where(eq(projectRoleActors.projectId, projectId)),
-		db
-			.select({ id: groups.id, name: groups.name, local: groups.local })
-			.from(groups)
-			.orderBy(sql`lower(${groups.name})`),
+		options.withGroups
+			? db
+					.select({ id: groups.id, name: groups.name, local: groups.local })
+					.from(groups)
+					.orderBy(sql`lower(${groups.name})`)
+			: Promise.resolve([] as { id: string; name: string; local: boolean }[]),
 	]);
 
 	const grants: GrantLike[] = scheme
@@ -260,18 +265,6 @@ async function loadRoleData(projectId: string) {
 				.where(eq(permissionGrants.schemeId, scheme.id))
 		: DEFAULT_SCHEME_GRANTS;
 	const roles = deriveRoles(grants, actorRows);
-	if (!scheme) {
-		for (const name of ["admin", "member", "viewer"]) {
-			if (!roles.some((role) => lower(role.id) === name)) {
-				const permissions = grantsForRole(DEFAULT_SCHEME_GRANTS, {
-					id: name,
-					name,
-				});
-				roles.push({ id: name, name, actors: [], permissions });
-			}
-		}
-		roles.sort((left, right) => left.name.localeCompare(right.name));
-	}
 
 	return {
 		scheme: {
@@ -303,7 +296,7 @@ export async function getProjectRoles(
 	const project = loaded ?? (await projectByKey(key));
 	if (!project) throw new HttpError(404, "Project not found");
 	await requireProjectPermission(actor, project.id, "ADMINISTER_PROJECTS");
-	const data = await loadRoleData(project.id);
+	const data = await loadRoleData(project.id, { withGroups: true });
 	return {
 		project: { id: project.id, key: project.key, name: project.name },
 		...data,
@@ -418,24 +411,33 @@ export async function removeRoleActor(
 	if (!project) throw new HttpError(404, "Project not found");
 	await requireProjectPermission(actor, project.id, "ADMINISTER_PROJECTS");
 
-	const [row] = await db
-		.select()
-		.from(projectRoleActors)
-		.where(
-			and(
-				eq(projectRoleActors.id, actorId),
-				eq(projectRoleActors.projectId, project.id),
-			),
-		)
-		.limit(1);
-	if (!row) throw new HttpError(404, "Role actor not found");
-	const roleMatches =
-		lower(row.roleId) === lower(roleId) ||
-		lower(row.roleName) === lower(roleId);
-	if (!roleMatches) throw new HttpError(404, "Role actor not found");
-
 	await db.transaction(async (tx) => {
-		await tx.delete(projectRoleActors).where(eq(projectRoleActors.id, row.id));
+		const [row] = await tx
+			.select()
+			.from(projectRoleActors)
+			.where(
+				and(
+					eq(projectRoleActors.id, actorId),
+					eq(projectRoleActors.projectId, project.id),
+				),
+			)
+			.limit(1);
+		if (!row) throw new HttpError(404, "Role actor not found");
+		const roleMatches =
+			lower(row.roleId) === lower(roleId) ||
+			lower(row.roleName) === lower(roleId);
+		if (!roleMatches) throw new HttpError(404, "Role actor not found");
+
+		const [deleted] = await tx
+			.delete(projectRoleActors)
+			.where(
+				and(
+					eq(projectRoleActors.id, row.id),
+					eq(projectRoleActors.projectId, project.id),
+				),
+			)
+			.returning({ id: projectRoleActors.id });
+		if (!deleted) throw new HttpError(404, "Role actor not found");
 		if (!isLocalSource(row.sourceId)) {
 			await tx
 				.insert(permissionLocalRemovals)
@@ -474,27 +476,38 @@ export async function getUserProjectRoles(actor: CurrentUser, id: string) {
 		.limit(1);
 	if (!user) throw new HttpError(404, "User not found");
 
-	const [actorRows, groupNames] = await Promise.all([
-		db
-			.select({
-				id: projectRoleActors.id,
-				projectId: projects.id,
-				projectKey: projects.key,
-				projectName: projects.name,
-				roleId: projectRoleActors.roleId,
-				roleName: projectRoleActors.roleName,
-				actorType: projectRoleActors.actorType,
-				actorParameter: projectRoleActors.actorParameter,
-			})
-			.from(projectRoleActors)
-			.innerJoin(projects, eq(projects.id, projectRoleActors.projectId))
-			.orderBy(
-				sql`lower(${projects.name})`,
-				sql`lower(${projectRoleActors.roleName})`,
-			),
-		effectiveGroups(user.id),
-	]);
-	const groupsLower = new Set(groupNames.map(lower));
+	const groupNames = await effectiveGroups(user.id);
+	const groupsLower = [...new Set(groupNames.map(lower))];
+	const userActor = and(
+		sql`lower(${projectRoleActors.actorType}) = 'user'`,
+		sql`lower(${projectRoleActors.actorParameter}) = ${lower(user.username)}`,
+	);
+	const groupActor =
+		groupsLower.length > 0
+			? and(
+					sql`lower(${projectRoleActors.actorType}) = 'group'`,
+					inArray(sql`lower(${projectRoleActors.actorParameter})`, groupsLower),
+				)
+			: undefined;
+
+	const actorRows = await db
+		.select({
+			id: projectRoleActors.id,
+			projectId: projects.id,
+			projectKey: projects.key,
+			projectName: projects.name,
+			roleId: projectRoleActors.roleId,
+			roleName: projectRoleActors.roleName,
+			actorType: projectRoleActors.actorType,
+			actorParameter: projectRoleActors.actorParameter,
+		})
+		.from(projectRoleActors)
+		.innerJoin(projects, eq(projects.id, projectRoleActors.projectId))
+		.where(or(userActor, groupActor))
+		.orderBy(
+			sql`lower(${projects.name})`,
+			sql`lower(${projectRoleActors.roleName})`,
+		);
 
 	const byRole = new Map<
 		string,
@@ -511,12 +524,9 @@ export async function getUserProjectRoles(actor: CurrentUser, id: string) {
 	for (const row of actorRows) {
 		const type = lower(row.actorType);
 		let viaGroups: string[] = [];
-		if (type === "user") {
-			if (lower(row.actorParameter) !== lower(user.username)) continue;
-		} else if (type === "group") {
-			if (!groupsLower.has(lower(row.actorParameter))) continue;
+		if (type === "group") {
 			viaGroups = [row.actorParameter];
-		} else {
+		} else if (type !== "user") {
 			continue;
 		}
 		const key = `${row.projectId}:${lower(row.roleId)}`;

@@ -579,6 +579,39 @@ test("reads one scheme for the project instead of every scheme and its payload",
 		.where(eq(permissionSchemes.id, earlier.id));
 });
 
+test("reads only the role rows of the user and their groups", async () => {
+	const original = pool.query.bind(pool);
+	const statements: string[] = [];
+	(pool as unknown as { query: typeof pool.query }).query = ((
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		statements.push(typeof query === "string" ? query : (query.text ?? ""));
+		return (original as (...args: unknown[]) => unknown)(query, ...rest);
+	}) as typeof pool.query;
+	try {
+		const response = await injectAs(
+			app,
+			admin.session,
+			"GET",
+			`/api/admin/users/${alice.id}/project-roles`,
+		);
+		expect(response.statusCode).toBe(200);
+	} finally {
+		(pool as unknown as { query: typeof pool.query }).query = original;
+	}
+
+	const actorReads = statements.filter(
+		(statement) =>
+			statement.includes('from "project_role_actors"') &&
+			statement.includes('inner join "projects"'),
+	);
+	expect(actorReads).toHaveLength(1);
+	expect(actorReads[0]).toContain(
+		'lower("project_role_actors"."actor_parameter")',
+	);
+});
+
 test("the database refuses a duplicate actor for one role", async () => {
 	const prefix = `test:${run}:unique:`;
 	const actor = {
@@ -606,4 +639,83 @@ test("the database refuses a duplicate actor for one role", async () => {
 			.delete(projectRoleActors)
 			.where(like(projectRoleActors.sourceId, `${prefix}%`));
 	}
+});
+
+test("adding an actor does not read the whole group list", async () => {
+	const carol = await makeUser(run, "carol");
+	const original = pool.query.bind(pool);
+	const statements: string[] = [];
+	(pool as unknown as { query: typeof pool.query }).query = ((
+		query: { text?: string } | string,
+		...rest: unknown[]
+	) => {
+		statements.push(typeof query === "string" ? query : (query.text ?? ""));
+		return (original as (...args: unknown[]) => unknown)(query, ...rest);
+	}) as typeof pool.query;
+	try {
+		const response = await injectAs(
+			app,
+			admin.session,
+			"POST",
+			`/api/projects/${projectKey}/roles/viewer/actors`,
+			{ actorType: "user", actorId: carol.id },
+		);
+		expect(response.statusCode).toBe(201);
+	} finally {
+		(pool as unknown as { query: typeof pool.query }).query = original;
+	}
+
+	const groupReads = statements.filter((statement) =>
+		statement.includes('from "groups"'),
+	);
+	expect(groupReads).toHaveLength(0);
+});
+
+test("a delete that removes no row is not audited", async () => {
+	const added = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		`/api/projects/${projectKey}/roles/viewer/actors`,
+		{ actorType: "user", actorId: bob.id },
+	);
+	expect(added.statusCode).toBe(201);
+	const actorId = added
+		.json()
+		.role.actors.find(
+			(actor: { parameter: string }) => actor.parameter === bob.username,
+		).id as string;
+
+	const before = await db
+		.select({ id: auditLog.id })
+		.from(auditLog)
+		.where(eq(auditLog.action, "project.role.actor.remove"));
+
+	const functionName = `test_skip_role_delete_fn_${run}`;
+	const triggerName = `test_skip_role_delete_${run}`;
+	await client.query(
+		`create function ${functionName}() returns trigger language plpgsql as $$ begin return null; end $$`,
+	);
+	await client.query(
+		`create trigger ${triggerName} before delete on project_role_actors for each row execute function ${functionName}()`,
+	);
+	let response: Awaited<ReturnType<typeof injectAs>>;
+	try {
+		response = await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/projects/${projectKey}/roles/viewer/actors/${actorId}`,
+		);
+	} finally {
+		await client.query(`drop trigger ${triggerName} on project_role_actors`);
+		await client.query(`drop function ${functionName}()`);
+	}
+	expect(response.statusCode).toBe(404);
+
+	const after = await db
+		.select({ id: auditLog.id })
+		.from(auditLog)
+		.where(eq(auditLog.action, "project.role.actor.remove"));
+	expect(after).toHaveLength(before.length);
 });
