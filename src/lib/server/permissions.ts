@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { and, eq, exists, inArray, or, sql } from "drizzle-orm";
-import { permissionLabel } from "../permission-labels.ts";
 import type { CurrentUser } from "./auth.ts";
 import { db } from "./db.ts";
 import { HttpError } from "./http.ts";
@@ -721,7 +720,7 @@ export async function issuePermissionContext(keyOrId: string) {
 }
 
 export function permissionDenied(permission: string) {
-	return `You do not have permission to ${permissionLabel(permission)} in this project`;
+	return `You do not have permission to ${permission} in this project`;
 }
 
 type ProjectAdminWriter = Pick<typeof db, "select" | "insert">;

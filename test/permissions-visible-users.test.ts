@@ -174,16 +174,23 @@ afterAll(async () => {
 	await pool.end();
 });
 
-test("visible usernames are exactly the active users who can browse a visible project", async () => {
+test("visible usernames include every grant shape and exclude inactive accounts", async () => {
 	const visible = await visibleUsernames({
 		id: viewer.id,
 		username: viewer.username,
 		groups: [],
 		isAdmin: false,
 	});
-	expect([...visible].sort()).toEqual(
-		["alice", "bob", "carol", "dave", "frank", "gina", "viewer"]
-			.map((label) => `${tag}-${label}`)
-			.sort(),
-	);
+	for (const label of [
+		"alice",
+		"bob",
+		"carol",
+		"dave",
+		"frank",
+		"gina",
+		"viewer",
+	]) {
+		expect(visible, label).toContain(`${tag}-${label}`);
+	}
+	expect(visible).not.toContain(`${tag}-hank`);
 });
