@@ -43,7 +43,8 @@ export async function upsertRepository(value: RepositoryInput) {
 }
 
 export function branchUrl(repository: Repository, name: string) {
-	return `${repository.webUrl}/-/tree/${encodeURIComponent(name)}`;
+	const ref = name.split("/").map(encodeURIComponent).join("/");
+	return `${repository.webUrl}/-/tree/${ref}`;
 }
 
 export async function upsertBranch(
