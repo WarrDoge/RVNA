@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, expect, test } from "vitest";
+import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { importJiraAgile } from "../src/importer/agile-remote.ts";
 import { fetchDashboardDataset } from "../src/importer/dashboards.ts";
 import { pool, runMigrations } from "../src/importer/db.ts";
 import { fetchDataset, fetchWorkflows } from "../src/importer/fetch.ts";
 import { importDataset } from "../src/importer/import.ts";
 import type { JiraClient } from "../src/importer/jira.ts";
+import { skipPrivateApi } from "../src/importer/private-apis.ts";
 import {
 	fetchAutomationRules,
 	fetchServiceDesks,
@@ -155,5 +156,18 @@ test("a full Jira fetch and import work without the private APIs", async () => {
 		expect(privateRequested(paths)).toEqual([]);
 	} finally {
 		await pool.query("delete from projects where key = $1", [key]);
+	}
+});
+
+test("a skipped private API notice goes to stderr, not the JSON report on stdout", () => {
+	const log = vi.spyOn(console, "log").mockImplementation(() => {});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		expect(skipPrivateApi({}, `fixture part ${randomUUID()}`)).toBe(true);
+		expect(log).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledTimes(1);
+	} finally {
+		log.mockRestore();
+		warn.mockRestore();
 	}
 });

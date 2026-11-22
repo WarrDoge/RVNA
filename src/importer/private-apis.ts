@@ -12,7 +12,7 @@ export function skipPrivateApi(
 	if (options?.privateApis) return false;
 	if (!reported.has(part)) {
 		reported.add(part);
-		console.log(
+		console.warn(
 			`${part}: skipped because it uses an Atlassian API that is not public; pass --private-apis to import it`,
 		);
 	}
