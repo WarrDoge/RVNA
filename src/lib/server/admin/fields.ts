@@ -261,6 +261,14 @@ function replaceOptionRefs(
 	return { value: changed ? next : value, changed };
 }
 
+function optionText(value: unknown): string | null {
+	return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function matchesOptionText(value: string, option: LoadedOption) {
+	return value.toLowerCase() === option.value.toLowerCase();
+}
+
 function planOptionRemoval(
 	field: LoadedField,
 	value: unknown,
@@ -268,15 +276,31 @@ function planOptionRemoval(
 	target: LoadedOption | null,
 ): { value: unknown; missing: string[] } {
 	if (field.type === "cascading") {
+		const text = optionText(value);
+		if (text !== null) {
+			if (!matchesOptionText(text, option) || !target) {
+				return { value, missing: [] };
+			}
+			return {
+				value: { value: target.value, id: target.id },
+				missing: [],
+			};
+		}
 		const object = objectOf(value);
 		if (object && optionMatches(object, option)) {
 			if (!target) return { value, missing: [] };
+			const childText = optionText(object.child);
 			const child = objectOf(object.child);
-			if (!child) {
+			const childValue =
+				childText ??
+				(child
+					? typeof child.value === "string"
+						? child.value
+						: String(child.value)
+					: null);
+			if (childValue === null) {
 				return { value: { value: target.value, id: target.id }, missing: [] };
 			}
-			const childValue =
-				typeof child.value === "string" ? child.value : String(child.value);
 			const childTarget = field.options.find(
 				(candidate) =>
 					candidate.parentOptionId === target.id &&
@@ -295,8 +319,12 @@ function planOptionRemoval(
 			};
 		}
 		if (object?.child) {
+			const childText = optionText(object.child);
 			const child = objectOf(object.child);
-			if (child && optionMatches(child, option)) {
+			if (
+				(childText !== null && matchesOptionText(childText, option)) ||
+				(child !== null && optionMatches(child, option))
+			) {
 				if (!target) return { value, missing: [] };
 				return {
 					value: { ...object, child: { value: target.value, id: target.id } },
@@ -309,11 +337,23 @@ function planOptionRemoval(
 	if (field.type === "multiselect") {
 		if (!Array.isArray(value)) return { value, missing: [] };
 		const items = value.map((item) => {
+			const text = optionText(item);
+			if (text !== null) {
+				if (!matchesOptionText(text, option) || !target) return item;
+				return { value: target.value, id: target.id };
+			}
 			const object = objectOf(item);
 			if (!object || !optionMatches(object, option) || !target) return item;
 			return { value: target.value, id: target.id };
 		});
 		return { value: items, missing: [] };
+	}
+	const text = optionText(value);
+	if (text !== null) {
+		if (!matchesOptionText(text, option) || !target) {
+			return { value, missing: [] };
+		}
+		return { value: { value: target.value, id: target.id }, missing: [] };
 	}
 	const object = objectOf(value);
 	if (object && optionMatches(object, option) && target) {

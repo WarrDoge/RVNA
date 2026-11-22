@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
 	type AdminFieldType,
@@ -12,6 +12,7 @@ import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	auditLog,
 	fields,
+	issues,
 	issueTypes,
 	projectIssueTypes,
 	projects,
@@ -1022,6 +1023,111 @@ describe("custom field administration", () => {
 		);
 		expect(childRefused.statusCode).toBe(409);
 		expect(childRefused.json()).toMatchObject({ count: 1 });
+	});
+
+	test("legacy string values are migrated with the option", async () => {
+		const select = await createField({
+			name: `${tag} Legacy select`,
+			type: "select",
+		});
+		const high = await addOption(select.id, "High");
+		const low = await addOption(select.id, "Low");
+		await setContexts(select.id, [{ projectId }]);
+		const selectIssue = (await createIssue()).json();
+		await db
+			.update(issues)
+			.set({ custom: { [select.sourceId]: "High" } })
+			.where(eq(issues.id, selectIssue.id));
+		expectStatus(
+			await inject(
+				"DELETE",
+				`/api/admin/custom-fields/${select.id}/options/${high.id}?migrateTo=${low.id}`,
+			),
+			204,
+		);
+		const [selectRow] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, selectIssue.id));
+		const selectCustom = selectRow?.custom as
+			| Record<string, unknown>
+			| undefined;
+		expect(selectCustom?.[select.sourceId]).toEqual({
+			value: "Low",
+			id: low.id,
+		});
+
+		const multi = await createField({
+			name: `${tag} Legacy multi`,
+			type: "multiselect",
+		});
+		const highMulti = await addOption(multi.id, "High");
+		await addOption(multi.id, "Low");
+		const mediumMulti = await addOption(multi.id, "Medium");
+		await setContexts(multi.id, [{ projectId }]);
+		const multiIssue = (await createIssue()).json();
+		await db
+			.update(issues)
+			.set({ custom: { [multi.sourceId]: ["High", "Low"] } })
+			.where(eq(issues.id, multiIssue.id));
+		expectStatus(
+			await inject(
+				"DELETE",
+				`/api/admin/custom-fields/${multi.id}/options/${highMulti.id}?migrateTo=${mediumMulti.id}`,
+			),
+			204,
+		);
+		const [multiRow] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, multiIssue.id));
+		const multiCustom = multiRow?.custom as Record<string, unknown> | undefined;
+		expect(multiCustom?.[multi.sourceId]).toEqual([
+			{ value: "Medium", id: mediumMulti.id },
+			"Low",
+		]);
+
+		const cascade = await createField({
+			name: `${tag} Legacy cascade`,
+			type: "cascading",
+		});
+		const hardware = await addOption(cascade.id, "Hardware");
+		await addOption(cascade.id, "Disc", hardware.id);
+		const replacement = await addOption(cascade.id, "Replacement");
+		const replacementDisc = await addOption(cascade.id, "Disc", replacement.id);
+		await setContexts(cascade.id, [{ projectId }]);
+		const cascadeIssue = (await createIssue()).json();
+		await db
+			.update(issues)
+			.set({
+				custom: {
+					[cascade.sourceId]: {
+						value: "Hardware",
+						id: hardware.id,
+						child: "Disc",
+					},
+				},
+			})
+			.where(eq(issues.id, cascadeIssue.id));
+		expectStatus(
+			await inject(
+				"DELETE",
+				`/api/admin/custom-fields/${cascade.id}/options/${hardware.id}?migrateTo=${replacement.id}`,
+			),
+			204,
+		);
+		const [cascadeRow] = await db
+			.select({ custom: issues.custom })
+			.from(issues)
+			.where(eq(issues.id, cascadeIssue.id));
+		const cascadeCustom = cascadeRow?.custom as
+			| Record<string, unknown>
+			| undefined;
+		expect(cascadeCustom?.[cascade.sourceId]).toEqual({
+			value: "Replacement",
+			id: replacement.id,
+			child: { value: "Disc", id: replacementDisc.id },
+		});
 	});
 
 	test("option order is rewritten for one sibling set only", async () => {
