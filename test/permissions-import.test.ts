@@ -19,11 +19,15 @@ import {
 
 const run = randomUUID().slice(0, 8);
 const projectKey = `PI${run.slice(0, 6).toUpperCase()}`;
+const projectKeyB = `PJ${run.slice(0, 6).toUpperCase()}`;
+const projectKeyC = `PK${run.slice(0, 6).toUpperCase()}`;
 const tag = `permissions-fixture-${run}`;
 const schemeSource = `fixture-scheme-${run}`;
 const base = "https://jira.example.test";
 
 let projectId: string;
+let projectIdB: string;
+let projectIdC: string;
 let reporterId: string;
 let otherId: string;
 
@@ -209,21 +213,39 @@ beforeAll(async () => {
 	await pool.query("delete from permission_schemes where source_id = $1", [
 		schemeSource,
 	]);
-	await pool.query("delete from projects where key = $1", [projectKey]);
+	await pool.query("delete from projects where key = any($1::text[])", [
+		[projectKey, projectKeyB, projectKeyC],
+	]);
 	await pool.query("delete from groups where name like $1", [`${tag}%`]);
 	await pool.query(
 		"delete from users where username in ('fixture_reporter','fixture_other')",
 	);
-	const [project] = await db
+	const projectRows = await db
 		.insert(projects)
-		.values({
-			sourceId: `${tag}:project`,
-			key: projectKey,
-			name: `${tag} project`,
-			projectType: "software",
-		})
+		.values([
+			{
+				sourceId: `${tag}:project`,
+				key: projectKey,
+				name: `${tag} project`,
+				projectType: "software",
+			},
+			{
+				sourceId: `${tag}:project-b`,
+				key: projectKeyB,
+				name: `${tag} project B`,
+				projectType: "software",
+			},
+			{
+				sourceId: `${tag}:project-c`,
+				key: projectKeyC,
+				name: `${tag} project C`,
+				projectType: "software",
+			},
+		])
 		.returning();
-	projectId = project.id;
+	projectId = projectRows[0].id;
+	projectIdB = projectRows[1].id;
+	projectIdC = projectRows[2].id;
 	const userRows = await db
 		.insert(users)
 		.values([
@@ -253,7 +275,9 @@ afterAll(async () => {
 	await pool.query("delete from permission_schemes where source_id = $1", [
 		schemeSource,
 	]);
-	await pool.query("delete from projects where id = $1", [projectId]);
+	await pool.query("delete from projects where id = any($1::uuid[])", [
+		[projectId, projectIdB, projectIdC],
+	]);
 	await pool.query("delete from groups where name like $1", [`${tag}%`]);
 	await pool.query("delete from users where id = any($1::uuid[])", [
 		[reporterId, otherId],
@@ -360,4 +384,68 @@ test("a login keeps imported memberships and adds claim groups", async () => {
 	expect(names).toContain(`${tag}-developers`);
 	expect(names).toContain(`${tag}-administrators`);
 	expect(names).toContain(`${tag}-claim`);
+});
+
+test("a failed role fetch keeps that project's actors out of the stale check", async () => {
+	const actor = (key: string, project: string) => ({
+		sourceId: `jira:${key}:1:user:fixture-${key.toLowerCase()}`,
+		projectId: project,
+		roleId: "1",
+		roleName: "Fixture Role",
+		actorType: "user",
+		actorParameter: `fixture-${key.toLowerCase()}`,
+		actorDisplayName: `Fixture ${key}`,
+		raw: {},
+	});
+	const fixtures = [
+		actor(projectKey, projectId),
+		actor(projectKeyB, projectIdB),
+		actor(projectKeyC, projectIdC),
+	];
+	await db.insert(projectRoleActors).values(fixtures);
+
+	const partial: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			if (path === `/rest/api/2/project/${projectKey}/role`) {
+				throw new Error("role list failed");
+			}
+			if (path === `/rest/api/2/project/${projectKeyB}/role`) {
+				return {} as T;
+			}
+			if (path === `/rest/api/2/project/${projectKeyC}/role`) {
+				return {
+					Role: `https://jira.example.test/rest/api/2/project/${projectKeyC}/role/1`,
+				} as T;
+			}
+			if (path.endsWith("/role/1")) {
+				throw new Error("role detail failed");
+			}
+			if (path.endsWith("/permissionscheme")) {
+				throw new Error("scheme unavailable");
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+
+	await importPermissions(partial, {
+		projectKeys: [projectKey, projectKeyB, projectKeyC],
+		fullImport: true,
+		fetchGlobal: false,
+	});
+
+	const remaining = await db
+		.select({ sourceId: projectRoleActors.sourceId })
+		.from(projectRoleActors)
+		.where(
+			inArray(
+				projectRoleActors.sourceId,
+				fixtures.map((row) => row.sourceId),
+			),
+		);
+	expect(remaining.map((row) => row.sourceId).sort()).toEqual(
+		[fixtures[0].sourceId, fixtures[2].sourceId].sort(),
+	);
 });

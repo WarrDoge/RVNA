@@ -327,6 +327,7 @@ async function importProjectRoles(
 		projectRows.map((project) => [project.key.toUpperCase(), project.id]),
 	);
 	const rows: ReturnType<typeof roleActorRow>[] = [];
+	const fetchedProjectIds = new Set<string>();
 	for (const key of projectKeys) {
 		const projectId = projectIds.get(key.toUpperCase());
 		if (!projectId) {
@@ -344,11 +345,13 @@ async function importProjectRoles(
 			);
 			continue;
 		}
+		let complete = true;
 		for (const [roleName, url] of Object.entries(roles ?? {})) {
 			let role: JiraProjectRole;
 			try {
 				role = await client.getJson<JiraProjectRole>(url);
 			} catch (error) {
+				complete = false;
 				report.push(
 					`role ${roleName} unavailable for ${key}: ${errorMessage(error)}`,
 				);
@@ -360,6 +363,7 @@ async function importProjectRoles(
 				if (row) rows.push(row);
 			}
 		}
+		if (complete) fetchedProjectIds.add(projectId);
 	}
 
 	const unique = new Map(rows.map((row) => [row?.sourceId, row] as const));
@@ -376,9 +380,7 @@ async function importProjectRoles(
 	mergeCounts(counts, "project_role_actors", result.counts);
 
 	const desired = new Set(validRows.map((row) => row.sourceId));
-	const projectIdsToCheck = projectKeys
-		.map((key) => projectIds.get(key.toUpperCase()))
-		.filter((id): id is string => Boolean(id));
+	const projectIdsToCheck = [...fetchedProjectIds];
 	if (projectIdsToCheck.length > 0) {
 		const existing = await db
 			.select({
