@@ -543,6 +543,75 @@ describe("parity checks", () => {
 		expect(changed.changedSinceImport).toContain(`${projectKey}-1`);
 	});
 
+	test("project issue checks group issues by their project", async () => {
+		const tables = await loadTableSet(pool);
+		const database = await loadJiraSnapshot(pool, tables, {
+			projectKeys: [projectKey],
+		});
+		const issue = database.issues.get(`${projectKey}-1`);
+		if (!issue) throw new Error("seeded issue was not loaded");
+		const otherKey = "PARITYO";
+		const otherIssue = {
+			...issue,
+			key: `${otherKey}-1`,
+			number: 1,
+			projectKey: otherKey,
+		};
+		const withOther = {
+			...database,
+			projects: [...database.projects, otherKey],
+			issues: new Map([...database.issues, [otherIssue.key, otherIssue]]),
+		};
+		const live = liveJiraFromDatabase(withOther);
+		live.projects = live.projects.map((project) =>
+			project.key === otherKey
+				? { ...project, statusesByIssueType: new Map() }
+				: project,
+		);
+		const checks = jiraChecks(live, withOther).checks;
+		const project = checks.find(
+			(check) => check.name === `jira.project.${otherKey}.issues`,
+		);
+		expect(project?.status).toBe("OK");
+		expect(project?.live).toBe(1);
+		expect(project?.database).toBe(1);
+		const status = checks.find(
+			(check) =>
+				check.name === `jira.project.${otherKey}.status.${metadata.status}`,
+		);
+		expect(status?.status).toBe("OK");
+		expect(status?.live).toBe(1);
+		expect(status?.database).toBe(1);
+	});
+
+	test("a queue that uses currentUser on one side does not skew the totals", async () => {
+		const tables = await loadTableSet(pool);
+		const database = await loadJiraSnapshot(pool, tables, {
+			projectKeys: [projectKey],
+		});
+		const live = liveJiraFromDatabase(database);
+		const desk = {
+			sourceId: "parity-test-desk",
+			projectKey,
+			requestTypes: [],
+			queues: [{ id: "1", jql: `project = ${projectKey}`, issueCount: 3 }],
+			metrics: [],
+		};
+		const liveDesk = {
+			...desk,
+			queues: [{ id: "1", jql: "assignee = currentUser()", issueCount: 5 }],
+		};
+		const check = jiraChecks(
+			{ ...live, serviceDesks: [liveDesk] },
+			{ ...database, serviceDesks: [desk] },
+		).checks.find(
+			(item) => item.name === `jira.servicedesk.${projectKey}.queues`,
+		);
+		expect(check?.live).toBe(0);
+		expect(check?.database).toBe(0);
+		expect(check?.status).toBe("OK");
+	});
+
 	test("attachment bytes above the integer range are reported as a number", async () => {
 		const issue = await pool.query<{ id: string }>(
 			"select id from issues where key = $1",

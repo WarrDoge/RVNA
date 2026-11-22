@@ -24,15 +24,14 @@ const issueMetrics = [
 	["jira.issue.changelog", "history"],
 ] as const;
 
-function projectIssueKeys(
-	issues: Map<string, JiraIssueData>,
-	projectKey: string,
-) {
-	return new Set(
-		[...issues.values()]
-			.filter((issue) => issue.projectKey === projectKey)
-			.map((issue) => issue.key),
-	);
+function issuesByProject(issues: Map<string, JiraIssueData>) {
+	const result = new Map<string, Set<string>>();
+	for (const issue of issues.values()) {
+		const keys = result.get(issue.projectKey) ?? new Set();
+		keys.add(issue.key);
+		result.set(issue.projectKey, keys);
+	}
+	return result;
 }
 
 function issuesByProjectStatus(issues: Map<string, JiraIssueData>) {
@@ -61,7 +60,6 @@ export interface JiraCheckResult {
 	checks: CheckResult[];
 	watermark: string | null;
 	changedSinceImport: string[];
-	notes: string[];
 }
 
 export function jiraChecks(
@@ -69,7 +67,6 @@ export function jiraChecks(
 	database: JiraDatabaseSnapshot,
 ): JiraCheckResult {
 	const checks: CheckResult[] = [];
-	const notes: string[] = [];
 	const localIssues = database.localIssues ?? new Set<string>();
 	const liveIssues = new Map(
 		[...live.issues].filter(([key]) => !localIssues.has(key)),
@@ -91,12 +88,8 @@ export function jiraChecks(
 		...live.projects.map((project) => project.key),
 		...database.projects,
 	]);
-	const liveByProject = new Map<string, Set<string>>();
-	const dbByProject = new Map<string, Set<string>>();
-	for (const key of projectKeys) {
-		liveByProject.set(key, projectIssueKeys(liveIssues, key));
-		dbByProject.set(key, projectIssueKeys(dbIssues, key));
-	}
+	const liveByProject = issuesByProject(liveIssues);
+	const dbByProject = issuesByProject(dbIssues);
 
 	checks.push(
 		compareSets(
@@ -388,17 +381,14 @@ export function jiraChecks(
 					}
 					continue;
 				}
+				const liveUsesCurrentUser = queueUsesCurrentUser(liveQueue.jql);
+				const dbUsesCurrentUser = queueUsesCurrentUser(dbQueue.jql);
+				if (liveUsesCurrentUser || dbUsesCurrentUser) continue;
 				const liveCount = liveQueue.issueCount ?? 0;
 				const dbCount = dbQueue.issueCount ?? 0;
-				if (
-					!queueUsesCurrentUser(liveQueue.jql) &&
-					!queueUsesCurrentUser(dbQueue.jql) &&
-					liveCount !== dbCount
-				) {
-					queueDetails.push(id);
-				}
-				if (!queueUsesCurrentUser(liveQueue.jql)) liveIssueTotal += liveCount;
-				if (!queueUsesCurrentUser(dbQueue.jql)) dbIssueTotal += dbCount;
+				if (liveCount !== dbCount) queueDetails.push(id);
+				liveIssueTotal += liveCount;
+				dbIssueTotal += dbCount;
 			}
 			checks.push(
 				check(
@@ -479,12 +469,19 @@ export function jiraChecks(
 				issueDetails.push(id);
 			}
 		}
-		let liveIssues = 0;
-		let dbIssues = 0;
-		for (const count of liveSprintIssues.values()) liveIssues += count;
-		for (const count of dbSprintIssues.values()) dbIssues += count;
+		let liveSprintIssueTotal = 0;
+		let dbSprintIssueTotal = 0;
+		for (const count of liveSprintIssues.values()) {
+			liveSprintIssueTotal += count;
+		}
+		for (const count of dbSprintIssues.values()) dbSprintIssueTotal += count;
 		checks.push(
-			check("jira.agile.sprint_issues", liveIssues, dbIssues, issueDetails),
+			check(
+				"jira.agile.sprint_issues",
+				liveSprintIssueTotal,
+				dbSprintIssueTotal,
+				issueDetails,
+			),
 		);
 	}
 
@@ -528,6 +525,5 @@ export function jiraChecks(
 		checks,
 		watermark,
 		changedSinceImport: changedSinceImport.sort(),
-		notes,
 	};
 }
