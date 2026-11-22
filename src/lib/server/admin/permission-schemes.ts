@@ -684,12 +684,10 @@ export async function removePermissionSchemeProject(
 					eq(permissionLocalAssignments.schemeId, scheme.id),
 				),
 			);
-		if (!isLocal(scheme.sourceId)) {
-			await tx
-				.insert(permissionLocalUnassignments)
-				.values({ projectId: project.id })
-				.onConflictDoNothing();
-		}
+		await tx
+			.insert(permissionLocalUnassignments)
+			.values({ projectId: project.id })
+			.onConflictDoNothing();
 		await audit(tx, actor, {
 			action: "permission.scheme.unassign",
 			entityType: "permission_scheme",

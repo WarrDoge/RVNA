@@ -1070,6 +1070,12 @@ test("deletes a scheme only after its projects are removed", async () => {
 	);
 	expect(removed.statusCode).toBe(204);
 
+	const unassigned = await db
+		.select({ projectId: permissionLocalUnassignments.projectId })
+		.from(permissionLocalUnassignments)
+		.where(eq(permissionLocalUnassignments.projectId, otherProject.projectId));
+	expect(unassigned).toEqual([{ projectId: otherProject.projectId }]);
+
 	const missing = await injectAs(
 		app,
 		admin.session,
