@@ -76,13 +76,39 @@ export class GetOnlyClient {
 	private readonly fetchImpl: typeof fetch;
 
 	constructor(options: GetOnlyClientOptions) {
+		const concurrency = options.concurrency ?? 4;
+		if (!Number.isInteger(concurrency) || concurrency <= 0) {
+			throw new Error("concurrency must be a positive integer");
+		}
+		const maxAttempts = options.maxAttempts ?? 6;
+		if (!Number.isInteger(maxAttempts) || maxAttempts <= 0) {
+			throw new Error("maxAttempts must be a positive integer");
+		}
+		const timeoutMs = options.timeoutMs ?? 120_000;
+		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+			throw new Error("timeoutMs must be a positive number");
+		}
 		this.baseUrl = options.baseUrl;
 		this.token = options.token;
-		this.semaphore = new Semaphore(options.concurrency ?? 4);
-		this.maxAttempts = options.maxAttempts ?? 6;
+		this.semaphore = new Semaphore(concurrency);
+		this.maxAttempts = maxAttempts;
 		this.baseDelayMs = options.baseDelayMs ?? 500;
-		this.timeoutMs = options.timeoutMs ?? 120_000;
+		this.timeoutMs = timeoutMs;
 		this.fetchImpl = options.fetchImpl ?? fetch;
+	}
+
+	private retryDelay(attempt: number, retryAfter?: number) {
+		if (
+			retryAfter !== undefined &&
+			Number.isFinite(retryAfter) &&
+			retryAfter > 0
+		) {
+			return Math.min(30_000, retryAfter * 1000);
+		}
+		return Math.min(
+			30_000,
+			this.baseDelayMs * 2 ** attempt + Math.random() * 250,
+		);
 	}
 
 	async request(
@@ -103,12 +129,20 @@ export class GetOnlyClient {
 				`refusing to send the access token to ${url.origin}: not the configured server`,
 			);
 		}
+		for (const name of Object.keys(options.headers ?? {})) {
+			if (name.toLowerCase() === "authorization") {
+				throw new Error(
+					"the client sets the Authorization header; remove it from the request options",
+				);
+			}
+		}
 		for (const [key, value] of Object.entries(params ?? {})) {
 			if (value !== undefined) url.searchParams.set(key, String(value));
 		}
 
 		for (let attempt = 0; ; attempt++) {
 			await this.semaphore.acquire();
+			let delay: number | null = null;
 			try {
 				const response = await this.fetchImpl(url, {
 					method: "GET",
@@ -128,35 +162,34 @@ export class GetOnlyClient {
 					}
 					const retryAfter = Number(response.headers.get("retry-after"));
 					await response.body?.cancel();
-					const delay =
-						Number.isFinite(retryAfter) && retryAfter > 0
-							? Math.min(30_000, retryAfter * 1000)
-							: Math.min(
-									30_000,
-									this.baseDelayMs * 2 ** attempt + Math.random() * 250,
-								);
-					await sleep(delay);
-					continue;
-				}
-
-				if (!response.ok) {
+					delay = this.retryDelay(attempt, retryAfter);
+				} else if (!response.ok) {
 					await response.body?.cancel();
 					throw new GetOnlyRequestError(response.status, url.pathname);
+				} else {
+					return response;
 				}
-
-				return response;
 			} catch (error) {
 				if (error instanceof GetOnlyRequestError) throw error;
 				if (attempt + 1 >= this.maxAttempts) throw error;
-				await sleep(
-					Math.min(
-						30_000,
-						this.baseDelayMs * 2 ** attempt + Math.random() * 250,
-					),
-				);
+				delay = this.retryDelay(attempt);
 			} finally {
 				this.semaphore.release();
 			}
+			if (delay !== null) await sleep(delay);
+		}
+	}
+
+	/** The request permit ends with the headers; hold a slot again while the body is read. */
+	private async readBody<T>(
+		response: Response,
+		read: (response: Response) => Promise<T>,
+	) {
+		await this.semaphore.acquire();
+		try {
+			return await read(response);
+		} finally {
+			this.semaphore.release();
 		}
 	}
 
@@ -166,11 +199,13 @@ export class GetOnlyClient {
 		options: GetOnlyRequestOptions = {},
 	): Promise<T> {
 		const response = await this.request("GET", path, params, options);
-		return (await response.json()) as T;
+		return this.readBody(response, async (value) => (await value.json()) as T);
 	}
 
 	async getBytes(path: string): Promise<Buffer> {
 		const response = await this.request("GET", path);
-		return Buffer.from(await response.arrayBuffer());
+		return this.readBody(response, async (value) =>
+			Buffer.from(await value.arrayBuffer()),
+		);
 	}
 }
