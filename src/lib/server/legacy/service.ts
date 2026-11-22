@@ -1,6 +1,11 @@
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { type CurrentUser, SESSION_COOKIE, sha256 } from "../auth.ts";
+import {
+	type CurrentUser,
+	loginPath,
+	SESSION_COOKIE,
+	sha256,
+} from "../auth.ts";
 import { db } from "../db.ts";
 import { getFilter } from "../filters/service.ts";
 import { isHttpError } from "../http.ts";
@@ -27,7 +32,7 @@ export async function logout(
 	if (sessionId) {
 		await db.delete(sessions).where(eq(sessions.idHash, sha256(sessionId)));
 	}
-	return redirect("/login.jsp");
+	return redirect(loginPath());
 }
 
 export async function quickSearch(

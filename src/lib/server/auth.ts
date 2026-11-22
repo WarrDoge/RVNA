@@ -44,6 +44,11 @@ export function randomValue() {
 	return randomBytes(32).toString("base64url");
 }
 
+/** The login page, with the return address; it decides between SSO and the local form. */
+export function loginPath(returnTo = "") {
+	return `/login.jsp${returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : ""}`;
+}
+
 export function sessionCookieOptions() {
 	return {
 		path: "/",

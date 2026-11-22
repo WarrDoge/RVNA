@@ -136,7 +136,7 @@ test("every moved endpoint answers anonymously with its documented guard", async
 		) {
 			expect(response.statusCode).toBe(302);
 			expect(String(response.headers.location)).toMatch(
-				/^\/auth\/login\?returnTo=/,
+				/^\/login\.jsp\?returnTo=/,
 			);
 			continue;
 		}

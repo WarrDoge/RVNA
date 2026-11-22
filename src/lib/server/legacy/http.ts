@@ -1,4 +1,5 @@
 import type { RequestEvent } from "@sveltejs/kit";
+import { loginPath } from "../auth.ts";
 import { HttpError } from "../http.ts";
 import type { LegacyOutcome } from "./service.ts";
 
@@ -12,7 +13,7 @@ export async function legacyResponse(
 			return new Response(null, {
 				status: 302,
 				headers: {
-					location: `/auth/login?returnTo=${encodeURIComponent(`${event.url.pathname}${event.url.search}`)}`,
+					location: loginPath(`${event.url.pathname}${event.url.search}`),
 				},
 			});
 		case "redirect":

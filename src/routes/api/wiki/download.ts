@@ -1,7 +1,7 @@
 import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import type { RequestEvent } from "@sveltejs/kit";
-import type { CurrentUser } from "#lib/server/auth.ts";
+import { type CurrentUser, loginPath } from "#lib/server/auth.ts";
 import {
 	contentDisposition,
 	type DownloadFile,
@@ -15,7 +15,7 @@ export function downloadActor(event: RequestEvent): CurrentUser | Response {
 	return new Response(null, {
 		status: 302,
 		headers: {
-			location: `/auth/login?returnTo=${encodeURIComponent(`${event.url.pathname}${event.url.search}`)}`,
+			location: loginPath(`${event.url.pathname}${event.url.search}`),
 		},
 	});
 }

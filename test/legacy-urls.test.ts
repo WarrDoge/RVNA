@@ -322,7 +322,7 @@ test("a Jira logout link asks before it ends the session", async () => {
 	});
 	expect(anonymous.statusCode).toBe(302);
 	expect(anonymous.headers.location).toBe(
-		"/auth/login?returnTo=%2Fsecure%2FLogout!default.jspa",
+		"/login.jsp?returnTo=%2Fsecure%2FLogout!default.jspa",
 	);
 
 	const confirmation = await inject("GET", "/secure/Logout!default.jspa");

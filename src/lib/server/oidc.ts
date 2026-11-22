@@ -393,12 +393,12 @@ export async function logout(sessionId: string | undefined) {
 	}
 
 	if (!ssoConfigured() || !idToken) {
-		return { redirect: "/" };
+		return { redirect: loginPath() };
 	}
 
 	const config = await getConfiguration();
 	if (!config.serverMetadata().end_session_endpoint) {
-		return { redirect: "/" };
+		return { redirect: loginPath() };
 	}
 
 	return {

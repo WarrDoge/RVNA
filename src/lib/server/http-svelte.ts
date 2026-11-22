@@ -6,7 +6,7 @@ import {
 	redirect,
 	type ServerLoadEvent,
 } from "@sveltejs/kit";
-import type { CurrentUser } from "./auth.ts";
+import { type CurrentUser, loginPath } from "./auth.ts";
 import { isHttpError, prepareWrite } from "./http.ts";
 import { requireAdminActor } from "./permissions.ts";
 import { resolvePreviousKeysFor } from "./project-keys.ts";
@@ -19,10 +19,7 @@ export function requirePageUser(event: {
 	url: URL;
 }): CurrentUser {
 	if (!event.locals.user) {
-		redirect(
-			302,
-			`/login.jsp?returnTo=${encodeURIComponent(`${event.url.pathname}${event.url.search}`)}`,
-		);
+		redirect(302, loginPath(`${event.url.pathname}${event.url.search}`));
 	}
 	return event.locals.user;
 }
