@@ -72,10 +72,9 @@ export async function createPage(
 	const space = await loadSpace(db, body.spaceKey);
 	await requireGrant(actor, space.id, "create");
 	const doc = checkDoc(body.bodyDoc);
-	await checkParent(db, actor, space, body.parentId ?? null);
-	const parentId = body.parentId ?? space.homePageId;
 
 	let draftId: string | null = null;
+	let draftParentId: string | null | undefined;
 	if (body.draftPageId) {
 		const { page: draft } = await loadPage(db, body.draftPageId);
 		if (draft.status !== "draft" || draft.spaceId !== space.id) {
@@ -83,7 +82,15 @@ export async function createPage(
 		}
 		await requireAccess(actor, draft, "edit");
 		draftId = draft.id;
+		draftParentId = draft.parentId;
 	}
+	const parentId =
+		body.parentId !== undefined
+			? (body.parentId ?? space.homePageId)
+			: draftId
+				? (draftParentId ?? null)
+				: space.homePageId;
+	await checkParent(db, actor, space, parentId);
 	await assertTitleFree(db, space.id, body.title);
 
 	const created = await titleClash(body.title, () =>
@@ -255,7 +262,10 @@ export async function setPageLabels(
 	await requireAccess(actor, page, "edit");
 	assertCurrent(page);
 	const labels = normalizeLabels(body.labels);
-	await db.transaction((tx) => setLabels(tx, page.id, labels));
+	await db.transaction(async (tx) => {
+		await lockPage(tx, page.id);
+		await setLabels(tx, page.id, labels);
+	});
 	const rows = await db
 		.select({ label: pageLabels.label })
 		.from(pageLabels)

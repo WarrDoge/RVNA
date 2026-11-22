@@ -228,6 +228,18 @@ describe("create", () => {
 		});
 		expect(denied.status).toBe(403);
 	});
+
+	test("creating without a parent still checks the home page is readable", async () => {
+		const own = await wiki.space("HR");
+		const limited = await wiki.user("creatoronly");
+		await wiki.grant(own.id, { userId: limited.id }, ["create"]);
+		const denied = await limited.post("/api/wiki/pages", {
+			spaceKey: own.key,
+			title: "No read",
+			bodyDoc: doc("x"),
+		});
+		expect(denied.status).toBe(404);
+	});
 });
 
 describe("title uniqueness", () => {
@@ -513,6 +525,23 @@ describe("drafts of unpublished pages", () => {
 		}
 	});
 
+	test("publishing without a parent keeps the draft's parent", async () => {
+		const parent = await wiki.page(author, space.key, "Draft parent");
+		const created = await author.post("/api/wiki/pages/drafts", {
+			spaceKey: space.key,
+			parentId: parent.id,
+		});
+		expect(created.status).toBe(201);
+		const published = await author.post("/api/wiki/pages", {
+			spaceKey: space.key,
+			title: "Draft under parent",
+			bodyDoc: doc("kept"),
+			draftPageId: created.body.pageId,
+		});
+		expect(published.status).toBe(201);
+		expect(published.body.parentId).toBe(parent.id);
+	});
+
 	test("another user cannot publish someone else's draft page", async () => {
 		const created = await author.post("/api/wiki/pages/drafts", {
 			spaceKey: space.key,
@@ -574,5 +603,47 @@ describe("labels", () => {
 			labels: [],
 		});
 		expect(denied.status).toBe(403);
+	});
+
+	test("concurrent label sets replace instead of merging", async () => {
+		const page = await wiki.page(author, space.key, "Label race");
+		await pool.query(`
+			create or replace function test_slow_label_insert() returns trigger
+			language plpgsql as $$
+			begin
+				perform pg_advisory_xact_lock(987654324);
+				return new;
+			end $$`);
+		await pool.query(
+			"create trigger test_slow_label_insert before insert on page_labels for each row execute function test_slow_label_insert()",
+		);
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select pg_advisory_xact_lock(987654324)");
+			const first = author.put(`/api/wiki/pages/${page.id}/labels`, {
+				labels: ["one"],
+			});
+			await waitForLockWaiters(1);
+			const second = author.put(`/api/wiki/pages/${page.id}/labels`, {
+				labels: ["two"],
+			});
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const responses = await Promise.all([first, second]);
+			expect(responses.map((response) => response.status)).toEqual([200, 200]);
+			const labels = await rows<{ label: string }>(
+				"select label from page_labels where page_id = $1",
+				[page.id],
+			);
+			expect(labels.map((row) => row.label)).toEqual(["two"]);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+			await pool.query(
+				"drop trigger if exists test_slow_label_insert on page_labels",
+			);
+			await pool.query("drop function if exists test_slow_label_insert()");
+		}
 	});
 });
