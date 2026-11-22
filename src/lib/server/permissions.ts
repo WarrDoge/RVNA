@@ -226,12 +226,6 @@ export function decidePermission(input: DecisionInput): boolean {
 
 type Data = {
 	projects: Map<string, PermissionProject>;
-	schemes: {
-		id: string;
-		sourceId: string;
-		projectIds: string[];
-		name: string;
-	}[];
 	grantsByScheme: Map<string, GrantLike[]>;
 	actorsByProject: Map<string, ActorLike[]>;
 	schemeByProject: Map<
@@ -313,7 +307,6 @@ async function loadData(): Promise<Data> {
 		projects: new Map(
 			projectRows.map((project) => [project.id, project] as const),
 		),
-		schemes,
 		grantsByScheme,
 		actorsByProject,
 		schemeByProject,
