@@ -334,6 +334,20 @@ function isUuid(value: string): boolean {
 	return UUID.test(value);
 }
 
+function isCalendarDate(value: string): boolean {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+	if (!match) return false;
+	const year = Number(match[1]);
+	const month = Number(match[2]);
+	const day = Number(match[3]);
+	const date = new Date(Date.UTC(year, month - 1, day));
+	return (
+		date.getUTCFullYear() === year &&
+		date.getUTCMonth() === month - 1 &&
+		date.getUTCDate() === day
+	);
+}
+
 function text(value: string | string[] | null | undefined): string | null {
 	if (Array.isArray(value)) return value.join(", ");
 	const trimmed = value?.trim() ?? "";
@@ -408,11 +422,17 @@ export async function createRequest(
 		const optionRows = await loadOptionRows(fieldRows.map((row) => row.id));
 		for (const row of fieldRows) {
 			const adminType = adminTypeForField(row);
-			if (!adminType) continue;
-			arrayFields.set(
-				row.sourceId,
-				toLoadedField(row, adminType, optionRows.get(row.id) ?? []),
-			);
+			if (adminType) {
+				arrayFields.set(
+					row.sourceId,
+					toLoadedField(row, adminType, optionRows.get(row.id) ?? []),
+				);
+			} else if (row.type === "option") {
+				arrayFields.set(
+					row.sourceId,
+					toLoadedField(row, "select", optionRows.get(row.id) ?? []),
+				);
+			}
 		}
 	}
 	const needsUsers = [...arrayFields.values()].some(
@@ -455,7 +475,10 @@ export async function createRequest(
 	}
 
 	let summary = text(values.summary) ?? input.summary.trim();
-	let descriptionHtml: string | null = null;
+	const hasDescriptionField = rows.some((row) => row.fieldId === "description");
+	let descriptionHtml = hasDescriptionField
+		? null
+		: await sanitizeBodyHtml(input.description);
 	let dueDate: string | null = null;
 	let priorityId: string | null = null;
 	const componentIds: string[] = [];
@@ -555,7 +578,7 @@ export async function createRequest(
 				}
 				continue;
 			}
-			if (!/^\d{4}-\d{2}-\d{2}$/.test(wanted)) {
+			if (!isCalendarDate(wanted)) {
 				return {
 					ok: false,
 					status: 400,
@@ -581,8 +604,11 @@ export async function createRequest(
 			if (wanted.length === 0) continue;
 			const field = arrayFields.get(row.fieldId);
 			if (!field) {
-				custom[row.fieldId] = wanted;
-				continue;
+				return {
+					ok: false,
+					status: 400,
+					error: `${row.label} is not configured`,
+				};
 			}
 			const validated = validateCustomValue(field, wanted, {
 				users: fieldUsers,
@@ -625,18 +651,28 @@ export async function createRequest(
 			continue;
 		}
 		if (kind === "option") {
-			const options = await db
-				.select({ value: fieldOptions.value })
-				.from(fieldOptions)
-				.innerJoin(fields, eq(fields.id, fieldOptions.fieldId))
-				.where(eq(fields.sourceId, row.fieldId));
-			if (
-				options.length > 0 &&
-				!options.some((option) => option.value === wanted)
-			) {
+			const field = arrayFields.get(row.fieldId);
+			if (!field) {
 				return { ok: false, status: 400, error: `Unknown ${row.label}` };
 			}
-			custom[row.fieldId] = { value: wanted };
+			if (field.options.length === 0) {
+				if (row.hiddenValue === null || row.hiddenValue === undefined) {
+					return { ok: false, status: 400, error: `Unknown ${row.label}` };
+				}
+				custom[row.fieldId] = { value: wanted };
+				continue;
+			}
+			const validated = validateCustomValue(field, wanted, {
+				users: fieldUsers,
+			});
+			if (!validated.ok) {
+				return {
+					ok: false,
+					status: 400,
+					error: `${row.label}: ${validated.error}`,
+				};
+			}
+			if (validated.value !== null) custom[row.fieldId] = validated.value;
 			continue;
 		}
 		const field = arrayFields.get(row.fieldId);
@@ -835,7 +871,7 @@ export interface CustomerRequestView {
 	summary: string;
 	descriptionHtml: string | null;
 	status: { name: string; category: StatusCategory };
-	requestType: { id: string; name: string } | null;
+	requestType: { id: string; name: string };
 	created: string | null;
 	reporter: { displayName: string } | null;
 	attachments: { id: string; fileName: string; size: number }[];
@@ -910,10 +946,7 @@ export async function customerRequest(
 			name: issue.statusName,
 			category: issue.statusCategory as StatusCategory,
 		},
-		requestType:
-			issue.requestTypeId && issue.requestTypeName
-				? { id: issue.requestTypeId, name: issue.requestTypeName }
-				: null,
+		requestType: { id: issue.requestTypeId, name: issue.requestTypeName },
 		created: issue.created?.toISOString() ?? null,
 		reporter: issue.reporterName ? { displayName: issue.reporterName } : null,
 		attachments: attachmentRows,

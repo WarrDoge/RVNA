@@ -948,8 +948,13 @@ describe("portal API", () => {
 		expect(row.description_html).toBe("<p>The laptop is dead</p>");
 		expect(row.due_date).toBe("2026-12-01");
 		expect(row.priority_id).toBe(priorityId);
+		const emergency = await pool.query<{ id: string }>(
+			"select id from field_options where source_id = $1",
+			[`${tag}:option:emergency`],
+		);
 		expect(row.custom[`${tag}:customfield:type`]).toEqual({
 			value: "Emergency",
+			id: emergency.rows[0].id,
 		});
 		expect(row.custom[`${tag}:customfield:preset`]).toEqual({
 			value: "Normal",
@@ -2745,5 +2750,194 @@ describe("review follow-ups", () => {
 			.where(eq(issues.id, seededIssueId));
 		expect(outcome.applied.length).toBeGreaterThan(0);
 		expect(after.updated).toEqual(before.updated);
+	});
+	test("a request type without a description field still stores the caller's description", async () => {
+		const response = await inject(
+			"POST",
+			`/api/servicedesk/portals/${deskId}/requests`,
+			customerSession,
+			{
+				requestTypeId: otherRequestTypeId,
+				summary: "No description field",
+				description: "<p>Kept anyway</p>",
+			},
+		);
+		expect(response.statusCode).toBe(201);
+		const row = await issueRow(response.json().key);
+		expect(row.description_html).toBe("<p>Kept anyway</p>");
+	});
+
+	test("a due date must exist on the calendar", async () => {
+		for (const date of ["2026-13-45", "2026-02-31"]) {
+			const response = await createRequest(customerSession, {
+				fields: { duedate: date },
+			});
+			expect(response.statusCode).toBe(400);
+		}
+	});
+
+	test("an array field without a loaded definition is rejected", async () => {
+		const [source] = await db
+			.select({ issueTypeId: requestTypes.issueTypeId })
+			.from(requestTypes)
+			.where(eq(requestTypes.id, requestTypeId));
+		if (!source) throw new Error("fixture request type missing");
+		const [requestType] = await db
+			.insert(requestTypes)
+			.values({
+				sourceId: `${tag}:rt:unvalidated`,
+				deskId,
+				issueTypeId: source.issueTypeId,
+				name: `${tag} Unvalidated`,
+				sequence: 20,
+			})
+			.returning();
+		const [field] = await db
+			.insert(fields)
+			.values({
+				sourceId: `${tag}:customfield:unvalidated`,
+				name: "Loose values",
+				type: "array",
+			})
+			.returning();
+		await db.insert(requestTypeFields).values([
+			{
+				requestTypeId: requestType.id,
+				fieldId: "summary",
+				label: "Summary",
+				required: true,
+				sequence: 0,
+			},
+			{
+				requestTypeId: requestType.id,
+				fieldId: field.sourceId,
+				label: "Loose values",
+				sequence: 1,
+			},
+		]);
+		try {
+			const response = await inject(
+				"POST",
+				`/api/servicedesk/portals/${deskId}/requests`,
+				customerSession,
+				{
+					requestTypeId: requestType.id,
+					summary: "Unvalidated array",
+					fields: { [field.sourceId]: ["anything"] },
+				},
+			);
+			expect(response.statusCode).toBe(400);
+		} finally {
+			await db.delete(fields).where(eq(fields.id, field.id));
+			await db.delete(requestTypes).where(eq(requestTypes.id, requestType.id));
+		}
+	});
+
+	async function optionFixture(
+		prefix: string,
+		values: { value: string; disabled?: boolean }[],
+	) {
+		const [source] = await db
+			.select({ issueTypeId: requestTypes.issueTypeId })
+			.from(requestTypes)
+			.where(eq(requestTypes.id, requestTypeId));
+		if (!source) throw new Error("fixture request type missing");
+		const [requestType] = await db
+			.insert(requestTypes)
+			.values({
+				sourceId: `${tag}:rt:${prefix}`,
+				deskId,
+				issueTypeId: source.issueTypeId,
+				name: `${tag} ${prefix}`,
+				sequence: 21,
+			})
+			.returning();
+		const [field] = await db
+			.insert(fields)
+			.values({
+				sourceId: `${tag}:customfield:${prefix}`,
+				name: `${tag} ${prefix}`,
+				type: "option",
+			})
+			.returning();
+		await db.insert(requestTypeFields).values([
+			{
+				requestTypeId: requestType.id,
+				fieldId: "summary",
+				label: "Summary",
+				required: true,
+				sequence: 0,
+			},
+			{
+				requestTypeId: requestType.id,
+				fieldId: field.sourceId,
+				label: `${tag} ${prefix}`,
+				sequence: 1,
+			},
+		]);
+		const options = await db
+			.insert(fieldOptions)
+			.values(
+				values.map((option, sequence) => ({
+					sourceId: `${tag}:option:${prefix}:${sequence}`,
+					fieldId: field.id,
+					value: option.value,
+					disabled: option.disabled ?? false,
+					sequence,
+				})),
+			)
+			.returning();
+		return { requestType, field, options };
+	}
+
+	test("option values match case-insensitively and keep their id", async () => {
+		const fixture = await optionFixture("case", [{ value: "Case" }]);
+		try {
+			const response = await inject(
+				"POST",
+				`/api/servicedesk/portals/${deskId}/requests`,
+				customerSession,
+				{
+					requestTypeId: fixture.requestType.id,
+					summary: "Case option",
+					fields: { [fixture.field.sourceId]: "case" },
+				},
+			);
+			expect(response.statusCode).toBe(201);
+			const row = await issueRow(response.json().key);
+			expect(row.custom[fixture.field.sourceId]).toEqual({
+				value: "Case",
+				id: fixture.options[0].id,
+			});
+		} finally {
+			await db.delete(fields).where(eq(fields.id, fixture.field.id));
+			await db
+				.delete(requestTypes)
+				.where(eq(requestTypes.id, fixture.requestType.id));
+		}
+	});
+
+	test("a disabled option is rejected", async () => {
+		const fixture = await optionFixture("disabled", [
+			{ value: "Off", disabled: true },
+		]);
+		try {
+			const response = await inject(
+				"POST",
+				`/api/servicedesk/portals/${deskId}/requests`,
+				customerSession,
+				{
+					requestTypeId: fixture.requestType.id,
+					summary: "Disabled option",
+					fields: { [fixture.field.sourceId]: "Off" },
+				},
+			);
+			expect(response.statusCode).toBe(400);
+		} finally {
+			await db.delete(fields).where(eq(fields.id, fixture.field.id));
+			await db
+				.delete(requestTypes)
+				.where(eq(requestTypes.id, fixture.requestType.id));
+		}
 	});
 });
