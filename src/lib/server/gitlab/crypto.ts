@@ -3,18 +3,47 @@ import {
 	createDecipheriv,
 	createHash,
 	randomBytes,
+	scryptSync,
 	timingSafeEqual,
 } from "node:crypto";
 import { env } from "../env.ts";
 
 const VERSION = "v1";
+const KDF_SALT = "rvna-secrets-key-v1";
 
-function key(): Buffer {
-	const secret = env.SECRETS_KEY;
-	if (!secret) {
+let cached: { secret: string; key: Buffer } | null = null;
+
+function secret(): string {
+	const value = env.SECRETS_KEY;
+	if (!value) {
 		throw new Error("SECRETS_KEY is not set");
 	}
-	return createHash("sha256").update(secret).digest();
+	return value;
+}
+
+function key(): Buffer {
+	const value = secret();
+	if (cached?.secret !== value) {
+		cached = { secret: value, key: scryptSync(value, KDF_SALT, 32) };
+	}
+	return cached.key;
+}
+
+function legacyKey(): Buffer {
+	return createHash("sha256").update(secret()).digest();
+}
+
+function decryptWith(
+	key: Buffer,
+	iv: Buffer,
+	tag: Buffer,
+	encrypted: Buffer,
+): string {
+	const decipher = createDecipheriv("aes-256-gcm", key, iv);
+	decipher.setAuthTag(tag);
+	return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString(
+		"utf8",
+	);
 }
 
 export function encryptionAvailable() {
@@ -38,20 +67,34 @@ export function encryptSecret(plain: string): string {
 }
 
 export function decryptSecret(value: string): string {
-	const [version, iv, tag, encrypted] = value.split(":");
+	const parts = value.split(":");
+	if (parts.length !== 4) {
+		throw new Error("Stored secret is not readable");
+	}
+	const [version, iv, tag, encrypted] = parts;
 	if (version !== VERSION || !iv || !tag || !encrypted) {
 		throw new Error("Stored secret is not readable");
 	}
-	const decipher = createDecipheriv(
-		"aes-256-gcm",
-		key(),
-		Buffer.from(iv, "base64"),
-	);
-	decipher.setAuthTag(Buffer.from(tag, "base64"));
-	return Buffer.concat([
-		decipher.update(Buffer.from(encrypted, "base64")),
-		decipher.final(),
-	]).toString("utf8");
+	const ivBytes = Buffer.from(iv, "base64");
+	const tagBytes = Buffer.from(tag, "base64");
+	const encryptedBytes = Buffer.from(encrypted, "base64");
+	if (
+		ivBytes.length !== 12 ||
+		tagBytes.length !== 16 ||
+		encryptedBytes.length === 0
+	) {
+		throw new Error("Stored secret is not readable");
+	}
+	const currentKey = key();
+	try {
+		return decryptWith(currentKey, ivBytes, tagBytes, encryptedBytes);
+	} catch {
+		try {
+			return decryptWith(legacyKey(), ivBytes, tagBytes, encryptedBytes);
+		} catch {
+			throw new Error("Stored secret is not readable");
+		}
+	}
 }
 
 export function constantTimeEqual(left: string, right: string): boolean {
