@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { rm, unlink } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { realpath, rmdir, unlink } from "node:fs/promises";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import {
 	and,
 	asc,
 	desc,
 	eq,
 	ilike,
+	inArray,
 	isNull,
 	or,
 	type SQL,
@@ -26,6 +27,7 @@ import {
 	fieldContexts,
 	issues,
 	issueTypes,
+	priorities,
 	projectIssueTypes,
 	projectPreviousKeys,
 	projects,
@@ -86,13 +88,14 @@ function likePattern(query: string) {
 	return `%${query.replace(/[\\%_]/g, (character) => `\\${character}`)}%`;
 }
 
-async function previousKeysByProject() {
+async function previousKeysByProject(projectId?: string) {
 	const rows = await db
 		.select({
 			projectId: projectPreviousKeys.projectId,
 			key: projectPreviousKeys.key,
 		})
 		.from(projectPreviousKeys)
+		.where(projectId ? eq(projectPreviousKeys.projectId, projectId) : undefined)
 		.orderBy(asc(projectPreviousKeys.createdAt), asc(projectPreviousKeys.key));
 
 	const map = new Map<string, string[]>();
@@ -170,7 +173,7 @@ async function loadAdminProject(projectId: string) {
 		.where(eq(projects.id, projectId))
 		.limit(1);
 	if (!row) return null;
-	const previous = await previousKeysByProject();
+	const previous = await previousKeysByProject(row.id);
 	return toAdminProject(row, previous.get(row.id) ?? []);
 }
 
@@ -210,10 +213,21 @@ async function activeUser(userId: string) {
 	return row ?? null;
 }
 
-/** A concurrent create or rename can still hit the unique key; report it as a conflict. */
+/** A concurrent create or rename can still hit one of the key uniques. */
 function conflict(error: unknown) {
-	if ((error as { code?: string } | null)?.code !== "23505") return null;
-	return "That project key is already in use";
+	const source = (error as { cause?: unknown } | null)?.cause ?? error;
+	const { code, constraint } = (source ?? {}) as {
+		code?: string;
+		constraint?: string;
+	};
+	if (code !== "23505") return null;
+	if (
+		constraint === "projects_key_unique" ||
+		constraint === "project_previous_keys_key_unique"
+	) {
+		return "That project key is already in use";
+	}
+	return null;
 }
 
 /** Copy issue types, workflow assignments and field contexts from a template project. */
@@ -361,6 +375,7 @@ export async function createAdminProject(
 	const invalidKey = projectKeyError(body.key);
 	if (invalidKey) throw new HttpError(400, invalidKey);
 
+	// Best effort: imported projects can share a name, so there is no unique index.
 	const [sameName] = await db
 		.select({ key: projects.key })
 		.from(projects)
@@ -398,7 +413,7 @@ export async function createAdminProject(
 		template = row;
 	}
 
-	let created: { id: string } | null = null;
+	let created: { id: string };
 	try {
 		created = await db.transaction(async (tx) => {
 			const [row] = await tx
@@ -418,6 +433,8 @@ export async function createAdminProject(
 			} else {
 				await copyDefaultSet(tx, row.id);
 			}
+
+			await addProjectAdmin(row.id, body.leadId ?? actor.id, tx);
 
 			await audit(tx, actor, {
 				action: "project.create",
@@ -441,8 +458,6 @@ export async function createAdminProject(
 		throw error;
 	}
 
-	if (!created) throw new HttpError(409, "Project was not created");
-	await addProjectAdmin(created.id, body.leadId ?? actor.id);
 	const project = await loadAdminProject(created.id);
 	if (!project) throw new HttpError(404, "Project not found");
 	return project;
@@ -576,6 +591,14 @@ export async function updateAdminProject(
 				})
 				.where(eq(projects.id, project.id));
 
+			if (
+				body.leadId !== undefined &&
+				body.leadId !== null &&
+				body.leadId !== project.leadId
+			) {
+				await addProjectAdmin(project.id, body.leadId, tx);
+			}
+
 			await audit(tx, actor, {
 				action: "project.update",
 				entityType: "project",
@@ -678,7 +701,21 @@ export async function deleteAdminProject(
 		await tx.delete(projects).where(eq(projects.id, project.id));
 	});
 
-	await removeUnreferencedFiles(files);
+	try {
+		await removeUnreferencedFiles(files);
+		await removeUnreferencedAvatar(project.avatarFile);
+	} catch (error) {
+		console.error("project file cleanup:", error);
+	}
+}
+
+async function containedPath(root: string, relative: string) {
+	const path = resolve(root, relative);
+	const real = await realpath(path).catch(async () => {
+		const parent = await realpath(dirname(path)).catch(() => null);
+		return parent ? join(parent, basename(path)) : null;
+	});
+	return real?.startsWith(root + sep) ? real : null;
 }
 
 /** Best effort: drop attachment files (and their content directories) nothing references any more. */
@@ -687,42 +724,88 @@ async function removeUnreferencedFiles(
 ) {
 	if (files.length === 0) return;
 	const root = resolve(env.ATTACHMENTS_DIR);
+	const realRoot = await realpath(root).catch(() => root);
+	const paths = [...new Set(files.map((file) => file.storagePath))];
+	const hashes = [...new Set(files.map((file) => file.sha256))];
 
-	for (const file of files) {
-		const [referenced] = await db
-			.select({ id: attachments.id })
-			.from(attachments)
-			.where(eq(attachments.storagePath, file.storagePath))
-			.limit(1);
-		if (referenced) continue;
-		const [pageReferenced] = await db
-			.select({ id: pageAttachments.id })
-			.from(pageAttachments)
-			.where(eq(pageAttachments.storagePath, file.storagePath))
-			.limit(1);
-		if (pageReferenced) continue;
-		const path = resolve(root, file.storagePath);
-		if (!path.startsWith(root + sep)) continue;
+	const [referenced, pageReferenced, attachmentHashes, pageHashes] =
+		await Promise.all([
+			db
+				.select({ storagePath: attachments.storagePath })
+				.from(attachments)
+				.where(inArray(attachments.storagePath, paths)),
+			db
+				.select({ storagePath: pageAttachments.storagePath })
+				.from(pageAttachments)
+				.where(inArray(pageAttachments.storagePath, paths)),
+			db
+				.select({ sha256: attachments.sha256 })
+				.from(attachments)
+				.where(inArray(attachments.sha256, hashes)),
+			db
+				.select({ sha256: pageAttachments.sha256 })
+				.from(pageAttachments)
+				.where(inArray(pageAttachments.sha256, hashes)),
+		]);
+	const referencedPaths = new Set(
+		[...referenced, ...pageReferenced].map((row) => row.storagePath),
+	);
+	const referencedHashes = new Set(
+		[...attachmentHashes, ...pageHashes].map((row) => row.sha256),
+	);
+
+	for (const storagePath of paths) {
+		if (referencedPaths.has(storagePath)) continue;
+		const path = await containedPath(realRoot, storagePath);
+		if (!path) continue;
 		await unlink(path).catch(() => undefined);
 	}
 
-	for (const hash of new Set(files.map((file) => file.sha256))) {
-		const [referenced] = await db
-			.select({ id: attachments.id })
-			.from(attachments)
-			.where(eq(attachments.sha256, hash))
-			.limit(1);
-		if (referenced) continue;
-		const [pageReferenced] = await db
-			.select({ id: pageAttachments.id })
-			.from(pageAttachments)
-			.where(eq(pageAttachments.sha256, hash))
-			.limit(1);
-		if (pageReferenced) continue;
-		const directory = resolve(root, hash);
-		if (!directory.startsWith(root + sep)) continue;
-		await rm(directory, { recursive: true, force: true }).catch(
-			() => undefined,
-		);
+	for (const hash of hashes) {
+		if (referencedHashes.has(hash)) continue;
+		const directory = await containedPath(realRoot, hash);
+		if (!directory) continue;
+		// rmdir, not rm -r: an upload may have staged a file in this directory.
+		await rmdir(directory).catch(() => undefined);
 	}
+}
+
+/** Best effort: drop an avatar file nothing references any more. */
+async function removeUnreferencedAvatar(file: string | null) {
+	if (!file) return;
+	const root = resolve(env.AVATARS_DIR);
+	const realRoot = await realpath(root).catch(() => root);
+	const [usersWith, projectsWith, typesWith, prioritiesWith] =
+		await Promise.all([
+			db
+				.select({ id: users.id })
+				.from(users)
+				.where(eq(users.avatarFile, file))
+				.limit(1),
+			db
+				.select({ id: projects.id })
+				.from(projects)
+				.where(eq(projects.avatarFile, file))
+				.limit(1),
+			db
+				.select({ id: issueTypes.id })
+				.from(issueTypes)
+				.where(eq(issueTypes.iconFile, file))
+				.limit(1),
+			db
+				.select({ id: priorities.id })
+				.from(priorities)
+				.where(eq(priorities.iconFile, file))
+				.limit(1),
+		]);
+	if (
+		usersWith.length > 0 ||
+		projectsWith.length > 0 ||
+		typesWith.length > 0 ||
+		prioritiesWith.length > 0
+	) {
+		return;
+	}
+	const path = await containedPath(realRoot, file);
+	if (path) await unlink(path).catch(() => undefined);
 }

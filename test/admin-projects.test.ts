@@ -1,9 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	rm,
+	stat,
+	symlink,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { and, eq, isNull, type SQL, sql } from "drizzle-orm";
 import type { PgTable } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { deleteAdminProject } from "../src/lib/server/admin/projects.ts";
+import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { env } from "../src/lib/server/env.ts";
 import {
@@ -187,6 +198,30 @@ async function countRows(table: PgTable, where: SQL) {
 		.from(table)
 		.where(where);
 	return row?.total ?? 0;
+}
+
+function adminActor(): CurrentUser {
+	return {
+		id: admin.id,
+		username: admin.username,
+		displayName: `Test admin ${run}`,
+		email: null,
+		avatarUrl: null,
+		groups: [],
+		isAdmin: true,
+		mustChangePassword: false,
+		hasPassword: false,
+	};
+}
+
+/** Replaces `db.select` on the proxy target; returns the undo. */
+function swapSelect(next: typeof db.select) {
+	const target = db as unknown as { select: typeof db.select };
+	const previous = target.select;
+	target.select = next;
+	return () => {
+		target.select = previous;
+	};
 }
 
 async function auditRows(action: string, entityId: string) {
@@ -449,6 +484,48 @@ describe("project keys", () => {
 		expect(reused.statusCode).toBe(409);
 		expect(reused.json().error).toContain(oldKey);
 	});
+
+	test("returns only the previous keys of the project it loads", async () => {
+		const first = await makeProject("P1", { name: "Previous one" });
+		const second = await makeProject("P2", { name: "Previous two" });
+		const firstKey = keyFor("P3");
+		const secondKey = keyFor("P4");
+		for (const [oldKey, newKey] of [
+			[first.key, firstKey],
+			[second.key, secondKey],
+		]) {
+			const renamed = await injectAs(
+				app,
+				admin.session,
+				"PATCH",
+				`/api/admin/projects/${oldKey}`,
+				{ key: newKey },
+			);
+			expect(renamed.statusCode).toBe(200);
+		}
+
+		const single = await injectAs(
+			app,
+			admin.session,
+			"PATCH",
+			`/api/admin/projects/${secondKey}`,
+			{},
+		);
+		expect(single.statusCode).toBe(200);
+		expect(single.json().previousKeys).toEqual([second.key]);
+
+		const list = await adminProjects();
+		const previous = new Map(
+			list
+				.json()
+				.map((row: { key: string; previousKeys: string[] }) => [
+					row.key,
+					row.previousKeys,
+				]),
+		);
+		expect(previous.get(firstKey)).toEqual([first.key]);
+		expect(previous.get(secondKey)).toEqual([second.key]);
+	});
 });
 
 describe("creating projects", () => {
@@ -465,6 +542,102 @@ describe("creating projects", () => {
 			[response.json().id, admin.username],
 		);
 		expect(actors.rows).toEqual([{ role_id: "admin" }]);
+	});
+
+	test("does not leave a project behind when the admin grant fails", async () => {
+		const failUser = await makeUser(run, "failadmin");
+		const fn = `test_project_admin_failure_${run}`;
+		await pool.query(
+			`create function ${fn}() returns trigger language plpgsql as $$
+			 begin
+			 	if NEW.actor_parameter = '${failUser.username}' then
+			 		raise exception 'forced admin grant failure';
+			 	end if;
+			 	return NEW;
+			 end $$`,
+		);
+		await pool.query(
+			`create trigger ${fn} before insert on project_role_actors for each row execute function ${fn}()`,
+		);
+		const key = keyFor("ADM");
+		let created: { id: string } | undefined;
+		try {
+			const response = await createProject({
+				name: `${tag} admin failure`,
+				key,
+				type: "software",
+				leadId: failUser.id,
+			});
+			const [row] = await db
+				.select({ id: projects.id })
+				.from(projects)
+				.where(eq(projects.key, key));
+			created = row;
+			expect(response.statusCode).toBe(500);
+			expect(row).toBeUndefined();
+		} finally {
+			if (created) {
+				await db.delete(projects).where(eq(projects.id, created.id));
+			}
+			await pool.query(`drop trigger if exists ${fn} on project_role_actors`);
+			await pool.query(`drop function if exists ${fn}()`);
+		}
+	});
+
+	test("reports only a project key unique as a key conflict", async () => {
+		await makeProject("EX", { name: "Existing project" });
+		const [existing] = await db
+			.select({ key: projects.key, sourceId: projects.sourceId })
+			.from(projects)
+			.limit(1);
+		expect(existing).toBeDefined();
+		const fn = `test_project_key_collision_${run}`;
+		const keyName = `${tag} key collision`;
+		const sourceName = `${tag} source collision`;
+		const key = keyFor("KC");
+		const sourceKey = keyFor("SC");
+		await pool.query(
+			`create function ${fn}() returns trigger language plpgsql as $$
+			 begin
+			 	if NEW.name = '${keyName}' then
+			 		NEW.key := '${existing?.key}';
+			 	end if;
+			 	if NEW.name = '${sourceName}' then
+			 		NEW.source_id := '${existing?.sourceId}';
+			 	end if;
+			 	return NEW;
+			 end $$`,
+		);
+		await pool.query(
+			`create trigger ${fn} before insert on projects for each row execute function ${fn}()`,
+		);
+		try {
+			const keyResponse = await createProject({
+				name: keyName,
+				key,
+				type: "software",
+			});
+			expect(keyResponse.statusCode).toBe(409);
+			expect(keyResponse.json().error).toBe(
+				"That project key is already in use",
+			);
+
+			const sourceResponse = await createProject({
+				name: sourceName,
+				key: sourceKey,
+				type: "software",
+			});
+			expect(sourceResponse.statusCode).toBe(500);
+			expect(sourceResponse.json().error).not.toBe(
+				"That project key is already in use",
+			);
+		} finally {
+			await pool.query(`drop trigger if exists ${fn} on projects`);
+			await pool.query(`drop function if exists ${fn}()`);
+			await db
+				.delete(projects)
+				.where(sql`${projects.key} in (${key}, ${sourceKey})`);
+		}
 	});
 
 	test("copies issue types, workflows and field contexts from a template", async () => {
@@ -650,6 +823,35 @@ describe("editing projects", () => {
 		expect(cleared.statusCode).toBe(200);
 		expect(cleared.json().lead).toBeNull();
 		expect(cleared.json().category).toBeNull();
+	});
+
+	test("makes a new lead a project administrator", async () => {
+		const response = await createProject({
+			name: `${tag} New lead`,
+			key: keyFor("NL"),
+			type: "software",
+		});
+		expect(response.statusCode).toBe(201);
+		const created = response.json();
+		projectIds.push(created.id);
+
+		const changed = await injectAs(
+			app,
+			admin.session,
+			"PATCH",
+			`/api/admin/projects/${created.key}`,
+			{ leadId: member.id },
+		);
+		expect(changed.statusCode).toBe(200);
+
+		const administered = await injectAs(
+			app,
+			member.session,
+			"PATCH",
+			`/api/projects/${created.key}`,
+			{ name: `${tag} led by the member` },
+		);
+		expect(administered.statusCode).toBe(200);
 	});
 
 	test("refuses a name another project uses, ignoring case", async () => {
@@ -1309,6 +1511,186 @@ describe("deleting projects", () => {
 		expect(audits[0].changes).toMatchObject({
 			from: { key: project.key, issues: 1 },
 		});
+	});
+
+	test("removes a project avatar file only when nothing else references it", async () => {
+		await mkdir(env.AVATARS_DIR, { recursive: true });
+		const avatar = `project-avatar-${run}.png`;
+		const avatarPath = join(env.AVATARS_DIR, avatar);
+		await writeFile(avatarPath, "avatar");
+		const first = await makeProject("AV1", { name: "Avatar one" });
+		const second = await makeProject("AV2", { name: "Avatar two" });
+		for (const project of [first, second]) {
+			await db
+				.update(projects)
+				.set({ avatarFile: avatar })
+				.where(eq(projects.id, project.id));
+		}
+
+		const firstDelete = await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/projects/${first.key}`,
+			{ confirmKey: first.key },
+		);
+		expect(firstDelete.statusCode).toBe(204);
+		expect((await stat(avatarPath)).isFile()).toBe(true);
+
+		const secondDelete = await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/projects/${second.key}`,
+			{ confirmKey: second.key },
+		);
+		expect(secondDelete.statusCode).toBe(204);
+		await expect(stat(avatarPath)).rejects.toThrow();
+	});
+
+	test("reports a successful delete when the reference cleanup fails", async () => {
+		const project = await makeProject("CL", { name: "Cleanup failure" });
+		const issue = await createIssue(project.key, "cleanup issue");
+		await insertAttachment(issue.id, "cleanup content", "cleanup.txt");
+
+		const original = (db as unknown as { select: typeof db.select }).select;
+		let calls = 0;
+		const undo = swapSelect(((...args: Parameters<typeof db.select>) => {
+			calls += 1;
+			if (calls === 4) throw new Error("forced reference lookup failure");
+			return original(...args);
+		}) as typeof db.select);
+		try {
+			await expect(
+				deleteAdminProject(adminActor(), project.key, {
+					confirmKey: project.key,
+				}),
+			).resolves.toBeUndefined();
+		} finally {
+			undo();
+		}
+		expect(await countRows(projects, eq(projects.id, project.id))).toBe(0);
+	});
+
+	test("checks attachment references in a constant number of queries", async () => {
+		const project = await makeProject("NQ", { name: "Many files" });
+		const issue = await createIssue(project.key, "many files issue");
+		const files = [];
+		for (let index = 0; index < 6; index += 1) {
+			files.push(
+				await insertAttachment(
+					issue.id,
+					`many files ${index}`,
+					`many-${index}.txt`,
+				),
+			);
+		}
+
+		const original = (db as unknown as { select: typeof db.select }).select;
+		let calls = 0;
+		const undo = swapSelect(((...args: Parameters<typeof db.select>) => {
+			calls += 1;
+			return original(...args);
+		}) as typeof db.select);
+		try {
+			await deleteAdminProject(adminActor(), project.key, {
+				confirmKey: project.key,
+			});
+		} finally {
+			undo();
+		}
+
+		expect(calls).toBeLessThanOrEqual(10);
+		for (const file of files) {
+			await expect(stat(file.path)).rejects.toThrow();
+		}
+	});
+
+	test("does not follow a symlink out of the attachments root", async () => {
+		const project = await makeProject("SY", { name: "Symlink" });
+		const issue = await createIssue(project.key, "symlink issue");
+		const outside = await mkdtemp(join(tmpdir(), "rvna-outside-"));
+		const victim = join(outside, "victim.txt");
+		await writeFile(victim, "outside");
+		const link = `escape-${run}`;
+		const linkPath = join(env.ATTACHMENTS_DIR, link);
+		await symlink(outside, linkPath, "dir");
+		await db.insert(attachments).values({
+			sourceId: `${tag}:symlink-attachment`,
+			issueId: issue.id,
+			fileName: "victim.txt",
+			mimeType: "text/plain",
+			size: 7,
+			authorId: admin.id,
+			created: new Date(),
+			storagePath: join(link, "victim.txt"),
+			sha256: "f".repeat(64),
+		});
+
+		try {
+			const response = await injectAs(
+				app,
+				admin.session,
+				"DELETE",
+				`/api/admin/projects/${project.key}`,
+				{ confirmKey: project.key },
+			);
+			expect(response.statusCode).toBe(204);
+			expect((await stat(victim)).isFile()).toBe(true);
+		} finally {
+			await unlink(linkPath).catch(() => undefined);
+			await rm(outside, { recursive: true, force: true });
+		}
+	});
+
+	test("keeps a content directory an upload has staged a file in", async () => {
+		const doomed = await makeProject("RC", { name: "Race doomed" });
+		const doomedIssue = await createIssue(doomed.key, "race doomed issue");
+		const doomedAttachment = await insertAttachment(
+			doomedIssue.id,
+			"race content",
+			"race.txt",
+		);
+		const keeper = await makeProject("RK", { name: "Race keeper" });
+		const keeperIssue = await createIssue(keeper.key, "race keeper issue");
+
+		const id = randomUUID();
+		const storagePath = join(doomedAttachment.sha256, id);
+		const stagedPath = join(env.ATTACHMENTS_DIR, storagePath);
+		await mkdir(dirname(stagedPath), { recursive: true });
+		await writeFile(stagedPath, "race content");
+
+		const client = await pool.connect();
+		try {
+			await client.query("begin");
+			await client.query(
+				`insert into attachments
+				 (source_id, issue_id, file_name, mime_type, size, storage_path, sha256)
+				 values ($1, $2, $3, $4, $5, $6, $7)`,
+				[
+					`local:${id}`,
+					keeperIssue.id,
+					"race.txt",
+					"text/plain",
+					12,
+					storagePath,
+					doomedAttachment.sha256,
+				],
+			);
+			const response = await injectAs(
+				app,
+				admin.session,
+				"DELETE",
+				`/api/admin/projects/${doomed.key}`,
+				{ confirmKey: doomed.key },
+			);
+			expect(response.statusCode).toBe(204);
+			await client.query("commit");
+		} finally {
+			client.release();
+		}
+
+		expect((await stat(stagedPath)).isFile()).toBe(true);
 	});
 
 	test("answers 404 for an unknown project", async () => {
