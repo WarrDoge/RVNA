@@ -225,6 +225,13 @@
 			"when": 1795359750559,
 			"tag": "0031_fat_silver_samurai",
 			"breakpoints": true
+		},
+		{
+			"idx": 32,
+			"version": "7",
+			"when": 1795368292396,
+			"tag": "0032_tricky_red_wolf",
+			"breakpoints": true
 		}
 	]
 }
