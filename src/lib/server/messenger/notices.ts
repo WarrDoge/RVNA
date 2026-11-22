@@ -3,14 +3,13 @@ import type { Job, PgBoss } from "pg-boss";
 import { getBoss, stopBoss } from "../boss.ts";
 import { db } from "../db.ts";
 import { htmlToText } from "../html.ts";
-import { issues, messengerThreads, statuses } from "../schema.ts";
+import { issues, messengerThreads } from "../schema.ts";
 import { deskByProjectId } from "../servicedesk/access.ts";
 import { matrixSendText } from "./client.ts";
 import { messengerSettings } from "./config.ts";
-import { portalRequestLink, truncate } from "./text.ts";
+import { COMMENT_NOTICE_LIMIT, portalRequestLink, truncate } from "./text.ts";
 
 export const MESSENGER_QUEUE = "messenger-notice";
-const COMMENT_LIMIT = 300;
 
 export type MessengerNotice =
 	| { kind: "status"; issueId: string; status: string }
@@ -71,11 +70,12 @@ export async function enqueueMessengerNotice(notice: MessengerNotice) {
 		.limit(1);
 	if (!thread) return;
 	const instance = await startMessengerQueue();
-	await instance.send(MESSENGER_QUEUE, notice, {
+	const jobId = await instance.send(MESSENGER_QUEUE, notice, {
 		retryLimit: 5,
 		retryDelay: 5,
 		retryBackoff: true,
 	});
+	if (!jobId) throw new Error("The messenger notice was not queued");
 }
 
 /** Delivery is idempotent enough for chat: a retry posts the notice again only after a send error. */
@@ -93,10 +93,8 @@ export async function deliverMessengerNotice(notice: MessengerNotice) {
 			id: issues.id,
 			key: issues.key,
 			projectId: issues.projectId,
-			statusName: statuses.name,
 		})
 		.from(issues)
-		.innerJoin(statuses, eq(statuses.id, issues.statusId))
 		.where(eq(issues.id, notice.issueId))
 		.limit(1);
 	if (!issue) return "skipped";
@@ -108,7 +106,7 @@ export async function deliverMessengerNotice(notice: MessengerNotice) {
 	if (notice.kind === "status") {
 		body = `${issue.key} is now ${notice.status}\n${link}`;
 	} else {
-		const text = truncate(htmlToText(notice.html), COMMENT_LIMIT);
+		const text = truncate(htmlToText(notice.html), COMMENT_NOTICE_LIMIT);
 		if (text === "") return "skipped";
 		body = `Agent ${notice.actorName} commented: ${text}\n${link}`;
 	}
