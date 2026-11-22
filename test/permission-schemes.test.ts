@@ -12,6 +12,7 @@ import {
 	permissionGrants,
 	permissionLocalAssignments,
 	permissionLocalRemovals,
+	permissionLocalUnassignments,
 	permissionSchemes,
 	projectRoleActors,
 } from "../src/lib/server/schema.ts";
@@ -1368,4 +1369,40 @@ test("a removal does not overwrite a concurrent assignment", async () => {
 			.delete(permissionSchemes)
 			.where(eq(permissionSchemes.id, local.id));
 	}
+});
+
+test("a project removed from an imported scheme stays off after a re-import", async () => {
+	const assigned = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		`/api/admin/permission-schemes/${importedSchemeId}/projects`,
+		{ projectId: project.projectId },
+	);
+	expect(assigned.statusCode).toBe(200);
+	const removed = await injectAs(
+		app,
+		admin.session,
+		"DELETE",
+		`/api/admin/permission-schemes/${importedSchemeId}/projects/${project.projectId}`,
+	);
+	expect(removed.statusCode).toBe(204);
+
+	const tombstones = await db
+		.select({ projectId: permissionLocalUnassignments.projectId })
+		.from(permissionLocalUnassignments)
+		.where(eq(permissionLocalUnassignments.projectId, project.projectId));
+	expect(tombstones).toHaveLength(1);
+
+	await importPermissions(jiraClient(), {
+		projectKeys: [projectKey],
+		fullImport: true,
+		fetchGlobal: false,
+	});
+
+	const [scheme] = await db
+		.select({ projectIds: permissionSchemes.projectIds })
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.id, importedSchemeId));
+	expect(scheme.projectIds).not.toContain(project.projectId);
 });

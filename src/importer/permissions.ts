@@ -5,6 +5,7 @@ import {
 	permissionGrants,
 	permissionLocalAssignments,
 	permissionLocalRemovals,
+	permissionLocalUnassignments,
 	permissionSchemes,
 	projectRoleActors,
 	projects,
@@ -861,17 +862,23 @@ async function loadLocalRemovals() {
 }
 
 /**
- * Jira's project list for a scheme overwrites the app's assignments, so put
- * every local assignment back after the import. One scheme per project.
+ * Jira's project list for a scheme overwrites the app's changes, so put the
+ * local assignments back and keep the local removals off after the import.
+ * One scheme per project.
  */
-async function applyLocalAssignments() {
-	const assignments = await db
-		.select({
-			projectId: permissionLocalAssignments.projectId,
-			schemeId: permissionLocalAssignments.schemeId,
-		})
-		.from(permissionLocalAssignments);
-	if (assignments.length === 0) return;
+async function applyLocalProjectChanges() {
+	const [assignments, unassignments] = await Promise.all([
+		db
+			.select({
+				projectId: permissionLocalAssignments.projectId,
+				schemeId: permissionLocalAssignments.schemeId,
+			})
+			.from(permissionLocalAssignments),
+		db
+			.select({ projectId: permissionLocalUnassignments.projectId })
+			.from(permissionLocalUnassignments),
+	]);
+	if (assignments.length === 0 && unassignments.length === 0) return;
 
 	const schemes = await db
 		.select({
@@ -881,6 +888,9 @@ async function applyLocalAssignments() {
 		.from(permissionSchemes);
 	const assignedProjects = new Set(
 		assignments.map((assignment) => assignment.projectId),
+	);
+	const unassignedProjects = new Set(
+		unassignments.map((unassignment) => unassignment.projectId),
 	);
 	const byScheme = new Map<string, string[]>();
 	for (const assignment of assignments) {
@@ -892,7 +902,9 @@ async function applyLocalAssignments() {
 		const projectIds = scheme.projectIds ?? [];
 		const assignedHere = new Set(byScheme.get(scheme.id) ?? []);
 		let next = projectIds.filter(
-			(id) => !assignedProjects.has(id) || assignedHere.has(id),
+			(id) =>
+				assignedHere.has(id) ||
+				(!assignedProjects.has(id) && !unassignedProjects.has(id)),
 		);
 		const added = [...assignedHere].filter((id) => !next.includes(id));
 		if (added.length > 0) {
@@ -945,6 +957,6 @@ export async function importPermissions(
 			removedLocally,
 		);
 	}
-	await applyLocalAssignments();
+	await applyLocalProjectChanges();
 	return { counts, removed, report };
 }
