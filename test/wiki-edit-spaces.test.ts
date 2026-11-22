@@ -186,6 +186,68 @@ describe("space lifecycle", () => {
 	});
 });
 
+describe("concurrent deletes", () => {
+	test("an update that loses its space answers 404", async () => {
+		const own = await wiki.space("GD");
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("delete from spaces where id = $1", [own.id]);
+			const request = wiki.admin.put(`/api/wiki/spaces/${own.key}`, {
+				name: "Too late",
+			});
+			await waitForLockWaiters(1);
+			await locker.query("commit");
+			expect((await request).status).toBe(404);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	});
+
+	test("an archive that loses its space answers 404", async () => {
+		const own = await wiki.space("GS");
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("delete from spaces where id = $1", [own.id]);
+			const request = wiki.admin.post(`/api/wiki/spaces/${own.key}/archive`);
+			await waitForLockWaiters(1);
+			await locker.query("commit");
+			expect((await request).status).toBe(404);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	});
+
+	test("a template edit that loses its template answers 404", async () => {
+		const own = await wiki.space("GT");
+		const created = await wiki.admin.post(
+			`/api/wiki/spaces/${own.key}/templates`,
+			{ name: "Doomed template", bodyDoc: doc("body") },
+		);
+		expect(created.status).toBe(201);
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("delete from page_templates where id = $1", [
+				created.body.id,
+			]);
+			const request = wiki.admin.put(`/api/wiki/templates/${created.body.id}`, {
+				name: "Too late",
+				bodyDoc: doc("changed"),
+			});
+			await waitForLockWaiters(1);
+			await locker.query("commit");
+			expect((await request).status).toBe(404);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	});
+});
+
 describe("templates", () => {
 	test("space admins manage templates, readers list and open them", async () => {
 		const own = await wiki.space("TP");

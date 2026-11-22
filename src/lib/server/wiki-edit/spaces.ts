@@ -255,7 +255,8 @@ export async function updateSpace(
 		})
 		.where(eq(spaces.id, space.id))
 		.returning();
-	return spaceSummary(row as SpaceRow);
+	if (!row) fail(404, "Space not found");
+	return spaceSummary(row);
 }
 
 export async function setSpaceStatus(
@@ -270,7 +271,8 @@ export async function setSpaceStatus(
 		.set({ status, updatedAt: new Date() })
 		.where(eq(spaces.id, space.id))
 		.returning();
-	return spaceSummary(row as SpaceRow);
+	if (!row) fail(404, "Space not found");
+	return spaceSummary(row);
 }
 
 export async function deleteSpace(actor: CurrentUser, key: string) {
@@ -462,6 +464,7 @@ export async function updateTemplate(
 		})
 		.where(eq(pageTemplates.id, template.id))
 		.returning();
+	if (!row) fail(404, "Template not found");
 	return templateDetail(row, spaceKey);
 }
 
