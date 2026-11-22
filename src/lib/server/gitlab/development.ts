@@ -18,6 +18,8 @@ import { branchNameFor } from "./keys.ts";
 
 export type MergeRequestLozenge = "OPEN" | "MERGED" | "DECLINED";
 
+const DEVELOPMENT_LIST_LIMIT = 200;
+
 export function normalizeMergeRequestState(
 	state: string,
 ): "opened" | "merged" | "closed" | "locked" {
@@ -91,7 +93,7 @@ export async function issueDevelopment(key: string) {
 			)
 			.where(eq(gitlabBranchIssues.issueId, issue.id))
 			.orderBy(desc(gitlabBranches.updatedAt))
-			.limit(200),
+			.limit(DEVELOPMENT_LIST_LIMIT),
 		db
 			.select({
 				id: gitlabCommits.id,
@@ -113,7 +115,7 @@ export async function issueDevelopment(key: string) {
 			)
 			.where(eq(gitlabCommitIssues.issueId, issue.id))
 			.orderBy(sql`${gitlabCommits.committedAt} desc nulls last`)
-			.limit(200),
+			.limit(DEVELOPMENT_LIST_LIMIT),
 		db
 			.select({
 				id: gitlabMergeRequests.id,
@@ -137,7 +139,7 @@ export async function issueDevelopment(key: string) {
 			)
 			.where(eq(gitlabMergeRequestIssues.issueId, issue.id))
 			.orderBy(desc(gitlabMergeRequests.updatedAt))
-			.limit(200),
+			.limit(DEVELOPMENT_LIST_LIMIT),
 		db
 			.select({ count: sql<number>`count(*)::int` })
 			.from(gitlabBranchIssues)
@@ -152,36 +154,39 @@ export async function issueDevelopment(key: string) {
 			.where(eq(gitlabMergeRequestIssues.issueId, issue.id)),
 	]);
 
-	const [pipeline] = await db
-		.select({
-			id: gitlabPipelines.id,
-			status: gitlabPipelines.status,
-			ref: gitlabPipelines.ref,
-			webUrl: gitlabPipelines.webUrl,
-			createdAt: gitlabPipelines.createdAt,
-		})
-		.from(gitlabPipelineIssues)
-		.innerJoin(
-			gitlabPipelines,
-			eq(gitlabPipelines.id, gitlabPipelineIssues.pipelineId),
-		)
-		.where(eq(gitlabPipelineIssues.issueId, issue.id))
-		.orderBy(desc(gitlabPipelines.createdAt), desc(gitlabPipelines.gitlabId))
-		.limit(1);
-
-	const [settings] = await db
-		.select({
-			defaultRepositoryId: gitlabProjectSettings.defaultRepositoryId,
-		})
-		.from(gitlabProjectSettings)
-		.where(eq(gitlabProjectSettings.projectId, issue.projectId))
-		.limit(1);
+	const [pipelineRows, settingsRows, linked] = await Promise.all([
+		db
+			.select({
+				id: gitlabPipelines.id,
+				status: gitlabPipelines.status,
+				ref: gitlabPipelines.ref,
+				webUrl: gitlabPipelines.webUrl,
+				createdAt: gitlabPipelines.createdAt,
+			})
+			.from(gitlabPipelineIssues)
+			.innerJoin(
+				gitlabPipelines,
+				eq(gitlabPipelines.id, gitlabPipelineIssues.pipelineId),
+			)
+			.where(eq(gitlabPipelineIssues.issueId, issue.id))
+			.orderBy(desc(gitlabPipelines.createdAt), desc(gitlabPipelines.gitlabId))
+			.limit(1),
+		db
+			.select({
+				defaultRepositoryId: gitlabProjectSettings.defaultRepositoryId,
+			})
+			.from(gitlabProjectSettings)
+			.where(eq(gitlabProjectSettings.projectId, issue.projectId))
+			.limit(1),
+		db
+			.select({ repositoryId: gitlabProjectRepositories.repositoryId })
+			.from(gitlabProjectRepositories)
+			.where(eq(gitlabProjectRepositories.projectId, issue.projectId)),
+	]);
+	const pipeline = pipelineRows[0];
+	const settings = settingsRows[0];
 
 	let createBranch: { name: string; url: string } | null = null;
-	const linked = await db
-		.select({ repositoryId: gitlabProjectRepositories.repositoryId })
-		.from(gitlabProjectRepositories)
-		.where(eq(gitlabProjectRepositories.projectId, issue.projectId));
 	const linkedIds = linked.map((row) => row.repositoryId);
 	const defaultId =
 		settings?.defaultRepositoryId &&
