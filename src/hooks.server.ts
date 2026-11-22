@@ -152,6 +152,14 @@ function isDataPath(pathname: string) {
 	);
 }
 
+/** An enhanced form POST expects an action result, not the redirect response itself. */
+function isActionJsonRequest(request: Request) {
+	return (
+		request.method === "POST" &&
+		request.headers.get("accept")?.includes("application/json") === true
+	);
+}
+
 function csrfGuard(event: Parameters<Handle>[0]["event"], bearer: boolean) {
 	if (!mutating.has(event.request.method) || bearer) return null;
 	const pathname = requestPath(event.url.pathname);
@@ -224,6 +232,13 @@ export const sessionHandle: Handle = async ({ event, resolve }) => {
 				);
 			}
 		} else if (!isPasswordPage(event.url)) {
+			if (isActionJsonRequest(event.request)) {
+				return jsonResponse({
+					type: "redirect",
+					status: 302,
+					location: passwordPage,
+				});
+			}
 			redirect(302, passwordPage);
 		}
 	}

@@ -66,6 +66,37 @@ test("an unknown page of a user who must change the password still redirects", a
 	});
 });
 
+test("a forced password change answers a JSON action request with a redirect result", async () => {
+	userForSession.mockClear();
+	userForSession.mockResolvedValue(mustChange);
+	const resolve = vi.fn(async () => new Response("ok"));
+	const event = {
+		route: { id: "/browse/[key]" },
+		url: new URL("http://localhost/browse/A-1"),
+		request: new Request("http://localhost/browse/A-1", {
+			method: "POST",
+			headers: {
+				accept: "application/json",
+				origin: "http://localhost",
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			body: "",
+		}),
+		cookies: { get: () => "session" },
+		locals: {},
+	};
+	const response = await handle({ event, resolve } as never);
+
+	expect(resolve).not.toHaveBeenCalled();
+	expect(response.status).toBe(200);
+	expect(response.headers.get("content-type")).toContain("application/json");
+	expect(await response.json()).toEqual({
+		type: "redirect",
+		status: 302,
+		location: "/secure/ViewProfile.jspa?selectedTab=password",
+	});
+});
+
 test("security headers are added to a response whose headers are read-only", async () => {
 	const redirect = Response.redirect("http://localhost/login.jsp", 302);
 	const response = await securityHeadersHandle({
