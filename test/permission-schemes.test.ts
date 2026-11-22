@@ -419,6 +419,50 @@ test("a project role grant must name a real role", async () => {
 	}
 });
 
+test("built-in role ids win over an imported role with the same name", async () => {
+	const url = `/api/admin/permission-schemes/${copiedSchemeId}/grants`;
+	const roleId = `10001-${run}`;
+	const actorSource = `test:${run}:role-collision`;
+	await db.insert(projectRoleActors).values({
+		sourceId: actorSource,
+		projectId: otherProject.projectId,
+		roleId,
+		roleName: "Member",
+		actorType: "user",
+		actorParameter: bob.username,
+		raw: {},
+	});
+	const grants: string[] = [];
+	try {
+		const builtin = await injectAs(app, admin.session, "POST", url, {
+			permissionKey: "CREATE_ISSUES",
+			holderType: "projectRole",
+			holderParameter: "MEMBER",
+		});
+		expect(builtin.statusCode).toBe(201);
+		expect(builtin.json().grant.holderParameter).toBe("member");
+		grants.push(builtin.json().grant.id);
+
+		const exact = await injectAs(app, admin.session, "POST", url, {
+			permissionKey: "DELETE_ISSUES",
+			holderType: "projectRole",
+			holderParameter: roleId.toUpperCase(),
+		});
+		expect(exact.statusCode).toBe(201);
+		expect(exact.json().grant.holderParameter).toBe(roleId);
+		grants.push(exact.json().grant.id);
+	} finally {
+		if (grants.length > 0) {
+			await db
+				.delete(permissionGrants)
+				.where(inArray(permissionGrants.id, grants));
+		}
+		await db
+			.delete(projectRoleActors)
+			.where(eq(projectRoleActors.sourceId, actorSource));
+	}
+});
+
 test("concurrent identical grants create one grant", async () => {
 	const url = `/api/admin/permission-schemes/${importedSchemeId}/grants`;
 	const body = {

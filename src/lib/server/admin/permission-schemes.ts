@@ -189,15 +189,19 @@ async function canonicalHolder(
 ): Promise<string | null> {
 	if (holderType === "projectRole") {
 		const wanted = parameter.toLowerCase();
-		const [row] = await db
+		if (["admin", "member", "viewer"].includes(wanted)) return wanted;
+		const [byId] = await db
 			.select({ roleId: projectRoleActors.roleId })
 			.from(projectRoleActors)
-			.where(
-				sql`lower(${projectRoleActors.roleId}) = ${wanted} or lower(${projectRoleActors.roleName}) = ${wanted}`,
-			)
+			.where(sql`lower(${projectRoleActors.roleId}) = ${wanted}`)
 			.limit(1);
-		if (row) return row.roleId;
-		return ["admin", "member", "viewer"].includes(wanted) ? wanted : null;
+		if (byId) return byId.roleId;
+		const byName = await db
+			.selectDistinct({ roleId: projectRoleActors.roleId })
+			.from(projectRoleActors)
+			.where(sql`lower(${projectRoleActors.roleName}) = ${wanted}`)
+			.limit(2);
+		return byName.length === 1 ? (byName[0]?.roleId ?? null) : null;
 	}
 	if (holderType === "user") {
 		const [row] = await db
