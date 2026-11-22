@@ -87,15 +87,21 @@ export function excerpt(bodyHtml: string | null, query: string): string {
 	const start = Math.max(0, at - 70);
 	const end = Math.min(text.length, at + 130);
 	const window = text.slice(start, end);
-	const escaped = escapeHtml(window);
-	return needles.reduce(
-		(result, needle) =>
-			result.replace(
-				new RegExp(`(${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi"),
-				"<mark>$1</mark>",
-			),
-		escaped,
+	const pattern = new RegExp(
+		`(${needles
+			.map((needle) => needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+			.join("|")})`,
+		"gi",
 	);
+	let result = "";
+	let last = 0;
+	for (const match of window.matchAll(pattern)) {
+		const index = match.index ?? 0;
+		result += escapeHtml(window.slice(last, index));
+		result += `<mark>${escapeHtml(match[0])}</mark>`;
+		last = index + match[0].length;
+	}
+	return result + escapeHtml(window.slice(last));
 }
 
 export async function searchWikiPages(
