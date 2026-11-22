@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { parseJql } from "../../shared/jql/index.ts";
 import {
 	computeSlaCycles,
@@ -39,11 +39,20 @@ interface IssueRow {
 }
 
 interface EventRow {
-	issueId: string;
 	at: number;
 	rank: number;
 	sequence: number;
 	event: SlaEvent;
+}
+
+const ISSUE_CHUNK = 1_000;
+
+function chunks<T>(values: T[]): T[][] {
+	const result: T[][] = [];
+	for (let index = 0; index < values.length; index += ISSUE_CHUNK) {
+		result.push(values.slice(index, index + ISSUE_CHUNK));
+	}
+	return result;
 }
 
 function eventRows(
@@ -72,7 +81,6 @@ function eventRows(
 	for (const issue of issueRows) {
 		if (issue.created) {
 			push(issue.id, {
-				issueId: issue.id,
 				at: issue.created.getTime(),
 				rank: 0,
 				sequence: 0,
@@ -86,7 +94,6 @@ function eventRows(
 		const at = row.created.getTime();
 		if (row.field === "status" && row.toValue) {
 			push(row.issueId, {
-				issueId: row.issueId,
 				at,
 				rank: 1,
 				sequence: row.sequence,
@@ -94,7 +101,6 @@ function eventRows(
 			});
 		} else if (row.field === "assignee") {
 			push(row.issueId, {
-				issueId: row.issueId,
 				at,
 				rank: 1,
 				sequence: row.sequence,
@@ -106,7 +112,6 @@ function eventRows(
 			});
 		} else if (row.field === "resolution") {
 			push(row.issueId, {
-				issueId: row.issueId,
 				at,
 				rank: 1,
 				sequence: row.sequence,
@@ -125,7 +130,6 @@ function eventRows(
 	for (const row of commentRows) {
 		if (!row.created) continue;
 		push(row.issueId, {
-			issueId: row.issueId,
 			at: row.created.getTime(),
 			rank: 2,
 			sequence: 0,
@@ -152,6 +156,68 @@ function eventRows(
 	return byIssue;
 }
 
+async function loadCommentRows(issueIds: string[]) {
+	const rows: {
+		issueId: string;
+		authorId: string | null;
+		internal: boolean;
+		created: Date | null;
+	}[] = [];
+	for (const ids of chunks(issueIds)) {
+		const chunk = await db
+			.select({
+				issueId: comments.issueId,
+				authorId: comments.authorId,
+				internal: comments.internal,
+				created: comments.created,
+			})
+			.from(comments)
+			.where(inArray(comments.issueId, ids))
+			.orderBy(asc(comments.created), asc(comments.id));
+		rows.push(...chunk);
+	}
+	return rows;
+}
+
+async function loadHistoryRows(issueIds: string[]) {
+	const rows: {
+		issueId: string;
+		created: Date | null;
+		sequence: number;
+		field: string;
+		toValue: string | null;
+	}[] = [];
+	for (const ids of chunks(issueIds)) {
+		const chunk = await db
+			.select({
+				issueId: issueHistory.issueId,
+				created: issueHistory.created,
+				sequence: issueHistoryItems.sequence,
+				field: issueHistoryItems.field,
+				toValue: issueHistoryItems.toValue,
+			})
+			.from(issueHistoryItems)
+			.innerJoin(issueHistory, eq(issueHistoryItems.historyId, issueHistory.id))
+			.where(
+				and(
+					inArray(issueHistory.issueId, ids),
+					inArray(issueHistoryItems.field, [
+						"status",
+						"assignee",
+						"resolution",
+					]),
+				),
+			)
+			.orderBy(
+				asc(issueHistory.created),
+				asc(issueHistory.id),
+				asc(issueHistoryItems.sequence),
+			);
+		rows.push(...chunk);
+	}
+	return rows;
+}
+
 async function goalMatches(
 	goals: (typeof slaGoals.$inferSelect)[],
 	issueIds: string[],
@@ -173,13 +239,16 @@ async function goalMatches(
 				matches.set(goal.id, new Set(issueIds));
 				return;
 			}
-			const result = await db.execute(
-				sql`select issues.id from issues where ${compiled.where} and ${inArray(issues.id, issueIds)}`,
-			);
-			matches.set(
-				goal.id,
-				new Set((result.rows as { id: string }[]).map((row) => String(row.id))),
-			);
+			const matched = new Set<string>();
+			for (const ids of chunks(issueIds)) {
+				const result = await db.execute(
+					sql`select issues.id from issues where ${compiled.where} and ${inArray(issues.id, ids)}`,
+				);
+				for (const row of result.rows as { id: string }[]) {
+					matched.add(String(row.id));
+				}
+			}
+			matches.set(goal.id, matched);
 		}),
 	);
 	return matches;
@@ -217,44 +286,15 @@ export async function rebuildSlaCycles(
 	if (issueRows.length === 0) return { issues: 0, cycles: 0 };
 	const issueIds = issueRows.map((issue) => issue.id);
 
-	const [calendarRows, metricRows, goalRows, commentRows, historyRows] =
-		await Promise.all([
-			db.select().from(slaCalendars),
-			db.select().from(slaMetrics),
-			db.select().from(slaGoals).orderBy(slaGoals.metricId, slaGoals.sequence),
-			db
-				.select({
-					issueId: comments.issueId,
-					authorId: comments.authorId,
-					internal: comments.internal,
-					created: comments.created,
-				})
-				.from(comments)
-				.where(inArray(comments.issueId, issueIds)),
-			db
-				.select({
-					issueId: issueHistory.issueId,
-					created: issueHistory.created,
-					sequence: issueHistoryItems.sequence,
-					field: issueHistoryItems.field,
-					toValue: issueHistoryItems.toValue,
-				})
-				.from(issueHistoryItems)
-				.innerJoin(
-					issueHistory,
-					eq(issueHistoryItems.historyId, issueHistory.id),
-				)
-				.where(
-					and(
-						inArray(issueHistory.issueId, issueIds),
-						inArray(issueHistoryItems.field, [
-							"status",
-							"assignee",
-							"resolution",
-						]),
-					),
-				),
-		]);
+	const [calendarRows, metricRows, goalRows] = await Promise.all([
+		db.select().from(slaCalendars),
+		db.select().from(slaMetrics),
+		db.select().from(slaGoals).orderBy(slaGoals.metricId, slaGoals.sequence),
+	]);
+	const [commentRows, historyRows] = await Promise.all([
+		loadCommentRows(issueIds),
+		loadHistoryRows(issueIds),
+	]);
 
 	const calendars = new Map<string, SlaCalendar>(
 		calendarRows.map((calendar) => [
@@ -289,6 +329,7 @@ export async function rebuildSlaCycles(
 	for (const issue of issueRows) {
 		const issueEvents = (events.get(issue.id) ?? []).map((row) => row.event);
 		for (const metric of metricsByProject.get(issue.projectId) ?? []) {
+			// Jira applies the first goal (lowest sequence) whose JQL matches the issue.
 			const goal = (goalsByMetric.get(metric.id) ?? []).find((candidate) =>
 				matches.get(candidate.id)?.has(issue.id),
 			);
@@ -333,7 +374,9 @@ export async function rebuildSlaCycles(
 	}
 
 	await db.transaction(async (tx) => {
-		await tx.delete(slaCycles).where(inArray(slaCycles.issueId, issueIds));
+		for (const ids of chunks(issueIds)) {
+			await tx.delete(slaCycles).where(inArray(slaCycles.issueId, ids));
+		}
 		for (let index = 0; index < rows.length; index += 500) {
 			await tx.insert(slaCycles).values(rows.slice(index, index + 500));
 		}
