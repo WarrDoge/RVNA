@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { pool, runMigrations } from "../src/lib/server/db.ts";
+import { csvCell } from "../src/lib/server/navigator/service.ts";
 import {
 	createProjectFixture,
 	dropProjectFixture,
@@ -204,4 +205,11 @@ test("a filter name outside Latin-1 still downloads", async () => {
 	expect(response.headers["content-disposition"]).toBe(
 		`attachment; filename="____ __.csv"; filename*=UTF-8''${encodeURIComponent("Звіт 日本.csv")}`,
 	);
+});
+
+test("leading whitespace or control characters cannot smuggle a formula", () => {
+	expect(csvCell("\t=cmd|' /C calc'!A0")).toBe("\"'\t=cmd|' /C calc'!A0\"");
+	expect(csvCell("\r=1+1")).toBe('"\'\r=1+1"');
+	expect(csvCell(" \t=1+1")).toBe('"\' \t=1+1"');
+	expect(csvCell("plain\ttab")).toBe('"plain\ttab"');
 });

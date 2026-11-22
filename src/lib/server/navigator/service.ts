@@ -456,10 +456,27 @@ function cellText(issue: NavigatorIssue, column: string): string {
  * Excel and Sheets run a cell that starts with one of these characters, so a
  * summary like `=HYPERLINK(...)` would become a formula.
  */
+function startsWithFormula(text: string) {
+	let index = 0;
+	while (index < text.length) {
+		const character = text[index];
+		if (
+			character === "\ufeff" ||
+			character.charCodeAt(0) < 0x20 ||
+			/\s/.test(character)
+		) {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+	return /^[=+\-@]/.test(text.slice(index));
+}
+
 export function csvCell(value: string) {
 	let text = value;
-	if (/^[=+\-@]/.test(text)) text = `'${text}`;
-	if (/[",\r\n]/.test(text)) text = `"${text.replace(/"/g, '""')}"`;
+	if (startsWithFormula(text)) text = `'${text}`;
+	if (/[",\r\n\t]/.test(text)) text = `"${text.replace(/"/g, '""')}"`;
 	return text;
 }
 
