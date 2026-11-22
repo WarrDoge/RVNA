@@ -194,6 +194,7 @@ describe("parity live Jira", () => {
 				},
 			]);
 			expect(listRequests).toBe(2);
+			expect(live.incomplete).toBe(true);
 			expect(warn).toHaveBeenCalledWith(expect.stringContaining("pagination"));
 		} finally {
 			warn.mockRestore();

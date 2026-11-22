@@ -1513,7 +1513,7 @@ watchers, page likes, attachment files, and the old URL paths the app has to ans
 watcher and like checks use the same two requests per content item as the import. `--json`
 prints one machine-readable object, `--skip-hash` skips the attachment sha256 pass, and `--app-url` with
 `--app-token` requests every old URL against a running app. Exit codes are 0 for all
-checks OK or skipped, 1 for a mismatch, and 2 for an error.
+checks OK or skipped, 1 for a mismatch or an incomplete live snapshot, and 2 for an error.
 
 ```sh
 node --env-file=/path/to/.env src/importer/main.ts parity all

@@ -54,7 +54,7 @@ import {
 import { jiraChecks } from "../src/importer/parity/jira-checks.ts";
 import { fetchWikiLive } from "../src/importer/parity/live-confluence.ts";
 import { fetchJiraLive } from "../src/importer/parity/live-jira.ts";
-import { runParity } from "../src/importer/parity/run.ts";
+import { formatReport, runParity } from "../src/importer/parity/run.ts";
 import {
 	buildOldUrlPaths,
 	requestOldUrls,
@@ -279,6 +279,22 @@ describe("parity run", () => {
 		expect(report.notes).not.toContain(
 			"no agile boards were available for old board URLs",
 		);
+	});
+
+	test("a truncated live Jira snapshot is reported incomplete", async () => {
+		fetchJiraLiveMock.mockResolvedValue({
+			...liveJira,
+			incomplete: true,
+		});
+
+		const report = await runParity(options());
+
+		expect(report.incomplete).toBe(true);
+		expect(report.ok).toBe(false);
+		expect(report.notes).toContain(
+			"jira live snapshot is incomplete: a paged list did not advance",
+		);
+		expect(formatReport(report)).toContain("result: INCOMPLETE");
 	});
 
 	test("the board note is added when there are no live boards", async () => {

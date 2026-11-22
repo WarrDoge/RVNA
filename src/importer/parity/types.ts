@@ -89,6 +89,8 @@ export interface JiraLiveSnapshot {
 	serviceDeskMetricsSkipped?: boolean;
 	agile: JiraAgileData | null;
 	filters: JiraFilterData[] | null;
+	/** A paged live list stopped before its last page. */
+	incomplete?: boolean;
 }
 
 export interface JiraProjectWorkflowData {
@@ -212,6 +214,7 @@ export interface ParityReport {
 	requests: { jira: number; confluence: number; app: number };
 	wallClockSeconds: number;
 	notes: string[];
+	incomplete?: boolean;
 	ok: boolean;
 }
 

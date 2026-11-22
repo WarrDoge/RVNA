@@ -36,6 +36,10 @@ interface Paged<T> {
 	isLastPage?: boolean;
 }
 
+interface PagingState {
+	incomplete: boolean;
+}
+
 function issueAssignee(user: JiraUser | null | undefined) {
 	if (!user) return null;
 	return user.key ?? user.name ?? null;
@@ -152,6 +156,7 @@ async function fetchPaged<T>(
 	client: JiraClient,
 	path: string,
 	params: Record<string, string | number> = {},
+	paging?: PagingState,
 ): Promise<T[]> {
 	const values: T[] = [];
 	for (let start = 0; ; ) {
@@ -169,6 +174,7 @@ async function fetchPaged<T>(
 			console.warn(
 				`pagination did not advance at ${path}: asked for ${start}, got ${page.start}`,
 			);
+			if (paging) paging.incomplete = true;
 			break;
 		}
 		values.push(...pageValues);
@@ -182,10 +188,13 @@ async function fetchServiceDesks(
 	client: JiraClient,
 	projectKeys: Set<string>,
 	metricsEnabled: boolean,
+	paging: PagingState,
 ): Promise<JiraServiceDeskData[]> {
 	const desks = await fetchPaged<JiraServiceDeskRef>(
 		client,
 		"/rest/servicedeskapi/servicedesk",
+		{},
+		paging,
 	);
 	const result: JiraServiceDeskData[] = [];
 	for (const desk of desks.filter((item) => projectKeys.has(item.projectKey))) {
@@ -193,11 +202,14 @@ async function fetchServiceDesks(
 			fetchPaged<JiraRequestType>(
 				client,
 				`/rest/servicedeskapi/servicedesk/${encodeURIComponent(desk.id)}/requesttype`,
+				{},
+				paging,
 			),
 			fetchPaged<JiraQueue>(
 				client,
 				`/rest/servicedeskapi/servicedesk/${encodeURIComponent(desk.id)}/queue`,
 				{ includeCount: "true" },
+				paging,
 			),
 			metricsEnabled
 				? client
@@ -414,6 +426,7 @@ export async function fetchJiraLive(
 	}
 
 	const projectKeys = new Set(projects.map((project) => project.key));
+	const paging: PagingState = { incomplete: false };
 	const workflowSkipped = skipPrivateApi(options, "workflow layouts");
 	const serviceDeskMetricsSkipped =
 		options.serviceDesks && skipPrivateApi(options, "service desk SLA metrics");
@@ -431,7 +444,12 @@ export async function fetchJiraLive(
 				? Promise.resolve(new Map<string, string[]>())
 				: fetchWorkflowResolutionTransitions(client, options),
 			options.serviceDesks
-				? fetchServiceDesks(client, projectKeys, !serviceDeskMetricsSkipped)
+				? fetchServiceDesks(
+						client,
+						projectKeys,
+						!serviceDeskMetricsSkipped,
+						paging,
+					)
 				: Promise.resolve(null),
 			agileRequest,
 			options.filters
@@ -460,5 +478,6 @@ export async function fetchJiraLive(
 		serviceDeskMetricsSkipped,
 		agile,
 		filters,
+		incomplete: paging.incomplete,
 	};
 }

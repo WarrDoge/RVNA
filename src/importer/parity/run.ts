@@ -57,8 +57,13 @@ function countingFetch(
 	}) as typeof fetch;
 }
 
-function reportOk(checks: CheckResult[], oldUrls: OldUrlResult[]) {
+function reportOk(
+	checks: CheckResult[],
+	oldUrls: OldUrlResult[],
+	incomplete = false,
+) {
 	return (
+		!incomplete &&
 		checks.every((check) => check.status !== "MISMATCH") &&
 		oldUrls.every((url) => url.ok !== false)
 	);
@@ -137,6 +142,12 @@ export async function runParity(
 				.join(", ")}`,
 		);
 	}
+	const incomplete = liveJira?.incomplete === true;
+	if (incomplete) {
+		notes.push(
+			"jira live snapshot is incomplete: a paged list did not advance",
+		);
+	}
 	let watermark: string | null = null;
 	let changedSinceImport: { count: number; issues: string[] } = {
 		count: 0,
@@ -198,7 +209,8 @@ export async function runParity(
 		},
 		wallClockSeconds: (performance.now() - started) / 1000,
 		notes,
-		ok: reportOk(checks, oldUrls),
+		incomplete,
+		ok: reportOk(checks, oldUrls, incomplete),
 	};
 }
 
@@ -265,7 +277,9 @@ export function formatReport(report: ParityReport) {
 	lines.push(
 		report.ok
 			? "result: OK"
-			: `result: MISMATCH (${mismatches} check(s), ${failedUrls} URL(s))`,
+			: report.incomplete
+				? `result: INCOMPLETE (${mismatches} check(s), ${failedUrls} URL(s))`
+				: `result: MISMATCH (${mismatches} check(s), ${failedUrls} URL(s))`,
 	);
 	return lines.join("\n");
 }
