@@ -15,7 +15,6 @@ export interface JqlCatalog {
 		projectId: string;
 	}[];
 	components: { id: string; name: string; projectId: string }[];
-	labels: string[];
 	linkTypes: { id: string; name: string; inward: string; outward: string }[];
 	users: { id: string; username: string; displayName: string }[];
 	groups: { id: string; name: string }[];
@@ -31,7 +30,11 @@ export interface JqlCatalog {
 		value: string;
 		parentOptionId: string | null;
 	}[];
-	sprints: { name: string; state: string; projectId: string }[];
+	sprints: {
+		name: string;
+		state: "ACTIVE" | "CLOSED" | "FUTURE";
+		projectId: string;
+	}[];
 }
 
 type Row = Record<string, unknown>;
@@ -56,12 +59,12 @@ async function loadCatalogUncached(): Promise<JqlCatalog> {
 		resolutionRows,
 		versionRows,
 		componentRows,
-		labelRows,
 		linkTypeRows,
 		userRows,
 		groupRows,
 		customFieldRows,
 		fieldOptionRows,
+		sprintRows,
 	] = await Promise.all([
 		rows(sql`select id, key, name from projects order by key`),
 		rows(sql`select id, name, subtask from issue_types order by name`),
@@ -74,7 +77,6 @@ async function loadCatalogUncached(): Promise<JqlCatalog> {
 			sql`select id, name, released, project_id from versions order by name`,
 		),
 		rows(sql`select id, name, project_id from components order by name`),
-		rows(sql`select distinct label from issue_labels order by label`),
 		rows(sql`select id, name, inward, outward from link_types order by name`),
 		rows(
 			sql`select id, username, display_name from users order by display_name`,
@@ -86,14 +88,14 @@ async function loadCatalogUncached(): Promise<JqlCatalog> {
 		rows(
 			sql`select field_id, value, parent_option_id from field_options order by value`,
 		),
+		rows(
+			sql`select distinct s.name, s.state, b.project_id from sprints s join boards b on b.id = s.board_id where b.project_id is not null union select distinct s.name, s.state, b.project_id from board_sprints bs join sprints s on s.id = bs.sprint_id join boards b on b.id = bs.board_id where b.project_id is not null order by 1`,
+		),
 	]);
 
-	const sprintRows = await rows(
-		sql`select distinct s.name, s.state, b.project_id from sprints s join boards b on b.id = s.board_id where b.project_id is not null union select distinct s.name, s.state, b.project_id from board_sprints bs join sprints s on s.id = bs.sprint_id join boards b on b.id = bs.board_id where b.project_id is not null order by 1`,
-	);
 	const sprints = sprintRows.map((row) => ({
 		name: String(row.name),
-		state: String(row.state).toUpperCase(),
+		state: String(row.state).toUpperCase() as "ACTIVE" | "CLOSED" | "FUTURE",
 		projectId: String(row.project_id),
 	}));
 
@@ -133,7 +135,6 @@ async function loadCatalogUncached(): Promise<JqlCatalog> {
 			name: String(row.name),
 			projectId: String(row.project_id),
 		})),
-		labels: labelRows.map((row) => String(row.label)),
 		linkTypes: linkTypeRows.map((row) => ({
 			id: String(row.id),
 			name: String(row.name),

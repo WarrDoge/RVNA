@@ -166,7 +166,39 @@ test("the catalog is read once per request", async () => {
 	} finally {
 		database.execute = original;
 	}
-	expect(calls).toBe(14);
+	expect(calls).toBe(13);
+});
+
+test("the catalog starts every query before waiting for any of them", async () => {
+	const database = db as unknown as { execute: typeof db.execute };
+	const original = database.execute;
+	let release = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	database.execute = ((query: Parameters<typeof db.execute>[0]) => {
+		const text = JSON.stringify(
+			(query as unknown as { queryChunks?: unknown }).queryChunks ?? "",
+		);
+		if (text.includes("board_sprints")) {
+			release();
+			return original(query);
+		}
+		return gate.then(() => original(query));
+	}) as typeof db.execute;
+	const loading = runWithRequestCache(() => loadCatalog());
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const outcome = await Promise.race([
+		loading.then(() => "loaded" as const),
+		new Promise<"timeout">((resolve) => {
+			timer = setTimeout(() => resolve("timeout"), 500);
+		}),
+	]);
+	if (timer) clearTimeout(timer);
+	release();
+	database.execute = original;
+	await loading;
+	expect(outcome).toBe("loaded");
 });
 
 test("label suggestions filter and limit in SQL", async () => {
