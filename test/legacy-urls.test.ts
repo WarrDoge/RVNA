@@ -331,6 +331,74 @@ test("the Jira REST API searches with JQL", async () => {
 	expect(broken.json().errorMessages).toHaveLength(1);
 });
 
+test("the Jira REST search honours the fields projection", async () => {
+	const search = (fields: string) =>
+		app.inject({
+			method: "GET",
+			url: `/rest/api/2/search?jql=${encodeURIComponent(`project = ${projectKey} ORDER BY key ASC`)}&fields=${encodeURIComponent(fields)}`,
+			headers: { authorization: `Bearer ${token}` },
+		});
+
+	const summary = await search("summary");
+	expect(summary.statusCode).toBe(200);
+	expect(Object.keys(summary.json().issues[0].fields)).toEqual(["summary"]);
+
+	const selected = await search("summary,status");
+	expect(Object.keys(selected.json().issues[0].fields).sort()).toEqual([
+		"status",
+		"summary",
+	]);
+
+	const none = await search("*none");
+	expect(none.json().issues[0].fields).toEqual({});
+
+	const withoutStatus = await search("*all,-status");
+	expect(withoutStatus.json().issues[0].fields).not.toHaveProperty("status");
+	expect(withoutStatus.json().issues[0].fields).toHaveProperty("summary");
+});
+
+test("the Jira REST API finds an issue by its normalised key", async () => {
+	const response = await app.inject({
+		method: "GET",
+		url: `/rest/api/2/issue/${projectKey.toLowerCase()}-1`,
+		headers: { authorization: `Bearer ${token}` },
+	});
+	expect(response.statusCode).toBe(200);
+	expect(response.json().key).toBe(`${projectKey}-1`);
+});
+
+test("the single-issue lookup compares the key column directly", async () => {
+	const original = pool.query.bind(pool);
+	const captured: string[] = [];
+	(pool as unknown as { query: (...args: unknown[]) => unknown }).query = (
+		...args: unknown[]
+	) => {
+		const [first, values] = args;
+		captured.push(
+			typeof first === "string" ? first : (first as { text: string }).text,
+		);
+		return original(first as never, values as never);
+	};
+	try {
+		const response = await app.inject({
+			method: "GET",
+			url: `/rest/api/2/issue/${projectKey}-1`,
+			headers: { authorization: `Bearer ${token}` },
+		});
+		expect(response.statusCode).toBe(200);
+	} finally {
+		(pool as unknown as { query: typeof original }).query = original;
+	}
+	const lookup = captured.find(
+		(text) =>
+			text.includes("from issues") &&
+			text.includes("limit 1") &&
+			text.includes("issues.key"),
+	);
+	expect(lookup).toContain("where issues.key = $1");
+	expect(lookup).not.toContain("upper(issues.key)");
+});
+
 test("unmatched REST paths answer a JSON 404 instead of the app shell", async () => {
 	for (const url of [
 		"/rest/api/2/myself",

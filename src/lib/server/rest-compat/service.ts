@@ -22,6 +22,28 @@ export const searchQuery = z.object({
 	fields: z.string().max(10_000).optional(),
 });
 
+/** Jira's `fields` selector: a list, `*all`, `*none`, `*navigable` and `-field`. */
+function fieldFilter(value: string | undefined) {
+	if (!value) return null;
+	const parts = value
+		.split(",")
+		.map((part) => part.trim())
+		.filter(Boolean);
+	if (parts.length === 0) return null;
+	const excluded = new Set(
+		parts.filter((part) => part.startsWith("-")).map((part) => part.slice(1)),
+	);
+	const named = new Set(
+		parts.filter((part) => !part.startsWith("-") && !part.startsWith("*")),
+	);
+	const all =
+		parts.some((part) => part === "*all" || part === "*navigable") ||
+		(named.size === 0 && excluded.size > 0);
+	const none = parts.includes("*none");
+	if (!all && !none && named.size === 0) return null;
+	return (name: string) => !excluded.has(name) && (all || named.has(name));
+}
+
 /** Jira writes dates as 2026-01-01T10:00:00.000+0000. */
 function jiraDate(value: Date | string | null | undefined) {
 	if (!value) return null;
@@ -67,7 +89,12 @@ function userJson(
 	};
 }
 
-function issueJson(base: string, row: Row, showEmail: boolean) {
+function issueJson(
+	base: string,
+	row: Row,
+	showEmail: boolean,
+	includeField?: ((name: string) => boolean) | null,
+) {
 	const fields: Record<string, unknown> = {
 		summary: String(row.summary),
 		description:
@@ -153,7 +180,11 @@ function issueJson(base: string, row: Row, showEmail: boolean) {
 		id: String(row.source_id),
 		self: `${base}/rest/api/2/issue/${row.source_id}`,
 		key: String(row.key),
-		fields,
+		fields: includeField
+			? Object.fromEntries(
+					Object.entries(fields).filter(([name]) => includeField(name)),
+				)
+			: fields,
 	};
 }
 
@@ -162,7 +193,7 @@ const SELECT_ISSUE = sql`
 		issues.id, issues.source_id, issues.key, issues.summary,
 		issues.description_source, issues.created, issues.updated, issues.resolved,
 		issues.due_date, issues.time_spent, issues.remaining_estimate,
-		issues.original_estimate, issues.story_points,
+		issues.original_estimate,
 		it.source_id as type_id, it.name as type_name, it.subtask as type_subtask,
 		s.source_id as status_id, s.name as status_name, s.category as status_category,
 		p.source_id as priority_id, p.name as priority_name,
@@ -204,7 +235,7 @@ export async function compatIssue(
 ) {
 	const result = await db.execute(sql`
 		${SELECT_ISSUE}
-		where upper(issues.key) = ${key.toUpperCase()}
+		where issues.key = ${key.toUpperCase()}
 			and issues.project_id = any(${sql.param(await viewerProjectIds(actor))}::uuid[])
 		limit 1
 	`);
@@ -224,6 +255,7 @@ export async function compatSearch(
 	base: string,
 ) {
 	const jql = input.jql ?? "";
+	const includeField = fieldFilter(input.fields);
 	let where = sql`true`;
 	let orderBy = sql`issues.key desc`;
 	try {
@@ -265,7 +297,7 @@ export async function compatSearch(
 		maxResults: input.maxResults,
 		total,
 		issues: (result.rows as Row[]).map((row) =>
-			issueJson(base, row, actor.isAdmin),
+			issueJson(base, row, actor.isAdmin, includeField),
 		),
 	};
 }
