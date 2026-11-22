@@ -60,6 +60,7 @@ export class FakeMatrix {
 	readonly requests: { method: string; path: string; body: string }[] = [];
 	readonly sent: FakeMatrixSent[] = [];
 	readonly joins: string[] = [];
+	readonly refusedSends = new Set<string>();
 	syncCount = 0;
 	url = "";
 	revoked = false;
@@ -92,6 +93,11 @@ export class FakeMatrix {
 		this.port = address.port;
 		this.url = `http://127.0.0.1:${this.port}`;
 		return this;
+	}
+
+	/** Refuses sends to a room, as a homeserver refuses plaintext events in an E2EE room. */
+	rejectSends(roomId: string) {
+		this.refusedSends.add(roomId);
 	}
 
 	/** Makes every client API call fail with Synapse's revoked-token response. */
@@ -313,6 +319,15 @@ export class FakeMatrix {
 		if (send && request.method === "PUT") {
 			const roomId = decodeURIComponent(send[1]);
 			const eventType = decodeURIComponent(send[2]);
+			if (this.refusedSends.has(roomId)) {
+				this.writeError(
+					response,
+					400,
+					"M_UNKNOWN",
+					"Encrypted rooms cannot contain unencrypted events",
+				);
+				return;
+			}
 			let content: Record<string, unknown> = {};
 			try {
 				content = JSON.parse(body) as Record<string, unknown>;

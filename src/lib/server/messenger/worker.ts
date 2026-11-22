@@ -35,6 +35,10 @@ const ENCRYPTED_NOTICE =
 
 function wait(ms: number, signal: AbortSignal) {
 	return new Promise<void>((resolve) => {
+		if (signal.aborted) {
+			resolve();
+			return;
+		}
 		const timer = setTimeout(done, ms);
 		signal.addEventListener("abort", done, { once: true });
 		function done() {
@@ -70,7 +74,13 @@ async function sendEncryptionNoticeOnce(
 ) {
 	const stored = await ensureRoom(roomId);
 	if (!stored?.room || stored.room.encryptionNoticeSent) return;
-	await matrixSendText(settings, roomId, ENCRYPTED_NOTICE);
+	try {
+		await matrixSendText(settings, roomId, ENCRYPTED_NOTICE);
+	} catch (error) {
+		// The room cannot be read either way; retrying the notice would hold up every other room.
+		const message = error instanceof Error ? error.message : String(error);
+		console.error("messenger: could not send the encryption notice:", message);
+	}
 	await db
 		.update(messengerRooms)
 		.set({ encrypted: true, encryptionNoticeSent: true })
@@ -148,8 +158,8 @@ async function processSync(
 					event.state_key === settings.botMatrixId &&
 					event.content?.membership === "join",
 			);
-			if (join === -1) continue;
-			events = events.slice(join + 1);
+			// A busy room can push the join out of the window; what is left is newer than it.
+			if (join !== -1) events = events.slice(join + 1);
 		} else if (room.timeline?.limited && since) {
 			failures += await backfill(settings, roomId, since);
 		}
@@ -164,7 +174,7 @@ async function syncLoop(
 	signal: AbortSignal,
 	markRunning: (value: boolean) => void,
 ) {
-	let settings = await messengerSettings();
+	const settings = await messengerSettings();
 	if (!settings.enabled || !settings.accessToken || !settings.homeserverUrl) {
 		return;
 	}
@@ -174,7 +184,6 @@ async function syncLoop(
 		const serverName = matrixServerName(who.user_id);
 		if (!serverName) throw new Error("The bot's Matrix id has no server name");
 		await saveMessengerIdentity({ userId: who.user_id, serverName });
-		settings = await messengerSettings();
 	}
 
 	let backoff = INITIAL_BACKOFF_MS;

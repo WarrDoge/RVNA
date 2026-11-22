@@ -462,6 +462,82 @@ describe("sync worker", () => {
 		expect(after.length).toBe(before.length);
 	});
 
+	test("a room whose join event scrolled out still handles its messages", async () => {
+		const busyRoom = `!busy-${run}:matrix.test`;
+		const before = fake.sent.length;
+		fake.pushTimeline(busyRoom, [
+			{
+				type: "m.room.message",
+				event_id: `$busy-${run}`,
+				sender: `@t-${run}-alice:matrix.test`,
+				content: { msgtype: "m.text", body: "!help busy room" },
+			},
+		]);
+		await fake.waitFor(
+			() =>
+				fake.sent
+					.slice(before)
+					.some((item) =>
+						String(item.content.body ?? "").startsWith("Commands:"),
+					),
+			10_000,
+		);
+	});
+
+	test("a refused encryption notice does not block the rest of the sync", async () => {
+		const refusedRoom = `!refused-${run}:matrix.test`;
+		fake.rejectSends(refusedRoom);
+		const before = fake.sent.length;
+		fake.pushSync({
+			rooms: {
+				invite: {
+					[refusedRoom]: {
+						invite_state: {
+							events: [
+								{
+									type: "m.room.encryption",
+									content: { algorithm: "m.megolm.v1.aes-sha2" },
+								},
+							],
+						},
+					},
+				},
+				join: {
+					[roomId]: {
+						timeline: {
+							events: [
+								{
+									type: "m.room.message",
+									event_id: `$after-refused-${run}`,
+									sender: `@t-${run}-alice:matrix.test`,
+									content: {
+										msgtype: "m.text",
+										body: "!help after a refused notice",
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+		});
+		await fake.waitFor(
+			() =>
+				fake.sent
+					.slice(before)
+					.some((item) =>
+						String(item.content.body ?? "").startsWith("Commands:"),
+					),
+			15_000,
+		);
+		const attempts = fake.requests.filter(
+			(request) =>
+				request.path.includes("/send/") &&
+				decodeURIComponent(request.path).includes(refusedRoom),
+		).length;
+		expect(attempts).toBe(1);
+	});
+
 	test("joins an invited room", async () => {
 		fake.pushInvite(`!invite-${run}:matrix.test`);
 		await fake.waitFor(() => fake.joins.includes(`!invite-${run}:matrix.test`));
