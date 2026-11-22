@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
 	type AnyPgColumn,
+	bigint,
 	boolean,
 	customType,
 	index,
@@ -93,6 +94,7 @@ export const pages = pgTable(
 		lastModifierId: uuid("last_modifier_id").references(() => users.id, {
 			onDelete: "set null",
 		}),
+		/** Content update time, upstream or local; search date filters use it. */
 		updated: timestamp("updated", { withTimezone: true }),
 		locallyChangedAt: timestamp("locally_changed_at", { withTimezone: true }),
 		search: tsvector("search").generatedAlwaysAs(
@@ -187,7 +189,7 @@ export const pageAttachments = pgTable(
 			.references(() => pages.id, { onDelete: "cascade" }),
 		fileName: text("file_name").notNull(),
 		mimeType: text("mime_type"),
-		size: integer("size").notNull().default(0),
+		size: bigint("size", { mode: "number" }).notNull().default(0),
 		version: integer("version").notNull().default(1),
 		authorId: uuid("author_id").references(() => users.id, {
 			onDelete: "set null",

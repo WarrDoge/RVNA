@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { pool } from "../src/lib/server/db.ts";
+import { db, pool } from "../src/lib/server/db.ts";
+import { pageAttachments } from "../src/lib/server/schema-wiki.ts";
 import {
 	type Client,
 	doc,
@@ -381,6 +382,23 @@ describe("uploads", () => {
 				url: `/api/wiki/attachments/${second.body[0].id}`,
 			},
 		]);
+	});
+
+	test("stores an attachment size above the 32-bit range", async () => {
+		const page = await wiki.page(editor, space.key, "Large attachment");
+		const size = 2 ** 31 + 1;
+		const [row] = await db
+			.insert(pageAttachments)
+			.values({
+				sourceId: `fat:test-${randomUUID()}`,
+				pageId: page.id,
+				fileName: "large.bin",
+				size,
+				storagePath: "large/large.bin",
+				sha256: "a".repeat(64),
+			})
+			.returning({ size: pageAttachments.size });
+		expect(row?.size).toBe(size);
 	});
 
 	test("concurrent uploads of one file name get distinct versions", async () => {
