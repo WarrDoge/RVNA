@@ -1,3 +1,4 @@
+import { decodeEntities } from "../../shared/wiki/xml.ts";
 import { escapeHtml } from "./storage.ts";
 
 export type DiffOp = {
@@ -6,27 +7,20 @@ export type DiffOp = {
 };
 
 const blockTags =
-	"p|h1|h2|h3|h4|h5|h6|li|tr|pre|blockquote|dt|dd|figcaption|summary|div|br";
-
-function decode(value: string) {
-	return value
-		.replace(/&nbsp;/g, " ")
-		.replace(/&lt;/g, "<")
-		.replace(/&gt;/g, ">")
-		.replace(/&quot;/g, '"')
-		.replace(/&#39;/g, "'")
-		.replace(/&amp;/g, "&");
-}
+	"p|h1|h2|h3|h4|h5|h6|li|tr|td|th|pre|blockquote|dt|dd|figcaption|summary|div|br";
+const blockClose = new RegExp(`</(?:${blockTags})\\s*>`, "gi");
+const blockOpen = new RegExp(`<(?:${blockTags})(?=[\\s/>])[^>]*>`, "gi");
+const BLOCK_BREAK = "\u0000";
 
 /** Plain text of an HTML body, one entry per block element. */
 export function htmlToBlocks(html: string | null | undefined): string[] {
 	if (!html) return [];
 	const withBreaks = html
-		.replace(new RegExp(`</(?:${blockTags})>`, "gi"), "\n")
-		.replace(new RegExp(`<(?:${blockTags})[^>]*>`, "gi"), "\n")
+		.replace(blockClose, BLOCK_BREAK)
+		.replace(blockOpen, BLOCK_BREAK)
 		.replace(/<[^>]*>/g, "");
-	return decode(withBreaks)
-		.split("\n")
+	return decodeEntities(withBreaks)
+		.split(BLOCK_BREAK)
 		.map((line) => line.replace(/\s+/g, " ").trim())
 		.filter((line) => line !== "");
 }

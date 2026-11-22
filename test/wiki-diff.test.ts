@@ -16,6 +16,31 @@ test("decodes entities and collapses whitespace", () => {
 	expect(htmlToBlocks("<p>a &amp; b&nbsp;&nbsp; c</p>")).toEqual(["a & b c"]);
 });
 
+test("decodes numeric and named entities and collapses whitespace", () => {
+	expect(htmlToBlocks("<p>&#8217; &#x27; &mdash; &amp;</p>")).toEqual([
+		"\u2019 ' \u2014 &",
+	]);
+});
+
+test("does not treat tags that start with a block tag as block breaks", () => {
+	expect(
+		htmlToBlocks("<p>before <picture><source src=x></picture> after</p>"),
+	).toEqual(["before after"]);
+	expect(htmlToBlocks("<p>one <link rel=x> two</p>")).toEqual(["one two"]);
+	expect(htmlToBlocks("<p>a <path d=x></path> b</p>")).toEqual(["a b"]);
+});
+
+test("splits table cells into separate blocks", () => {
+	expect(htmlToBlocks("<table><tr><td>a</td><td>b</td></tr></table>")).toEqual([
+		"a",
+		"b",
+	]);
+});
+
+test("keeps a raw newline inside a block as whitespace", () => {
+	expect(htmlToBlocks("<p>line1\nline2</p>")).toEqual(["line1 line2"]);
+});
+
 test("ignores an empty body", () => {
 	expect(htmlToBlocks(null)).toEqual([]);
 	expect(htmlToBlocks("")).toEqual([]);
