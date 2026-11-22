@@ -3,11 +3,17 @@ import { afterAll, beforeAll, expect, test, vi } from "vitest";
 import { createSession } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { health } from "../src/lib/server/health/service.ts";
+import { stopMessengerWorker } from "../src/lib/server/messenger/worker.ts";
 import { users } from "../src/lib/server/schema.ts";
 import { buildServer } from "./helpers.ts";
 
 beforeAll(async () => {
 	await runMigrations();
+	const app = buildServer();
+	await app.ready();
+	// The worker reads its settings from the same pool in the background; stop it
+	// so the liveness probe's spy cannot see an unrelated query.
+	await stopMessengerWorker();
 });
 
 afterAll(async () => {
