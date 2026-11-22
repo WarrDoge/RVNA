@@ -885,6 +885,9 @@ describe("importJiraAgile", () => {
 					]),
 				),
 			) as unknown as JiraClient;
+		await importJiraAgile(clientFor(sprintsIn([0, 1, 2])), db, {
+			privateApis: true,
+		});
 		const [boardRow] = await db
 			.select()
 			.from(boards)
@@ -902,9 +905,6 @@ describe("importJiraAgile", () => {
 			return rows.map((row) => [row.sourceId, row.sequence]);
 		};
 
-		await importJiraAgile(clientFor(sprintsIn([0, 1, 2])), db, {
-			privateApis: true,
-		});
 		expect(await sequence()).toEqual([
 			[String(ids[0]), 0],
 			[String(ids[1]), 1],
