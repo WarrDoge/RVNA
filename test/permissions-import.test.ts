@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray, like } from "drizzle-orm";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/importer/db.ts";
 import {
 	importPermissions,
 	type PermissionImportClient,
 } from "../src/importer/permissions.ts";
+import { assignPermissionSchemeProject } from "../src/lib/server/admin/permission-schemes.ts";
 import { syncGroups } from "../src/lib/server/auth.ts";
 import {
 	groups,
@@ -25,6 +27,58 @@ const projectKeyC = `PK${run.slice(0, 6).toUpperCase()}`;
 const tag = `permissions-fixture-${run}`;
 const schemeSource = `fixture-scheme-${run}`;
 const base = "https://jira.example.test";
+
+/** Observe every statement, including the ones a transaction runs on its own client. */
+function capturePoolQueries(
+	onQuery: (text: string, result: unknown) => Promise<void> | void,
+) {
+	const original = pool.connect.bind(pool);
+	const wrapped = new WeakSet<object>();
+	const wrap = (client: PoolClient) => {
+		if (wrapped.has(client)) return;
+		wrapped.add(client);
+		const query = client.query.bind(client);
+		client.query = (async (
+			text: { text?: string } | string,
+			...rest: unknown[]
+		) => {
+			const result = await (query as (...args: unknown[]) => Promise<unknown>)(
+				text,
+				...rest,
+			);
+			await onQuery(
+				typeof text === "string" ? text : (text.text ?? ""),
+				result,
+			);
+			return result;
+		}) as typeof client.query;
+	};
+	(pool as unknown as { connect: typeof pool.connect }).connect = ((
+		...args: unknown[]
+	) => {
+		const callback = args.at(-1);
+		if (typeof callback === "function") {
+			return (original as (...args: unknown[]) => unknown)(
+				...args.slice(0, -1),
+				(...callbackArgs: unknown[]) => {
+					const client = callbackArgs[1];
+					if (client) wrap(client as PoolClient);
+					(callback as (...args: unknown[]) => unknown)(...callbackArgs);
+				},
+			);
+		}
+		return (async () => {
+			const client = await (
+				original as (...args: unknown[]) => Promise<PoolClient>
+			)(...args);
+			wrap(client);
+			return client;
+		})();
+	}) as typeof pool.connect;
+	return () => {
+		(pool as unknown as { connect: typeof pool.connect }).connect = original;
+	};
+}
 
 let projectId: string;
 let projectIdB: string;
@@ -855,15 +909,10 @@ test("reapplying local assignments writes once per scheme", async () => {
 			throw new Error(`unexpected Jira path ${path}`);
 		},
 	};
-	const original = pool.query.bind(pool);
 	const statements: string[] = [];
-	(pool as unknown as { query: typeof pool.query }).query = ((
-		query: { text?: string } | string,
-		...rest: unknown[]
-	) => {
-		statements.push(typeof query === "string" ? query : (query.text ?? ""));
-		return (original as (...args: unknown[]) => unknown)(query, ...rest);
-	}) as typeof pool.query;
+	const restoreQueries = capturePoolQueries((text) => {
+		statements.push(text);
+	});
 
 	try {
 		await importPermissions(client, {
@@ -872,7 +921,7 @@ test("reapplying local assignments writes once per scheme", async () => {
 			fetchGlobal: false,
 		});
 	} finally {
-		(pool as unknown as { query: typeof pool.query }).query = original;
+		restoreQueries();
 	}
 	try {
 		const updates = statements.filter((statement) =>
@@ -895,5 +944,135 @@ test("reapplying local assignments writes once per scheme", async () => {
 		await db
 			.delete(permissionSchemes)
 			.where(eq(permissionSchemes.id, scheme.id));
+	}
+});
+
+test("local reconciliation waits for an admin assignment", async () => {
+	const source = `fixture-race-scheme-${run}`;
+	const [project] = await db
+		.insert(projects)
+		.values({
+			sourceId: `${tag}:race-project`,
+			key: `PR${run.slice(0, 6).toUpperCase()}`,
+			name: `${tag} race project`,
+			projectType: "software",
+		})
+		.returning({ id: projects.id });
+	const [localScheme] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: `local:${run}-race`,
+			name: "Local race scheme",
+			projectIds: [project.id],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	const [importedScheme] = await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: source,
+			name: "Imported race scheme",
+			projectIds: [],
+			raw: {},
+		})
+		.returning({ id: permissionSchemes.id });
+	await db.insert(permissionLocalAssignments).values({
+		projectId: project.id,
+		schemeId: localScheme.id,
+	});
+	await pool.query(
+		"delete from permission_local_unassignments where project_id = $1",
+		[project.id],
+	);
+
+	let paused = false;
+	let release = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	let signal = () => {};
+	const started = new Promise<void>((resolve) => {
+		signal = resolve;
+	});
+	const restoreQueries = capturePoolQueries(async (text) => {
+		if (!paused && text.includes("permission_local_assignments")) {
+			paused = true;
+			signal();
+			await gate;
+		}
+	});
+
+	const client: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+	const actor = {
+		id: reporterId,
+		username: "fixture_reporter",
+		displayName: "Fixture Reporter",
+		email: null,
+		avatarUrl: null,
+		groups: [],
+		isAdmin: true,
+		mustChangePassword: false,
+		hasPassword: false,
+	};
+
+	try {
+		const imported = importPermissions(client, {
+			projectKeys: [],
+			fullImport: false,
+			fetchGlobal: false,
+		});
+		await started;
+		const assigned = assignPermissionSchemeProject(actor, importedScheme.id, {
+			projectId: project.id,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		release();
+		await Promise.all([imported, assigned]);
+
+		const [assignment] = await db
+			.select({ schemeId: permissionLocalAssignments.schemeId })
+			.from(permissionLocalAssignments)
+			.where(eq(permissionLocalAssignments.projectId, project.id));
+		expect(assignment?.schemeId).toBe(importedScheme.id);
+
+		const rows = await db
+			.select({
+				id: permissionSchemes.id,
+				projectIds: permissionSchemes.projectIds,
+			})
+			.from(permissionSchemes)
+			.where(
+				inArray(permissionSchemes.id, [localScheme.id, importedScheme.id]),
+			);
+		const lists = new Map(rows.map((row) => [row.id, row.projectIds ?? []]));
+		expect(lists.get(importedScheme.id)).toContain(project.id);
+		expect(lists.get(localScheme.id)).not.toContain(project.id);
+	} finally {
+		restoreQueries();
+		release();
+		await pool.query(
+			"delete from permission_local_assignments where project_id = $1",
+			[project.id],
+		);
+		await pool.query(
+			"delete from permission_local_unassignments where project_id = $1",
+			[project.id],
+		);
+		await pool.query("delete from audit_log where entity_id = $1", [
+			importedScheme.id,
+		]);
+		await db
+			.delete(permissionSchemes)
+			.where(
+				inArray(permissionSchemes.id, [localScheme.id, importedScheme.id]),
+			);
+		await db.delete(projects).where(eq(projects.id, project.id));
 	}
 });

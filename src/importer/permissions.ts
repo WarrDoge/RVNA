@@ -867,59 +867,63 @@ async function loadLocalRemovals() {
  * One scheme per project.
  */
 async function applyLocalProjectChanges() {
-	const [assignments, unassignments] = await Promise.all([
-		db
+	await db.transaction(async (tx) => {
+		const schemes = await tx
 			.select({
-				projectId: permissionLocalAssignments.projectId,
-				schemeId: permissionLocalAssignments.schemeId,
+				id: permissionSchemes.id,
+				projectIds: permissionSchemes.projectIds,
 			})
-			.from(permissionLocalAssignments),
-		db
-			.select({ projectId: permissionLocalUnassignments.projectId })
-			.from(permissionLocalUnassignments),
-	]);
-	if (assignments.length === 0 && unassignments.length === 0) return;
+			.from(permissionSchemes)
+			.where(sql`${permissionSchemes.sourceId} <> 'global'`)
+			.for("update");
+		const [assignments, unassignments] = await Promise.all([
+			tx
+				.select({
+					projectId: permissionLocalAssignments.projectId,
+					schemeId: permissionLocalAssignments.schemeId,
+				})
+				.from(permissionLocalAssignments),
+			tx
+				.select({ projectId: permissionLocalUnassignments.projectId })
+				.from(permissionLocalUnassignments),
+		]);
+		if (assignments.length === 0 && unassignments.length === 0) return;
 
-	const schemes = await db
-		.select({
-			id: permissionSchemes.id,
-			projectIds: permissionSchemes.projectIds,
-		})
-		.from(permissionSchemes);
-	const assignedProjects = new Set(
-		assignments.map((assignment) => assignment.projectId),
-	);
-	const unassignedProjects = new Set(
-		unassignments.map((unassignment) => unassignment.projectId),
-	);
-	const byScheme = new Map<string, string[]>();
-	for (const assignment of assignments) {
-		const list = byScheme.get(assignment.schemeId) ?? [];
-		list.push(assignment.projectId);
-		byScheme.set(assignment.schemeId, list);
-	}
-	for (const scheme of schemes) {
-		const projectIds = scheme.projectIds ?? [];
-		const assignedHere = new Set(byScheme.get(scheme.id) ?? []);
-		let next = projectIds.filter(
-			(id) =>
-				assignedHere.has(id) ||
-				(!assignedProjects.has(id) && !unassignedProjects.has(id)),
+		const assignedProjects = new Set(
+			assignments.map((assignment) => assignment.projectId),
 		);
-		const added = [...assignedHere].filter((id) => !next.includes(id));
-		if (added.length > 0) {
-			next = [...new Set([...next, ...added])].sort();
+		const unassignedProjects = new Set(
+			unassignments.map((unassignment) => unassignment.projectId),
+		);
+		const byScheme = new Map<string, string[]>();
+		for (const assignment of assignments) {
+			const list = byScheme.get(assignment.schemeId) ?? [];
+			list.push(assignment.projectId);
+			byScheme.set(assignment.schemeId, list);
 		}
-		const changed =
-			next.length !== projectIds.length ||
-			next.some((id, index) => id !== projectIds[index]);
-		if (!changed) continue;
-		await db
-			.update(permissionSchemes)
-			.set({ projectIds: next, updatedAt: new Date() })
-			.where(eq(permissionSchemes.id, scheme.id));
-		scheme.projectIds = next;
-	}
+		for (const scheme of schemes) {
+			const projectIds = scheme.projectIds ?? [];
+			const assignedHere = new Set(byScheme.get(scheme.id) ?? []);
+			let next = projectIds.filter(
+				(id) =>
+					assignedHere.has(id) ||
+					(!assignedProjects.has(id) && !unassignedProjects.has(id)),
+			);
+			const added = [...assignedHere].filter((id) => !next.includes(id));
+			if (added.length > 0) {
+				next = [...new Set([...next, ...added])].sort();
+			}
+			const changed =
+				next.length !== projectIds.length ||
+				next.some((id, index) => id !== projectIds[index]);
+			if (!changed) continue;
+			await tx
+				.update(permissionSchemes)
+				.set({ projectIds: next, updatedAt: new Date() })
+				.where(eq(permissionSchemes.id, scheme.id));
+			scheme.projectIds = next;
+		}
+	});
 }
 
 export async function importPermissions(
