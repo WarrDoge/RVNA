@@ -212,6 +212,9 @@ export async function readMultipart(
 		if (!failure) {
 			failure = error instanceof HttpError ? error : malformedBody();
 		}
+		fail(failure);
+		// The writers must be gone before the caller unlinks their temp files.
+		await Promise.allSettled(pending);
 	}
 
 	if (failure) {
