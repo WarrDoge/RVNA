@@ -168,11 +168,13 @@ export async function fetchServiceDesks(
 							{ includeCount: "true" },
 						),
 						metricsEnabled
-							? client.getJson<JiraSlaMetricsResponse>(
-									`/rest/servicedesk/1/servicedesk/agent/${encodeURIComponent(desk.projectKey)}/sla/metrics`,
-									undefined,
-									{ headers: EXPERIMENTAL },
-								)
+							? client
+									.getJson<JiraSlaMetricsResponse>(
+										`/rest/servicedesk/1/servicedesk/agent/${encodeURIComponent(desk.projectKey)}/sla/metrics`,
+										undefined,
+										{ headers: EXPERIMENTAL },
+									)
+									.catch(() => ({}) as JiraSlaMetricsResponse)
 							: Promise.resolve({} as JiraSlaMetricsResponse),
 						fetchOpenAccess(client, desk.projectKey, options),
 					]);

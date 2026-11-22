@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 import type { JiraClient } from "../src/importer/jira.ts";
-import { fetchRequestSla } from "../src/importer/servicedesk.ts";
+import {
+	fetchRequestSla,
+	fetchServiceDesks,
+} from "../src/importer/servicedesk.ts";
 import type { JiraRequestSla } from "../src/importer/types.ts";
 
 describe("request SLA pagination", () => {
@@ -38,4 +41,43 @@ describe("request SLA pagination", () => {
 			{ start: 1, limit: 100 },
 		]);
 	});
+});
+
+test("a forbidden SLA metrics call does not abort the desk import", async () => {
+	const client = {
+		getJson: async (
+			path: string,
+			_params?: Record<string, string | number | boolean | undefined>,
+		) => {
+			if (path === "/rest/servicedeskapi/servicedesk") {
+				return {
+					values: [{ id: "1", projectKey: "DEMO", projectName: "Demo" }],
+					isLastPage: true,
+				};
+			}
+			if (path.endsWith("/requesttypegroup")) {
+				return { values: [], isLastPage: true };
+			}
+			if (path.endsWith("/requesttype")) {
+				return { values: [], isLastPage: true };
+			}
+			if (path.endsWith("/queue")) {
+				return { values: [], isLastPage: true };
+			}
+			if (path.includes("/sla/metrics")) {
+				throw Object.assign(new Error("forbidden"), { status: 403 });
+			}
+			if (path.includes("/settings/requestsecurity")) {
+				return { serviceDeskOpenAccess: true };
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	} as unknown as JiraClient;
+
+	const desks = await fetchServiceDesks(client, ["DEMO"], {
+		privateApis: true,
+	});
+	expect(desks).toHaveLength(1);
+	expect(desks[0]?.metrics).toEqual([]);
+	expect(desks[0]?.openAccess).toBe(true);
 });
