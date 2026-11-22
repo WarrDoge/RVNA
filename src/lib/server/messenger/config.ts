@@ -102,7 +102,13 @@ export async function saveMessengerToken(token: string) {
 	await ensureRow();
 	await db
 		.update(messengerConfig)
-		.set({ accessToken: encryptSecret(token), updatedAt: new Date() })
+		.set({
+			accessToken: encryptSecret(token),
+			botMatrixId: null,
+			serverName: null,
+			sinceToken: null,
+			updatedAt: new Date(),
+		})
 		.where(eq(messengerConfig.id, 1));
 }
 
@@ -110,7 +116,13 @@ export async function clearMessengerToken() {
 	await ensureRow();
 	await db
 		.update(messengerConfig)
-		.set({ accessToken: null, updatedAt: new Date() })
+		.set({
+			accessToken: null,
+			botMatrixId: null,
+			serverName: null,
+			sinceToken: null,
+			updatedAt: new Date(),
+		})
 		.where(eq(messengerConfig.id, 1));
 }
 
