@@ -10,6 +10,8 @@ export const userListSchema = z.array(userWithEmailSchema);
 
 export type UserListEntry = z.infer<typeof userWithEmailSchema>;
 
+const USER_SEARCH_LIMIT = 20;
+
 export async function searchUsers(
 	user: CurrentUser,
 	query: string,
@@ -30,21 +32,12 @@ export async function searchUsers(
 			username: users.username,
 			displayName: users.displayName,
 			avatarUrl: userAvatarSql(users.id),
-			email: users.email,
+			...(user.isAdmin ? { email: users.email } : {}),
 		})
 		.from(users)
 		.where(and(eq(users.active, true), match))
-		.orderBy(sql`lower(${users.displayName})`)
-		.limit(20);
+		.orderBy(sql`lower(${users.displayName})`, users.username)
+		.limit(USER_SEARCH_LIMIT);
 
-	return rows.map((row) =>
-		user.isAdmin
-			? row
-			: {
-					id: row.id,
-					username: row.username,
-					displayName: row.displayName,
-					avatarUrl: row.avatarUrl,
-				},
-	);
+	return rows;
 }
