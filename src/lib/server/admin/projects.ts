@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { realpath, rmdir, unlink } from "node:fs/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { lstat, realpath, rmdir, unlink } from "node:fs/promises";
+import { dirname, resolve, sep } from "node:path";
 import {
 	and,
 	asc,
@@ -711,11 +711,13 @@ export async function deleteAdminProject(
 
 async function containedPath(root: string, relative: string) {
 	const path = resolve(root, relative);
-	const real = await realpath(path).catch(async () => {
-		const parent = await realpath(dirname(path)).catch(() => null);
-		return parent ? join(parent, basename(path)) : null;
-	});
-	return real?.startsWith(root + sep) ? real : null;
+	const parent = dirname(path);
+	const [info, realParent] = await Promise.all([
+		lstat(path).catch(() => null),
+		realpath(parent).catch(() => null),
+	]);
+	if (!info || info.isSymbolicLink() || realParent !== parent) return null;
+	return path.startsWith(root + sep) ? path : null;
 }
 
 /** Best effort: drop attachment files (and their content directories) nothing references any more. */

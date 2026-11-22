@@ -1643,6 +1643,46 @@ describe("deleting projects", () => {
 		}
 	});
 
+	test("does not unlink the target of a symlink inside the attachments root", async () => {
+		const doomed = await makeProject("SI", { name: "Symlink inside" });
+		const doomedIssue = await createIssue(doomed.key, "symlink inside issue");
+		const keeper = await makeProject("SK", { name: "Symlink keeper" });
+		const keeperIssue = await createIssue(keeper.key, "symlink keeper issue");
+		const kept = await insertAttachment(
+			keeperIssue.id,
+			"kept inside content",
+			"kept-inside.txt",
+		);
+		const link = `inside-${run}`;
+		const linkPath = join(env.ATTACHMENTS_DIR, link);
+		await symlink(kept.path, linkPath, "file");
+		await db.insert(attachments).values({
+			sourceId: `${tag}:inside-symlink`,
+			issueId: doomedIssue.id,
+			fileName: "kept-inside.txt",
+			mimeType: "text/plain",
+			size: Buffer.byteLength("kept inside content"),
+			authorId: admin.id,
+			created: new Date(),
+			storagePath: link,
+			sha256: kept.sha256,
+		});
+
+		try {
+			const response = await injectAs(
+				app,
+				admin.session,
+				"DELETE",
+				`/api/admin/projects/${doomed.key}`,
+				{ confirmKey: doomed.key },
+			);
+			expect(response.statusCode).toBe(204);
+			expect((await stat(kept.path)).isFile()).toBe(true);
+		} finally {
+			await unlink(linkPath).catch(() => undefined);
+		}
+	});
+
 	test("keeps a content directory an upload has staged a file in", async () => {
 		const doomed = await makeProject("RC", { name: "Race doomed" });
 		const doomedIssue = await createIssue(doomed.key, "race doomed issue");
