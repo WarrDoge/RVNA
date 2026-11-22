@@ -16,12 +16,13 @@ import {
 import {
 	isExemptWriteRoute,
 	mutatingMethods,
+	projectIdForWrite,
 	rejectArchivedWriteFor,
 	resolvePreviousKeysFor,
 	routePattern,
 	writeRouteScopes,
 } from "../src/lib/server/project-keys.ts";
-import { users } from "../src/lib/server/schema.ts";
+import { attachments, users } from "../src/lib/server/schema.ts";
 import {
 	createProjectFixture,
 	dropProjectFixture,
@@ -38,7 +39,9 @@ const previousKey = `BACK${run.slice(0, 4).toUpperCase()}`;
 let app: TestApp;
 let client: Client;
 let projectId: string;
+let issueId: string;
 let issueKey: string;
+let otherIssueId: string;
 
 function event(method: string, routeId: string) {
 	return {
@@ -59,15 +62,23 @@ beforeAll(async () => {
 		issues: [{ summary: `Moved guard ${run}` }],
 	});
 	projectId = fixture.projectId;
+	issueId = fixture.issueIds[0] as string;
 	issueKey = fixture.issueKeys[0] as string;
 	await client.query(
 		"insert into project_previous_keys (project_id, key) values ($1, $2)",
 		[projectId, previousKey],
 	);
+	const other = await createProjectFixture(client, {
+		run: `${run}o`,
+		key: `OX${run.slice(0, 5).toUpperCase()}`,
+		issues: [{ summary: `Other moved guard ${run}` }],
+	});
+	otherIssueId = other.issueIds[0] as string;
 });
 
 afterAll(async () => {
 	await dropProjectFixture(client, run);
+	await dropProjectFixture(client, `${run}o`);
 	await cleanupTestData(run);
 	await client.end();
 	await app.close();
@@ -85,6 +96,88 @@ test("a previous project key is rewritten before the handler sees it", async () 
 	expect(params.key).toBe(key);
 });
 
+test("an imported previous key with an underscore resolves its issues", async () => {
+	const oldKey = `OLD_${run.slice(0, 4).toUpperCase()}`;
+	await client.query(
+		"insert into project_previous_keys (project_id, key) values ($1, $2)",
+		[projectId, oldKey],
+	);
+	const { resolvePreviousKey } = await import(
+		"../src/lib/server/project-keys.ts"
+	);
+	expect(await resolvePreviousKey(`${oldKey}-12`)).toBe(`${key}-12`);
+});
+
+test("the write guard reads the project from a form or a JSON body", async () => {
+	const form = new FormData();
+	form.set("project", key);
+	expect(
+		await projectIdForWrite({ body: form }, { kind: "body-project" }),
+	).toBe(projectId);
+	expect(
+		await projectIdForWrite(
+			{ body: { project: key } },
+			{ kind: "body-project" },
+		),
+	).toBe(projectId);
+});
+
+test("an attachment UUID resolves by primary key before its source id", async () => {
+	const shared = randomUUID();
+	await db.insert(attachments).values({
+		sourceId: shared,
+		issueId: otherIssueId,
+		fileName: "other.txt",
+		storagePath: "other",
+		sha256: "other",
+	});
+	await db.insert(attachments).values({
+		id: shared,
+		sourceId: `${run}:attachment`,
+		issueId,
+		fileName: "main.txt",
+		storagePath: "main",
+		sha256: "main",
+	});
+	expect(
+		await projectIdForWrite({ params: { id: shared } }, { kind: "attachment" }),
+	).toBe(projectId);
+});
+
+test("the archived guard covers the project-config writes", async () => {
+	await client.query("update projects set archived = true where id = $1", [
+		projectId,
+	]);
+	for (const route of [
+		"/plugins/servlet/project-config/:key/roles",
+		"/plugins/servlet/project-config/:key/summary",
+		"/plugins/servlet/project-config/:key/workflows",
+	]) {
+		expect(
+			await rejectArchivedWriteFor({
+				method: "POST",
+				route,
+				params: { key },
+			}),
+			route,
+		).toBe("This project is archived and read-only");
+	}
+	expect(isExemptWriteRoute("/plugins/servlet/messenger")).toBe(true);
+	expect(
+		isExemptWriteRoute("/plugins/servlet/project-config/X/workflows"),
+	).toBe(false);
+	await client.query("update projects set archived = false where id = $1", [
+		projectId,
+	]);
+	expect(
+		await rejectArchivedWriteFor({
+			method: "POST",
+			route: "/plugins/servlet/project-config/:key/workflows",
+			params: { key },
+		}),
+	).toBeNull();
+});
+
 test("the moved write guard rejects an archived project by SvelteKit route id", async () => {
 	await client.query("update projects set archived = true where id = $1", [
 		projectId,
@@ -98,6 +191,9 @@ test("the moved write guard rejects an archived project by SvelteKit route id", 
 			"/(app)/servicedesk/customer/portal/[id]/create/[requestTypeId]",
 		),
 	).toBe("/servicedesk/customer/portal/:id/create/:requestTypeId");
+	expect(routePattern("/optional/[[key]]")).toBe("/optional/:key");
+	expect(routePattern("/matched/[key=uuid]")).toBe("/matched/:key");
+	expect(routePattern("/rest/[...rest]")).toBe("/rest/:rest");
 	await expect(
 		prepareWrite(event("PATCH", "/api/issues/[key]"), { key: issueKey }, {}),
 	).rejects.toMatchObject({

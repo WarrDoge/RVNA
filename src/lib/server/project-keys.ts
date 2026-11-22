@@ -1,4 +1,4 @@
-import { eq, or } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "./db.ts";
 import {
@@ -14,7 +14,7 @@ import {
 	versions,
 } from "./schema.ts";
 
-const issueKeyPattern = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+const issueKeyPattern = /^([A-Za-z][A-Za-z0-9_]*)-(\d+)$/;
 const uuidPattern = z.uuid();
 
 /** Current key of the project that used `key` before, or null when `key` is current or unknown. */
@@ -55,16 +55,17 @@ type WriteRequest = {
 	body?: unknown;
 };
 
+function bodyField(body: unknown, name: string): unknown {
+	if (body instanceof FormData) return body.get(name);
+	if (body && typeof body === "object" && name in body) {
+		return (body as Record<string, unknown>)[name];
+	}
+	return undefined;
+}
+
 function bodyProject(body: unknown) {
-	if (body instanceof FormData) {
-		const value = body.get("project");
-		return typeof value === "string" ? value : null;
-	}
-	if (body && typeof body === "object" && "project" in body) {
-		const value = (body as { project?: unknown }).project;
-		return typeof value === "string" ? value : null;
-	}
-	return null;
+	const value = bodyField(body, "project");
+	return typeof value === "string" ? value : null;
 }
 
 function setBodyProject(body: unknown, value: string) {
@@ -166,12 +167,16 @@ export const writeRouteScopes: Record<string, WriteScope> = {
 		kind: "portal",
 	},
 	"POST /servicedesk/customer/portal/:id/:key": { kind: "issue" },
+	"POST /plugins/servlet/project-config/:key/roles": { kind: "project" },
+	"POST /plugins/servlet/project-config/:key/summary": { kind: "project" },
+	"POST /plugins/servlet/project-config/:key/workflows": { kind: "project" },
 };
 
 /** Prefixes whose mutating routes never write into a project. */
 export const exemptWritePrefixes = [
 	"/api/admin",
-	"/plugins/servlet",
+	"/plugins/servlet/gitlab",
+	"/plugins/servlet/messenger",
 	"/auth",
 	"/api/me",
 	"/api/search",
@@ -244,14 +249,7 @@ async function projectIdByIssueKey(key: string) {
 
 function boardRapidViewId(request: WriteRequest) {
 	const params = request.params as { rapidViewId?: unknown } | undefined;
-	const fromBody =
-		request.body instanceof FormData
-			? request.body.get("rapidView")
-			: request.body &&
-					typeof request.body === "object" &&
-					"rapidView" in request.body
-				? (request.body as { rapidView?: unknown }).rapidView
-				: undefined;
+	const fromBody = bodyField(request.body, "rapidView");
 	const value = params?.rapidViewId ?? fromBody;
 	if (value === undefined || value === null || value === "") return null;
 	const rapidViewId = Number(value);
@@ -285,15 +283,20 @@ export async function projectIdForWrite(
 		case "attachment": {
 			const id = keyParam(request);
 			if (id === "") return null;
+			if (uuidPattern.safeParse(id).success) {
+				const [row] = await db
+					.select({ projectId: issues.projectId })
+					.from(attachments)
+					.innerJoin(issues, eq(issues.id, attachments.issueId))
+					.where(eq(attachments.id, id))
+					.limit(1);
+				if (row) return row.projectId;
+			}
 			const [row] = await db
 				.select({ projectId: issues.projectId })
 				.from(attachments)
 				.innerJoin(issues, eq(issues.id, attachments.issueId))
-				.where(
-					uuidPattern.safeParse(id).success
-						? or(eq(attachments.id, id), eq(attachments.sourceId, id))
-						: eq(attachments.sourceId, id),
-				)
+				.where(eq(attachments.sourceId, id))
 				.limit(1);
 			return row?.projectId ?? null;
 		}
@@ -342,13 +345,19 @@ export async function projectIdForWrite(
 	}
 }
 
+export const ARCHIVED_PROJECT_MESSAGE =
+	"This project is archived and read-only";
+
 /** SvelteKit route ids use [key] and route groups; the write table uses neither. */
 export function routePattern(routeId: string) {
 	const path = routeId
 		.split("/")
 		.filter((segment) => segment !== "" && !/^\(.+\)$/.test(segment))
 		.join("/");
-	return `/${path}`.replace(/\[(?:\.\.\.)?([^\]]+)\]/g, ":$1");
+	return `/${path}`.replace(
+		/\[{1,2}(?:\.\.\.)?([^\]/=]+)(?:=[^\]]+)?\]{1,2}/g,
+		":$1",
+	);
 }
 
 /** The archived-project answer for a parsed route, or null when the write is allowed. */
@@ -372,5 +381,5 @@ export async function rejectArchivedWriteFor(input: {
 		.from(projects)
 		.where(eq(projects.id, projectId))
 		.limit(1);
-	return project?.archived ? "This project is archived and read-only" : null;
+	return project?.archived ? ARCHIVED_PROJECT_MESSAGE : null;
 }
