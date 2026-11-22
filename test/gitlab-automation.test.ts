@@ -699,3 +699,49 @@ describe("merge request triggers", () => {
 		await cleanupGitlabFixture(off);
 	});
 });
+
+describe("schema", () => {
+	test("repository links are indexed by repository", async () => {
+		const result = await pool.query<{ indexname: string }>(
+			"select indexname from pg_indexes where tablename = 'gitlab_project_repositories'",
+		);
+		expect(result.rows.map((row) => row.indexname)).toContain(
+			"gitlab_project_repositories_repository_idx",
+		);
+	});
+
+	test("deleting an issue keeps its automation audit trail", async () => {
+		const fixture = await createGitlabFixture(`${tag}keep`, {
+			key: `K${tag.slice(2, 7).toUpperCase()}`,
+		});
+		let eventId: string | undefined;
+		try {
+			const [event] = await db
+				.insert(gitlabAutomationEvents)
+				.values({
+					issueId: fixture.issueId,
+					kind: "smart_commit_comment",
+					status: "applied",
+					reason: null,
+				})
+				.returning();
+			eventId = event.id;
+
+			await db.delete(issues).where(eq(issues.id, fixture.issueId));
+
+			const [row] = await db
+				.select()
+				.from(gitlabAutomationEvents)
+				.where(eq(gitlabAutomationEvents.id, event.id));
+			expect(row).toBeDefined();
+			expect(row?.issueId).toBeNull();
+		} finally {
+			if (eventId) {
+				await db
+					.delete(gitlabAutomationEvents)
+					.where(eq(gitlabAutomationEvents.id, eventId));
+			}
+			await cleanupGitlabFixture(fixture);
+		}
+	});
+});

@@ -21,7 +21,8 @@ const timestamps = {
 		.defaultNow(),
 	updatedAt: timestamp("updated_at", { withTimezone: true })
 		.notNull()
-		.defaultNow(),
+		.defaultNow()
+		.$onUpdate(() => new Date()),
 };
 
 export const gitlabConfig = pgTable("gitlab_config", {
@@ -139,7 +140,7 @@ export const gitlabPipelines = pgTable(
 		...timestamps,
 	},
 	(table) => [
-		unique("gitlab_pipelines_repository_id_unique").on(
+		unique("gitlab_pipelines_repository_gitlab_id_unique").on(
 			table.repositoryId,
 			table.gitlabId,
 		),
@@ -224,7 +225,10 @@ export const gitlabProjectRepositories = pgTable(
 			.notNull()
 			.references(() => gitlabRepositories.id, { onDelete: "cascade" }),
 	},
-	(table) => [primaryKey({ columns: [table.projectId, table.repositoryId] })],
+	(table) => [
+		primaryKey({ columns: [table.projectId, table.repositoryId] }),
+		index("gitlab_project_repositories_repository_idx").on(table.repositoryId),
+	],
 );
 
 export const gitlabProjectSettings = pgTable("gitlab_project_settings", {
@@ -291,7 +295,7 @@ export const gitlabAutomationEvents = pgTable(
 			{ onDelete: "set null" },
 		),
 		issueId: uuid("issue_id").references(() => issues.id, {
-			onDelete: "cascade",
+			onDelete: "set null",
 		}),
 		kind: text("kind").notNull(),
 		status: text("status", { enum: ["applied", "ignored"] }).notNull(),
