@@ -652,3 +652,26 @@ test("falling back to a default user avatar clears the stored custom image", asy
 		code: "ENOENT",
 	});
 });
+
+test("falling back to a generic project avatar clears the stored custom logo", async () => {
+	const staleFile = `${"e".repeat(64)}.png`;
+	await writeFile(join(avatarsDir, staleFile), customProjectPng);
+	await pool.query(
+		"update projects set avatar_file = $1, avatar_url = $2 where id = $3",
+		[staleFile, systemProjectUrl, projectIds[1]],
+	);
+
+	await importJiraAvatars(client as never, {
+		baseUrl,
+		avatarsDir,
+		scope: scope(),
+	});
+
+	const stored = await rows();
+	expect(
+		stored.projects.find((row) => row.id === projectIds[1])?.avatar_file,
+	).toBeNull();
+	await expect(readFile(join(avatarsDir, staleFile))).rejects.toMatchObject({
+		code: "ENOENT",
+	});
+});
