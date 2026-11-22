@@ -29,9 +29,13 @@ export type IssuePanels = {
 	sla: z.infer<typeof slaSchema> | null;
 };
 
-async function loadSla(actor: CurrentUser, key: string) {
+async function loadSla(
+	actor: CurrentUser,
+	key: string,
+	context: Awaited<ReturnType<typeof requireBrowseIssue>>,
+) {
 	try {
-		return await deskIssueSla(actor, key);
+		return await deskIssueSla(actor, key, context);
 	} catch (cause) {
 		if (isHttpError(cause) && (cause.status === 403 || cause.status === 404)) {
 			return null;
@@ -43,12 +47,13 @@ async function loadSla(actor: CurrentUser, key: string) {
 export async function loadIssuePanels(
 	actor: CurrentUser,
 	key: string,
+	context?: Awaited<ReturnType<typeof requireBrowseIssue>>,
 ): Promise<IssuePanels> {
-	await requireBrowseIssue(actor, key);
+	const permission = context ?? (await requireBrowseIssue(actor, key));
 	const [request, development] = await Promise.all([
-		issueRequestPanel(actor, key),
-		getIssueDevelopment(actor, key),
+		issueRequestPanel(actor, key, permission),
+		getIssueDevelopment(actor, key, permission),
 	]);
-	const sla = request.portalId ? await loadSla(actor, key) : null;
+	const sla = request.isAgent ? await loadSla(actor, key, permission) : null;
 	return { development, request, sla };
 }
