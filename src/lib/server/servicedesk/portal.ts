@@ -416,7 +416,7 @@ export async function createRequest(
 		}
 	}
 	const needsUsers = [...arrayFields.values()].some(
-		(field) => field.type === "multiuser",
+		(field) => field.type === "multiuser" || field.type === "user",
 	);
 	const fieldUsers: CustomFieldUser[] = needsUsers
 		? await db
@@ -639,7 +639,22 @@ export async function createRequest(
 			custom[row.fieldId] = { value: wanted };
 			continue;
 		}
-		custom[row.fieldId] = wanted;
+		const field = arrayFields.get(row.fieldId);
+		if (!field) {
+			custom[row.fieldId] = wanted;
+			continue;
+		}
+		const validated = validateCustomValue(field, wanted, {
+			users: fieldUsers,
+		});
+		if (!validated.ok) {
+			return {
+				ok: false,
+				status: 400,
+				error: `${row.label}: ${validated.error}`,
+			};
+		}
+		if (validated.value !== null) custom[row.fieldId] = validated.value;
 	}
 
 	if (summary === "") {
