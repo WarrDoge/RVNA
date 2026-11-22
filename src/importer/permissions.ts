@@ -456,6 +456,7 @@ async function importSchemes(
 			raw: JiraPermissionScheme;
 		}
 	>();
+	const fetchedProjectIds = new Set<string>();
 	for (const key of projectKeys) {
 		const projectId = projectIds.get(key.toUpperCase());
 		if (!projectId) {
@@ -476,6 +477,7 @@ async function importSchemes(
 			);
 			continue;
 		}
+		fetchedProjectIds.add(projectId);
 		const row = schemeRow(projectId, scheme);
 		const existing = schemes.get(row.sourceId);
 		if (existing) {
@@ -488,24 +490,24 @@ async function importSchemes(
 		scheme.projectIds.sort();
 	}
 
-	if (!fullImport) {
-		const existingSchemes = await db
-			.select({
-				sourceId: permissionSchemes.sourceId,
-				projectIds: permissionSchemes.projectIds,
-			})
-			.from(permissionSchemes);
-		const bySource = new Map(
-			existingSchemes.map((scheme) => [scheme.sourceId, scheme]),
-		);
-		for (const scheme of schemes.values()) {
-			const existing = bySource.get(scheme.sourceId);
-			if (existing) {
-				scheme.projectIds = [
-					...new Set([...(existing.projectIds ?? []), ...scheme.projectIds]),
-				].sort();
-			}
-		}
+	const existingSchemes = await db
+		.select({
+			sourceId: permissionSchemes.sourceId,
+			projectIds: permissionSchemes.projectIds,
+		})
+		.from(permissionSchemes);
+	const bySource = new Map(
+		existingSchemes.map((scheme) => [scheme.sourceId, scheme]),
+	);
+	for (const scheme of schemes.values()) {
+		const existing = bySource.get(scheme.sourceId);
+		if (!existing) continue;
+		const existingIds = existing.projectIds ?? [];
+		// A project this run did not read keeps the link it already had.
+		const kept = fullImport
+			? existingIds.filter((id) => !fetchedProjectIds.has(id))
+			: existingIds;
+		scheme.projectIds = [...new Set([...scheme.projectIds, ...kept])].sort();
 	}
 
 	const schemeResult = await upsertRows(

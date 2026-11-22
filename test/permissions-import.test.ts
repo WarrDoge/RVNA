@@ -449,3 +449,65 @@ test("a failed role fetch keeps that project's actors out of the stale check", a
 		[fixtures[0].sourceId, fixtures[2].sourceId].sort(),
 	);
 });
+
+test("a full import of one project keeps another project's scheme link", async () => {
+	await db
+		.update(permissionSchemes)
+		.set({ projectIds: [projectId, projectIdB] })
+		.where(eq(permissionSchemes.sourceId, schemeSource));
+
+	await importPermissions(client(), {
+		projectKeys: [projectKey],
+		fullImport: true,
+		fetchGlobal: false,
+	});
+
+	const [scheme] = await db
+		.select({ projectIds: permissionSchemes.projectIds })
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.sourceId, schemeSource));
+	expect([...(scheme?.projectIds ?? [])].sort()).toEqual(
+		[projectId, projectIdB].sort(),
+	);
+});
+
+test("a failed scheme fetch keeps the project link that already exists", async () => {
+	await db
+		.update(permissionSchemes)
+		.set({ projectIds: [projectId, projectIdB] })
+		.where(eq(permissionSchemes.sourceId, schemeSource));
+
+	const partial: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			if (path.endsWith("/role")) return {} as T;
+			if (path === `/rest/api/2/project/${projectKey}/permissionscheme`) {
+				return {
+					id: schemeSource,
+					name: "Fixture scheme",
+					permissions: [],
+				} as T;
+			}
+			if (path === `/rest/api/2/project/${projectKeyB}/permissionscheme`) {
+				throw new Error("scheme unavailable");
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+
+	await importPermissions(partial, {
+		projectKeys: [projectKey, projectKeyB],
+		fullImport: true,
+		fetchGlobal: false,
+	});
+
+	const [scheme] = await db
+		.select({ projectIds: permissionSchemes.projectIds })
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.sourceId, schemeSource));
+	expect([...(scheme?.projectIds ?? [])].sort()).toEqual(
+		[projectId, projectIdB].sort(),
+	);
+});
