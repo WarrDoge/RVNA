@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { issueTypeRefSchema, statusRefSchema } from "./api-schemas.ts";
 import type { CurrentUser } from "./auth.ts";
+import { projectAvatarSql } from "./avatars.ts";
 import { db } from "./db.ts";
 import { viewerProjectIds } from "./permissions.ts";
 import { searchPages } from "./search-pages.ts";
@@ -56,10 +57,13 @@ export async function quickSearch(
 	const pattern = likePattern(query);
 	const prefix = `${pattern}%`;
 	const contains = `%${pattern}%`;
-	const visible = await viewerProjectIds(user);
-	const agentProjects = await agentProjectIds(user);
+	const [visible, agentProjects] = await Promise.all([
+		viewerProjectIds(user),
+		agentProjectIds(user),
+	]);
 
-	const issueRows = await db.execute(sql`
+	const [issueRows, projectRows, pageHits] = await Promise.all([
+		db.execute(sql`
 		select
 			issues.id,
 			issues.key,
@@ -96,13 +100,12 @@ export async function quickSearch(
 			issues.updated desc nulls last,
 			issues.key
 		limit ${ISSUE_LIMIT}
-	`);
-
-	const projectRows = await db.execute(sql`
+	`),
+		db.execute(sql`
 		select
 			projects.key,
 			projects.name,
-			'/api/avatars/projects/' || projects.id::text as avatar_url
+			${projectAvatarSql(sql`projects.id`)} as avatar_url
 		from projects
 		where
 			projects.archived = false
@@ -119,7 +122,9 @@ export async function quickSearch(
 			end,
 			projects.name
 		limit ${PROJECT_LIMIT}
-	`);
+	`),
+		searchPages(user, query, PAGE_LIMIT),
+	]);
 
 	return {
 		issues: (issueRows.rows as Record<string, unknown>[]).map((row) => ({
@@ -145,7 +150,7 @@ export async function quickSearch(
 			name: String(row.name),
 			avatarUrl: row.avatar_url === null ? null : String(row.avatar_url),
 		})),
-		pages: (await searchPages(user, query, PAGE_LIMIT)).pages.map((page) => ({
+		pages: pageHits.pages.map((page) => ({
 			id: page.id,
 			title: page.title,
 			spaceKey: page.spaceKey,
