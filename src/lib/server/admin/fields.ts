@@ -674,12 +674,24 @@ export async function deleteCustomField(
 
 	const result = await db.transaction(async (tx) => {
 		const stored = await lockStoredValues(tx, from);
+		const conflicts = stored.filter((issue) => {
+			const current = issue.custom[to.sourceId];
+			return current !== null && current !== undefined;
+		});
+		if (conflicts.length > 0) {
+			return {
+				ok: false as const,
+				reason: "conflict" as const,
+				count: conflicts.length,
+			};
+		}
 		const plan = stored.map((issue) => ({
 			id: issue.id,
 			...convertFieldValue(from, to, issue.custom[from.sourceId]),
 		}));
 		const missing = [...new Set(plan.flatMap((step) => step.missing))];
-		if (missing.length > 0) return { ok: false as const, missing };
+		if (missing.length > 0)
+			return { ok: false as const, reason: "missing" as const, missing };
 
 		for (const step of plan) {
 			const issue = stored.find((item) => item.id === step.id);
@@ -715,6 +727,12 @@ export async function deleteCustomField(
 	});
 
 	if (!result.ok) {
+		if (result.reason === "conflict") {
+			throw new HttpError(
+				409,
+				`${result.count} issue${result.count === 1 ? " already has" : "s already have"} a value in the target field. Clear ${result.count === 1 ? "it" : "them"} before migrating.`,
+			);
+		}
 		throw new HttpError(
 			400,
 			`The target field has no option ${result.missing.map((value) => `"${value}"`).join(", ")}`,

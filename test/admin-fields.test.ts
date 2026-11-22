@@ -1221,6 +1221,44 @@ describe("custom field administration", () => {
 		expect(empty.statusCode).toBe(409);
 	});
 
+	test("a field migration refuses to overwrite an existing target value", async () => {
+		const source = await createField({
+			name: `${tag} Conflict source`,
+			type: "text",
+		});
+		const target = await createField({
+			name: `${tag} Conflict target`,
+			type: "text",
+		});
+		await setContexts(source.id, [{ projectId }]);
+		await setContexts(target.id, [{ projectId }]);
+
+		const created = await createIssue({
+			customFields: {
+				[source.id]: "source value",
+				[target.id]: "target value",
+			},
+		});
+		expectStatus(created, 201);
+		const issue = created.json();
+
+		const refused = await inject(
+			"DELETE",
+			`/api/admin/custom-fields/${source.id}?migrateTo=${target.id}`,
+		);
+		expect(refused.statusCode).toBe(409);
+		expect(refused.json().error).toContain("target field");
+
+		const after = await detail(issue.key);
+		const values = new Map(
+			(after.editableCustomFields as { id: string; value: unknown }[]).map(
+				(field) => [field.id, field.value],
+			),
+		);
+		expect(values.get(source.id)).toBe("source value");
+		expect(values.get(target.id)).toBe("target value");
+	});
+
 	test("a select field can migrate to another select by option value", async () => {
 		const source = await createField({
 			name: `${tag} Migrate from`,
