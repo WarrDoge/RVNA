@@ -23,6 +23,20 @@ import {
 } from "./route-inventory.ts";
 import type { TestApp } from "./server.ts";
 
+test("the admin page matcher covers every administration address", () => {
+	expect(
+		isAdminPagePath("/plugins/servlet/project-config/DEMO/workflows"),
+	).toBe(true);
+	expect(isAdminPagePath("/plugins/servlet/project-config/DEMO/summary")).toBe(
+		false,
+	);
+	expect(isAdminPagePath("/plugins/servlet/project-config/DEMO/roles")).toBe(
+		false,
+	);
+	expect(isAdminPagePath("/sk-admin")).toBe(true);
+	expect(isAdminPagePath("/secure/project")).toBe(true);
+});
+
 const run = newRun();
 let app: TestApp;
 let admin: TestUser;
