@@ -123,6 +123,10 @@ function clientFor(
 		const url = new URL(String(input));
 		const path = url.pathname;
 		calls.push(`${path}${url.search}`);
+		// These list endpoints page from zero and the fixture has one page.
+		if (Number(url.searchParams.get("start") ?? 0) > 0) {
+			return Response.json({ results: [] });
+		}
 		if (path === "/rest/api/user/list") {
 			return Response.json({ results: directoryUsers });
 		}

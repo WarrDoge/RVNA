@@ -39,6 +39,7 @@ export const COMMENT_EXPAND = [
 ].join(",");
 
 const PAGE_SIZE = 100;
+const MAX_PAGES = 1000;
 
 export class ConfluenceClient extends GetOnlyClient {
 	constructor(options: GetOnlyClientOptions) {
@@ -51,17 +52,21 @@ export class ConfluenceClient extends GetOnlyClient {
 	): Promise<T[]> {
 		const collected: T[] = [];
 		let start = 0;
-		for (;;) {
+		for (let pageIndex = 0; pageIndex < MAX_PAGES; pageIndex++) {
 			const page = await this.getJson<ConfluencePaged<T>>(path, {
 				...params,
 				start,
 				limit: PAGE_SIZE,
 			});
-			collected.push(...page.results);
-			if (page.results.length < PAGE_SIZE) break;
-			start += page.results.length;
+			const results = page.results ?? [];
+			collected.push(...results);
+			if (results.length === 0) return collected;
+			if (page._links && !page._links.next) return collected;
+			start += results.length;
 		}
-		return collected;
+		throw new Error(
+			`pagination for ${path} did not finish after ${MAX_PAGES} pages`,
+		);
 	}
 
 	async listSpaces(status: "current" | "archived") {

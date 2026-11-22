@@ -86,6 +86,7 @@ export interface ConfluencePaged<T> {
 	start?: number;
 	limit?: number;
 	size?: number;
+	_links?: { next?: string };
 }
 
 export interface ConfluenceSpacePermissions {
