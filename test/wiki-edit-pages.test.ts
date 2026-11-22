@@ -357,6 +357,21 @@ describe("update and versions", () => {
 		expect(trashed.status).toBe(409);
 	});
 
+	test("a link to another space resolves with a lower-case key", async () => {
+		const other = await wiki.space("L");
+		await wiki.grant(other.id, { userId: author.id }, ["read", "create"]);
+		const target = await wiki.page(author, other.key, "Cross-space target");
+		const page = await wiki.page(author, space.key, "Cross-space linker", {
+			bodyDoc: pageLinkDoc("Cross-space target", other.key.toLowerCase()),
+		});
+		const [row] = await rows("select body_html from pages where id = $1", [
+			page.id,
+		]);
+		expect(row.body_html).toContain(
+			`/pages/viewpage.action?pageId=${target.id}`,
+		);
+	});
+
 	test("links to existing pages get their href, unknown ones the create fallback", async () => {
 		const target = await wiki.page(author, space.key, "Link target");
 		const page = await wiki.page(author, space.key, "Linker", {

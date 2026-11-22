@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, or } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
 	collectDocRefs,
 	docToHtml,
@@ -17,6 +17,7 @@ import {
 	pageVersions,
 	spaces,
 } from "../schema-wiki.ts";
+import { pageUrl } from "../wiki/data.ts";
 import { type Executor, fail, newSourceId, type PageRow } from "./common.ts";
 
 export type Body = {
@@ -40,7 +41,6 @@ export function docOf(body: {
 	return body.bodyStorage ? storageToDoc(body.bodyStorage) : emptyDoc();
 }
 
-const pageHref = (id: string) => `/pages/viewpage.action?pageId=${id}`;
 export const attachmentUrl = (id: string) => `/api/wiki/attachments/${id}`;
 
 /** Bulk-resolves the page links and attachment images of a document into hrefs. */
@@ -52,10 +52,12 @@ async function htmlContext(
 ): Promise<HtmlContext> {
 	const refs = collectDocRefs(doc, spaceKey);
 	const titlesBySpace = new Map<string, Set<string>>();
+	const normalizeSpaceKey = (key: string) => key.toLowerCase();
 	const want = (key: string | undefined, title: string) => {
-		const set = titlesBySpace.get(key ?? spaceKey) ?? new Set<string>();
+		const normalized = normalizeSpaceKey(key ?? spaceKey);
+		const set = titlesBySpace.get(normalized) ?? new Set<string>();
 		set.add(title);
-		titlesBySpace.set(key ?? spaceKey, set);
+		titlesBySpace.set(normalized, set);
 	};
 	for (const ref of refs.pages) want(ref.spaceKey, ref.title);
 	for (const ref of refs.attachments) {
@@ -63,7 +65,8 @@ async function htmlContext(
 	}
 
 	const pageIds = new Map<string, string>();
-	const mapKey = (key: string, title: string) => `${key}\n${title}`;
+	const mapKey = (key: string, title: string) =>
+		`${normalizeSpaceKey(key)}\n${title}`;
 	if (titlesBySpace.size > 0) {
 		const rows = await ex
 			.select({ id: pages.id, title: pages.title, key: spaces.key })
@@ -74,7 +77,10 @@ async function htmlContext(
 					eq(pages.status, "current"),
 					or(
 						...[...titlesBySpace].map(([key, titles]) =>
-							and(eq(spaces.key, key), inArray(pages.title, [...titles])),
+							and(
+								sql`lower(${spaces.key}) = ${key}`,
+								inArray(pages.title, [...titles]),
+							),
 						),
 					),
 				),
@@ -120,7 +126,7 @@ async function htmlContext(
 		defaultSpaceKey: spaceKey,
 		pageHref: (ref) => {
 			const id = pageIds.get(mapKey(ref.spaceKey ?? spaceKey, ref.title));
-			return id ? pageHref(id) : null;
+			return id ? pageUrl(id) : null;
 		},
 		attachmentHref: (ref) => {
 			const host = hostOf(ref);
@@ -246,7 +252,6 @@ export async function loadVersion(
 		.where(
 			and(eq(pageVersions.pageId, pageId), eq(pageVersions.number, number)),
 		)
-		.orderBy(desc(pageVersions.number))
 		.limit(1);
 	return row ?? fail(404, `Version ${number} not found`);
 }
