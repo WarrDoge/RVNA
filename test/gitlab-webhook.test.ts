@@ -159,7 +159,7 @@ describe("webhook authentication", () => {
 		);
 		expect(response.statusCode).toBe(202);
 		expect(constantTimeEqual).toHaveBeenCalledWith(secret, secret);
-		await waitForDelivery(`${tag}:timing`);
+		await waitForDelivery(`Push Hook:${tag}:timing`);
 	});
 });
 
@@ -181,7 +181,7 @@ describe("webhook delivery", () => {
 			`${tag}:many`,
 		);
 		expect(response.statusCode).toBe(202);
-		const processed = await waitForDelivery(`${tag}:many`);
+		const processed = await waitForDelivery(`Push Hook:${tag}:many`);
 		expect(processed.status).toBe("processed");
 
 		const stored = await db
@@ -247,12 +247,74 @@ describe("webhook delivery", () => {
 			expect(response.statusCode).toBe(202);
 			expect(attempt).toBeLessThanOrEqual(2);
 		}
-		await waitForDelivery(uuid);
+		await waitForDelivery(`Push Hook:${uuid}`);
 		const rows = await db
 			.select()
 			.from(gitlabDeliveries)
-			.where(eq(gitlabDeliveries.idempotencyKey, uuid));
+			.where(eq(gitlabDeliveries.idempotencyKey, `Push Hook:${uuid}`));
 		expect(rows).toHaveLength(1);
+	});
+
+	test("an empty idempotency header does not collapse unrelated deliveries", async () => {
+		const branchOne = `${tag}:blank-one`;
+		const branchTwo = `${tag}:blank-two`;
+		for (const branch of [branchOne, branchTwo]) {
+			const response = await app.inject({
+				method: "POST",
+				url: "/api/integrations/gitlab/webhook",
+				headers: {
+					"x-gitlab-token": secret,
+					"x-gitlab-event": "Push Hook",
+					"x-gitlab-event-uuid": "",
+					"content-type": "application/json",
+				},
+				payload: pushPayload(fixture, branch, [
+					{ sha: `${branch.length}`.padEnd(40, "a"), title: branch },
+				]) as never,
+			});
+			expect(response.statusCode).toBe(202);
+		}
+		const rows = await db
+			.select()
+			.from(gitlabDeliveries)
+			.where(eq(gitlabDeliveries.event, "Push Hook"));
+		const branches = new Set(
+			rows
+				.map((row) => (row.payload as { ref?: string }).ref)
+				.filter((ref): ref is string => typeof ref === "string"),
+		);
+		expect(branches.has(`refs/heads/${branchOne}`)).toBe(true);
+		expect(branches.has(`refs/heads/${branchTwo}`)).toBe(true);
+	});
+
+	test("the same idempotency key on different events stays separate", async () => {
+		const key = `${tag}:shared-key`;
+		await delivery(
+			app,
+			secret,
+			"Push Hook",
+			pushPayload(fixture, `${tag}:shared-push`, [
+				{ sha: "5".repeat(40), title: "shared push" },
+			]),
+			key,
+		);
+		await delivery(
+			app,
+			secret,
+			"Tag Push Hook",
+			{ object_kind: "tag_push", ref: "refs/tags/v1" },
+			key,
+		);
+		const rows = await db
+			.select()
+			.from(gitlabDeliveries)
+			.where(eq(gitlabDeliveries.idempotencyKey, `Push Hook:${key}`));
+		expect(rows).toHaveLength(1);
+		const tags = await db
+			.select()
+			.from(gitlabDeliveries)
+			.where(eq(gitlabDeliveries.idempotencyKey, `Tag Push Hook:${key}`));
+		expect(tags).toHaveLength(1);
 	});
 
 	test("accepts a system hook push whose project has no id", async () => {
@@ -287,7 +349,7 @@ describe("webhook delivery", () => {
 			} as never,
 		});
 		expect(response.statusCode).toBe(202);
-		const processed = await waitForDelivery(`${tag}:system-push`);
+		const processed = await waitForDelivery(`System Hook:${tag}:system-push`);
 		expect(processed.status).toBe("processed");
 	});
 
@@ -305,7 +367,7 @@ describe("webhook delivery", () => {
 			]),
 			`${tag}:missing`,
 		);
-		await waitForDelivery(`${tag}:missing`);
+		await waitForDelivery(`Push Hook:${tag}:missing`);
 		const after = await issueDevelopment(fixture.issueKey);
 		expect(after?.counts.commits).toBe(before?.counts.commits);
 	});
@@ -326,7 +388,7 @@ describe("webhook delivery", () => {
 			`${tag}:idempotent`,
 		);
 		expect(first.statusCode).toBe(202);
-		await waitForDelivery(`${tag}:idempotent`);
+		await waitForDelivery(`Push Hook:${tag}:idempotent`);
 
 		const second = await delivery(
 			app,
@@ -340,7 +402,9 @@ describe("webhook delivery", () => {
 		const deliveries = await db
 			.select()
 			.from(gitlabDeliveries)
-			.where(eq(gitlabDeliveries.idempotencyKey, `${tag}:idempotent`));
+			.where(
+				eq(gitlabDeliveries.idempotencyKey, `Push Hook:${tag}:idempotent`),
+			);
 		expect(deliveries).toHaveLength(1);
 
 		const branches = await db
@@ -366,7 +430,7 @@ describe("webhook delivery", () => {
 			`${tag}:mr-open`,
 		);
 		expect(open.statusCode).toBe(202);
-		await waitForDelivery(`${tag}:mr-open`);
+		await waitForDelivery(`Merge Request Hook:${tag}:mr-open`);
 
 		const approved = await delivery(
 			app,
@@ -383,7 +447,7 @@ describe("webhook delivery", () => {
 			`${tag}:mr-approved`,
 		);
 		expect(approved.statusCode).toBe(202);
-		await waitForDelivery(`${tag}:mr-approved`);
+		await waitForDelivery(`Merge Request Hook:${tag}:mr-approved`);
 
 		const afterApproval = await db
 			.select()
@@ -408,7 +472,7 @@ describe("webhook delivery", () => {
 			`${tag}:mr-merged`,
 		);
 		expect(merged.statusCode).toBe(202);
-		await waitForDelivery(`${tag}:mr-merged`);
+		await waitForDelivery(`Merge Request Hook:${tag}:mr-merged`);
 
 		const development = await issueDevelopment(fixture.issueKey);
 		expect(development?.counts.mergeRequests).toBe(1);
@@ -439,7 +503,7 @@ describe("webhook delivery", () => {
 			`${tag}:pipeline`,
 		);
 		expect(response.statusCode).toBe(202);
-		await waitForDelivery(`${tag}:pipeline`);
+		await waitForDelivery(`Pipeline Hook:${tag}:pipeline`);
 
 		const development = await issueDevelopment(fixture.issueKey);
 		expect(development?.latestPipeline?.status).toBe("success");
@@ -457,7 +521,7 @@ describe("webhook delivery", () => {
 			`${tag}:unknown`,
 		);
 		expect(unknown.statusCode).toBe(202);
-		const unknownDelivery = await waitForDelivery(`${tag}:unknown`);
+		const unknownDelivery = await waitForDelivery(`Issue Hook:${tag}:unknown`);
 		expect(unknownDelivery.status).toBe("ignored");
 		expect(unknownDelivery.reason).toContain("unknown event");
 
@@ -469,7 +533,7 @@ describe("webhook delivery", () => {
 			`${tag}:note`,
 		);
 		expect(note.statusCode).toBe(202);
-		const noteDelivery = await waitForDelivery(`${tag}:note`);
+		const noteDelivery = await waitForDelivery(`Note Hook:${tag}:note`);
 		expect(noteDelivery.status).toBe("ignored");
 
 		const tagPush = await delivery(
@@ -480,7 +544,7 @@ describe("webhook delivery", () => {
 			`${tag}:tag`,
 		);
 		expect(tagPush.statusCode).toBe(202);
-		const tagDelivery = await waitForDelivery(`${tag}:tag`);
+		const tagDelivery = await waitForDelivery(`Tag Push Hook:${tag}:tag`);
 		expect(tagDelivery.status).toBe("ignored");
 	});
 });

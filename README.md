@@ -1311,10 +1311,10 @@ Create a webhook in GitLab with these settings:
 - SSL verification: on
 
 The webhook authenticates only with `X-Gitlab-Token`, answers 202 and processes the delivery in a
-`pg-boss` job, so GitLab's 10 second timeout is never at risk. Deliveries are idempotent on
-`Idempotency-Key` (or `X-Gitlab-Event-UUID`). Project settings decide which repositories are linked,
-which one is the default for "Create branch", and whether smart commits and merge request triggers
-are on.
+`pg-boss` job, so GitLab's 10 second timeout is never at risk. Deliveries are idempotent on the event
+and `Idempotency-Key` (or `X-Gitlab-Event-UUID`); an empty or oversized key falls back to the payload
+hash. Project settings decide which repositories are linked, which one is the default for "Create
+branch", and whether smart commits and merge request triggers are on.
 
 ```sh
 npm run gitlab:backfill -- --project group/project [--days 90]

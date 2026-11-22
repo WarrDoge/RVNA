@@ -203,11 +203,13 @@ export async function acceptGitlabWebhook(
 	}
 
 	const event = input.event;
+	const providedKey = input.providedKey?.trim() ?? "";
 	const idempotencyKey =
-		input.providedKey ??
-		`body:${event}:${createHash("sha256")
-			.update(JSON.stringify(payload))
-			.digest("hex")}`;
+		providedKey !== "" && providedKey.length <= 255
+			? `${event}:${providedKey}`
+			: `body:${event}:${createHash("sha256")
+					.update(JSON.stringify(payload))
+					.digest("hex")}`;
 
 	const [created] = await db
 		.insert(gitlabDeliveries)

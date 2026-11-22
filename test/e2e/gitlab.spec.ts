@@ -132,7 +132,7 @@ test.afterAll(async () => {
 	]);
 	await client.query(
 		"delete from gitlab_deliveries where idempotency_key like $1",
-		[`${tag}%`],
+		[`%${tag}%`],
 	);
 	await client.query("delete from workflows where source_id like $1", [
 		`${tag}%`,
@@ -258,7 +258,7 @@ test("an admin configures GitLab and the issue shows development activity", asyn
 		const rows = await client.query<{ status: string }>(
 			`select status from gitlab_deliveries
 			 where idempotency_key = any($1)`,
-			[[secretKey, `${tag}:mr`]],
+			[[`Push Hook:${secretKey}`, `Merge Request Hook:${tag}:mr`]],
 		);
 		if (
 			rows.rows.length === 2 &&
