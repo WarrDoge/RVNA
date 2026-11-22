@@ -116,3 +116,23 @@ describe("SLA rebuild scoping", () => {
 		]);
 	});
 });
+
+test("two goals of one metric may use the default sequence", async () => {
+	const { rows: metrics } = await pool.query<{ id: string }>(
+		"select id from sla_metrics where source_id = 'slarb-m1'",
+	);
+	const { rows: calendars } = await pool.query<{ id: string }>(
+		"select id from sla_calendars where source_id = 'slarb-cal'",
+	);
+	if (!metrics[0] || !calendars[0]) throw new Error("fixture missing");
+
+	await pool.query(
+		`insert into sla_goals (source_id, metric_id, jql, goal_minutes, calendar_id)
+		 values ('slarb-g3', $1, '', 60, $2), ('slarb-g4', $1, '', 120, $2)`,
+		[metrics[0].id, calendars[0].id],
+	);
+	const { rows } = await pool.query<{ sequence: number }>(
+		"select sequence from sla_goals where source_id in ('slarb-g3', 'slarb-g4') order by source_id",
+	);
+	expect(rows.map((row) => row.sequence)).toEqual([0, 0]);
+});

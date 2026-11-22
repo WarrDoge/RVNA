@@ -197,6 +197,13 @@
       "when": 1795347443328,
       "tag": "0027_fantastic_lady_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1795347724026,
+      "tag": "0028_open_amphibian",
+      "breakpoints": true
     }
   ]
 }

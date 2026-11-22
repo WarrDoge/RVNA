@@ -204,10 +204,7 @@ export const slaGoals = pgTable(
 		...importedAt,
 	},
 	(table) => [
-		unique("sla_goals_metric_sequence_unique").on(
-			table.metricId,
-			table.sequence,
-		),
+		index("sla_goals_metric_sequence_idx").on(table.metricId, table.sequence),
 	],
 );
 
