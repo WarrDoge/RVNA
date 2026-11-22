@@ -5,6 +5,7 @@ import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import {
+	BUILTIN_PROJECT_ROLES,
 	DEFAULT_SCHEME_GRANTS,
 	PERMISSION_KEYS,
 	requireAdminActor,
@@ -152,7 +153,7 @@ async function roleRefs() {
 		.from(projectRoleActors);
 	const byId = new Map<string, { id: string; name: string }>();
 	for (const row of rows) byId.set(row.id.toLowerCase(), row);
-	for (const name of ["admin", "member", "viewer"]) {
+	for (const name of BUILTIN_PROJECT_ROLES) {
 		if (!byId.has(name)) byId.set(name, { id: name, name });
 	}
 	return [...byId.values()].sort((left, right) =>
