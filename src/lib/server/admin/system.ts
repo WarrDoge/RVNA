@@ -5,17 +5,20 @@ import {
 	eq,
 	gte,
 	ilike,
+	lt,
 	lte,
 	or,
 	type SQL,
 	sql,
 } from "drizzle-orm";
 import { z } from "zod";
+import { endOfDay, startOfDay } from "#lib/dates.ts";
 import type { CurrentUser } from "../auth.ts";
 import { db, pool } from "../db.ts";
 import { env } from "../env.ts";
 import { HttpError } from "../http.ts";
 import { requireAdminActor } from "../permissions.ts";
+import { dateContext } from "../request-context.ts";
 import { issueTypes, priorities } from "../schema.ts";
 import { appSettings, auditLog } from "../schema-admin.ts";
 import {
@@ -147,11 +150,21 @@ function auditWhere(filters: AuditFilters) {
 	if (filters.entityType) {
 		conditions.push(eq(auditLog.entityType, filters.entityType));
 	}
+	const timeZone = dateContext().timeZone;
 	if (filters.from) {
-		conditions.push(gte(auditLog.createdAt, new Date(filters.from)));
+		const from = /^\d{4}-\d{2}-\d{2}$/.test(filters.from)
+			? startOfDay(filters.from, timeZone)
+			: filters.from;
+		conditions.push(gte(auditLog.createdAt, new Date(from)));
 	}
 	if (filters.to) {
-		conditions.push(lte(auditLog.createdAt, new Date(filters.to)));
+		if (/^\d{4}-\d{2}-\d{2}$/.test(filters.to)) {
+			const next = new Date(endOfDay(filters.to, timeZone));
+			next.setUTCMilliseconds(next.getUTCMilliseconds() + 1);
+			conditions.push(lt(auditLog.createdAt, next));
+		} else {
+			conditions.push(lte(auditLog.createdAt, new Date(filters.to)));
+		}
 	}
 	if (filters.query) {
 		const pattern = `%${escapeLike(filters.query)}%`;

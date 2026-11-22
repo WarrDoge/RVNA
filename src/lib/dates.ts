@@ -221,21 +221,25 @@ function dateParts(value: string | null | undefined) {
 }
 
 /** The first instant of a date-only value in the user's zone. */
-export function startOfDay(value: string | null | undefined) {
+export function startOfDay(
+	value: string | null | undefined,
+	timeZone = context().timeZone,
+) {
 	const parts = dateParts(value);
 	if (!parts) return "";
-	const { timeZone } = context();
 	return new Date(
 		zonedMidnight(parts.year, parts.month, parts.day, timeZone),
 	).toISOString();
 }
 
 /** The last instant of a date-only value in the user's zone. */
-export function endOfDay(value: string | null | undefined) {
+export function endOfDay(
+	value: string | null | undefined,
+	timeZone = context().timeZone,
+) {
 	const parts = dateParts(value);
 	if (!parts) return "";
 	const next = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + 1));
-	const { timeZone } = context();
 	return new Date(
 		zonedMidnight(
 			next.getUTCFullYear(),

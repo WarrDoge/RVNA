@@ -674,6 +674,45 @@ describe("audit log", () => {
 		expect(dayOnly.total).toBeGreaterThanOrEqual(13);
 	});
 
+	test("treats a date-only range as whole days", async () => {
+		const action = `${auditTag}.boundary`;
+		const row = (createdAt: string, summary: string) => ({
+			createdAt: new Date(createdAt),
+			actorName: `Test admin ${run}`,
+			action,
+			entityType: `${auditTag}-project`,
+			entityId: null,
+			summary,
+		});
+		await db
+			.insert(auditLog)
+			.values([
+				row("2026-01-31T10:00:00Z", "inside the UTC day"),
+				row("2026-01-31T23:30:00Z", "late in the UTC day"),
+				row("2026-02-01T00:30:00Z", "after the UTC day"),
+			]);
+		const wholeDay = await app.inject({
+			method: "GET",
+			url: `/api/admin/audit?action=${action}&from=2026-01-31&to=2026-01-31`,
+			cookies: { sid: admin.session, tz: "UTC" },
+			headers: { "x-requested-with": "rvna" },
+		});
+		expect(wholeDay.statusCode).toBe(200);
+		expect(json<{ total: number }>(wholeDay).total).toBe(2);
+
+		await db
+			.insert(auditLog)
+			.values(row("2026-01-31T05:00:00Z", "previous day in Los Angeles"));
+		const localDay = await app.inject({
+			method: "GET",
+			url: `/api/admin/audit?action=${action}&from=2026-01-31`,
+			cookies: { sid: admin.session, tz: "America/Los_Angeles" },
+			headers: { "x-requested-with": "rvna" },
+		});
+		expect(localDay.statusCode).toBe(200);
+		expect(json<{ total: number }>(localDay).total).toBe(3);
+	});
+
 	test("rejects an unparsable date", async () => {
 		const response = await injectAs(
 			app,
