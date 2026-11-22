@@ -21,5 +21,8 @@ export function truncate(value: string | null | undefined, max = 300) {
 	if (!value) return null;
 	const text = value.trim();
 	if (text === "") return null;
-	return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+	const characters = [...text];
+	return characters.length > max
+		? `${characters.slice(0, max - 1).join("")}…`
+		: text;
 }
