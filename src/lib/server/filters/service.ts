@@ -575,17 +575,6 @@ export async function updateFilter(
 			"Only the owner or an administrator can change this filter",
 		);
 	}
-
-	const existing = await loadShareIds(row.id);
-	const visible = await visibleShareIds(actor);
-	const shareError = await validateShares(
-		actor,
-		body.sharedProjectIds,
-		body.sharedGroupIds,
-		existing,
-		visible,
-	);
-	if (shareError) throw new HttpError(400, shareError);
 	if (
 		body.name === undefined &&
 		body.description === undefined &&
@@ -597,28 +586,54 @@ export async function updateFilter(
 	) {
 		throw new HttpError(400, "Nothing to change");
 	}
+	const visible = await visibleShareIds(actor);
 
-	await db
-		.update(filters)
-		.set({
-			...(body.name === undefined ? {} : { name: body.name }),
-			...(body.description === undefined
-				? {}
-				: { description: body.description }),
-			...(body.jql === undefined ? {} : { jql: body.jql }),
-			...(body.columns === undefined ? {} : { columns: body.columns }),
-			...(body.shared === undefined ? {} : { shared: body.shared }),
-			updatedAt: new Date(),
-		})
-		.where(eq(filters.id, row.id));
-	await replaceShares(
-		row.id,
-		body.sharedProjectIds,
-		body.sharedGroupIds,
-		visible,
-	);
+	const id2 = await db.transaction(async (tx) => {
+		const [row] = await tx
+			.select()
+			.from(filters)
+			.where(eq(filters.id, id))
+			.for("update");
+		if (!row) throw new HttpError(404, "Filter not found");
+		if (row.ownerId !== actor.id && !actor.isAdmin) {
+			throw new HttpError(
+				403,
+				"Only the owner or an administrator can change this filter",
+			);
+		}
+		const existing = await loadShareIds(tx, row.id);
+		const shareError = await validateShares(
+			actor,
+			body.sharedProjectIds,
+			body.sharedGroupIds,
+			existing,
+			visible,
+		);
+		if (shareError) throw new HttpError(400, shareError);
+		await tx
+			.update(filters)
+			.set({
+				...(body.name === undefined ? {} : { name: body.name }),
+				...(body.description === undefined
+					? {}
+					: { description: body.description }),
+				...(body.jql === undefined ? {} : { jql: body.jql }),
+				...(body.columns === undefined ? {} : { columns: body.columns }),
+				...(body.shared === undefined ? {} : { shared: body.shared }),
+				updatedAt: new Date(),
+			})
+			.where(eq(filters.id, row.id));
+		await replaceShares(
+			tx,
+			row.id,
+			body.sharedProjectIds,
+			body.sharedGroupIds,
+			visible,
+		);
+		return row.id;
+	});
 
-	const updated = await loadFilter(row.id, actor.id);
+	const updated = await loadFilter(id2, actor.id);
 	if (!updated) throw new HttpError(404, "Filter not found");
 	return toFilter(updated, actor.id, actor.isAdmin);
 }

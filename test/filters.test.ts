@@ -664,3 +664,41 @@ test("a failed share write does not leave a filter behind", async () => {
 		await pool.query("drop function if exists test_fail_filter_shares()");
 	}
 });
+
+test("a failed share replacement does not leave a half-updated filter", async () => {
+	const filter = await createFilter(`Atomic update ${run}`);
+	await pool.query(`
+		create or replace function test_fail_filter_shares() returns trigger
+		language plpgsql as $$
+		begin
+			if new.filter_id = '${filter.id}' then
+				raise exception 'share write failed';
+			end if;
+			return new;
+		end $$`);
+	await pool.query(
+		"create trigger test_fail_filter_shares before insert on filter_shares for each row execute function test_fail_filter_shares()",
+	);
+	try {
+		const response = await request(
+			"PATCH",
+			`/api/filters/${filter.id}`,
+			ownerSession,
+			{
+				name: `Changed ${run}`,
+				sharedProjectIds: [visibleProjectId],
+			},
+		);
+		expect(response.statusCode).toBe(500);
+		const rows = await pool.query<{ name: string }>(
+			"select name from filters where id = $1",
+			[filter.id],
+		);
+		expect(rows.rows[0]?.name).toBe(filter.name);
+	} finally {
+		await pool.query(
+			"drop trigger if exists test_fail_filter_shares on filter_shares",
+		);
+		await pool.query("drop function if exists test_fail_filter_shares()");
+	}
+});
