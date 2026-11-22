@@ -316,8 +316,8 @@ are stable: a change to them is a change of the product, not of a screen.
 
 - **One server.** SvelteKit 3 with `@sveltejs/adapter-node`; production is `node build`. Database
   migrations, the administrator bootstrap, SMTP, pg-boss queues and workers start in the
-  `init` server hook (`src/hooks.server.ts`). `sveltekit:shutdown` closes the mail queue and
-  the database pool.
+  `init` server hook (`src/hooks.server.ts`). `sveltekit:shutdown` closes the mail queue, the
+  SMTP transport and the database pool.
 - **`src/lib/server/**`** is all server code: database, schema, domain logic, integrations. Domain
   modules are framework-free: relative or `#lib/...` imports with `.ts` extensions, configuration
   only through `src/lib/server/env.ts`, no `$app/*` and no `$env/*`. The thin `http.ts` and
@@ -1004,10 +1004,11 @@ The app's permissions work without SSO: local users, in-app administrators, in-a
 and permission schemes. SSO groups are an additional source. A user's effective groups are the claim
 groups of the last login (the `groups` claim), the groups imported from Jira and Confluence, and the
 memberships an administrator added in the app (source `local`); every permission decision reads that one
-union. Each SSO login replaces only the user's claim memberships; imported and local memberships stay,
-and a claim that names a local group does not join it. A user is an administrator when an administrator
-marked the account as a local administrator, when the claim holds `ADMIN_GROUP`, or when the user or one
-of the user's effective groups holds the imported global ADMINISTER permission.
+union. Each SSO login that carries the groups claim replaces only the user's claim memberships; a token
+without the claim leaves them as they are. Imported and local memberships stay, and a claim that names a
+local group does not join it. A user is an administrator when an administrator marked the account as a
+local administrator, when an effective membership is `ADMIN_GROUP`, or when the user or one of the user's
+effective groups holds the imported global ADMINISTER permission.
 
 Set `SSO_AUTO_REDIRECT=true` to send `/login.jsp` straight to SSO. `/login.jsp?local=1` always shows the
 local form, so a bookmark to it is the way in when the provider is down.
@@ -1463,7 +1464,7 @@ on the same writable claim) and is exported as `AVATARS_DIR`; an `extraEnv` entr
 attachment; the second must not exceed the first. `terminationGracePeriodSeconds` defaults to 120
 and `shutdownTimeoutSeconds` to 110, which sets adapter-node's `SHUTDOWN_TIMEOUT` a little below
 the pod grace period so an in-flight upload can finish during a roll-out; `sveltekit:shutdown` then
-closes the mail queue, the GitLab queue and the database pool. `extraEnv` and `extraEnvFrom` append
+closes the mail queue, the GitLab queue, the SMTP transport and the database pool. `extraEnv` and `extraEnvFrom` append
 environment variables and ConfigMap/Secret sources to the container, and
 `startupProbe.failureThreshold`, `startupProbe.periodSeconds` and `progressDeadlineSeconds` tune
 slow first starts (30 attempts 10s apart, 600s rollout deadline by default).
