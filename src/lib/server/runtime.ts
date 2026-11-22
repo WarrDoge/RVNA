@@ -23,7 +23,8 @@ export async function start() {
 
 		const transport = createSmtpTransport();
 		if (transport) {
-			await startMail(transport);
+			const started = await startMail(transport);
+			if (!started) transport.close?.();
 		} else {
 			console.log("SMTP_URL is not set; notification email is disabled");
 		}

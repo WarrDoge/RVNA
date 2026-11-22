@@ -4,6 +4,7 @@ const state = vi.hoisted(() => ({
 	calls: [] as string[],
 	migrateError: null as Error | null,
 	stopGitlabError: null as Error | null,
+	mailStartFails: false,
 }));
 
 vi.mock("../src/lib/server/bootstrap.ts", () => ({
@@ -35,9 +36,12 @@ vi.mock("../src/lib/server/gitlab/queue.ts", () => ({
 }));
 
 vi.mock("../src/lib/server/mail.ts", () => ({
-	createSmtpTransport: () => ({}),
+	createSmtpTransport: () => ({
+		close: () => state.calls.push("mail.transport.close"),
+	}),
 	startMail: async () => {
 		state.calls.push("mail.start");
+		return !state.mailStartFails;
 	},
 	stopEmailQueue: async () => {
 		state.calls.push("mail.queue.stop");
@@ -69,6 +73,7 @@ beforeEach(() => {
 	state.calls.length = 0;
 	state.migrateError = null;
 	state.stopGitlabError = null;
+	state.mailStartFails = false;
 });
 
 test("a failed start releases what it had already opened", async () => {
@@ -88,6 +93,16 @@ test("a failed start releases what it had already opened", async () => {
 			"pool.end",
 		]),
 	);
+});
+
+test("a failed mail queue start closes the SMTP transport", async () => {
+	const { start } = await import("../src/lib/server/runtime.ts");
+	state.mailStartFails = true;
+
+	await start();
+
+	expect(state.calls).toContain("mail.start");
+	expect(state.calls).toContain("mail.transport.close");
 });
 
 test("one failing shutdown step does not skip the rest", async () => {
