@@ -660,6 +660,7 @@ async function importGlobalPermissions(
 
 	const admins = new Set<string>();
 	let adminSearch = "unavailable";
+	let adminSearchComplete = true;
 	const localUsers = await db
 		.select({ username: users.username })
 		.from(users)
@@ -677,6 +678,7 @@ async function importGlobalPermissions(
 		}
 		adminSearch = `user/permission/search: ${admins.size} ADMINISTER users`;
 	} catch (error) {
+		adminSearchComplete = false;
 		adminSearch = `user/permission/search unavailable: ${errorMessage(error)}`;
 	}
 	report.push(adminSearch);
@@ -784,7 +786,9 @@ async function importGlobalPermissions(
 				like(permissionGrants.sourceId, "global:%"),
 			),
 		);
-	const stale = existingGrants.filter((row) => !desired.has(row.sourceId));
+	const stale = adminSearchComplete
+		? existingGrants.filter((row) => !desired.has(row.sourceId))
+		: [];
 	if (stale.length > 0) {
 		await db.delete(permissionGrants).where(
 			inArray(

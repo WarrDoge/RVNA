@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import {
@@ -149,8 +149,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	await pool.query(
-		"delete from permission_grants where source_id = $1 or source_id like $2",
-		[seedId, `${run}:%`],
+		"delete from permission_grants where source_id = $1 or source_id like $2 or source_id like $3",
+		[seedId, `${run}:%`, `global:ADMINISTER:user:t-${run}-%`],
 	);
 	await pool.query(
 		"delete from permission_local_removals where source_id = $1",
@@ -385,4 +385,77 @@ test("the import reuses a group row a login created under another spelling", asy
 		.from(groups)
 		.where(sql`lower(${groups.name}) = ${claimOnly.toLowerCase()}`);
 	expect(rows).toHaveLength(1);
+});
+
+test("a failed admin search does not delete the global administrator grants", async () => {
+	const names = [`t-${run}-admin-one`, `t-${run}-admin-two`];
+	await db.insert(users).values(
+		names.map((username) => ({
+			username,
+			displayName: `Fixture ${username}`,
+			sourceKey: `fixture-${username}`,
+		})),
+	);
+	const base = {
+		async getJson<T>(
+			path: string,
+			params?: Record<string, string | number | boolean | undefined>,
+		) {
+			if (path === "/rest/api/2/groups/picker") {
+				return { groups: [], total: 0 } as T;
+			}
+			if (path === "/rest/api/2/permissions") {
+				return { permissions: {} } as T;
+			}
+			if (path === "/rest/api/2/applicationrole") return [] as T;
+			if (path === "/rest/api/2/user/permission/search") {
+				const username = String(params?.username);
+				if (username === names[1] && failSecond) {
+					throw new Error("rate limited");
+				}
+				return {
+					users: names.includes(username) ? [{ name: username }] : [],
+				} as T;
+			}
+			if (path === "/rest/api/2/myself") {
+				return { name: "fixture-importer" } as T;
+			}
+			if (path === "/rest/api/2/mypermissions") {
+				return {
+					permissions: { ADMINISTER: { havePermission: false } },
+				} as T;
+			}
+			throw new Error(`unexpected ${path}`);
+		},
+	};
+	let failSecond = false;
+
+	await importPermissions(base, {
+		projectKeys: [],
+		fullImport: false,
+		fetchGlobal: true,
+	});
+	const grantSources = names.map(
+		(username) => `global:ADMINISTER:user:${username}`,
+	);
+	const before = await db
+		.select({ sourceId: permissionGrants.sourceId })
+		.from(permissionGrants)
+		.where(inArray(permissionGrants.sourceId, grantSources));
+	expect(before).toHaveLength(2);
+
+	failSecond = true;
+	await importPermissions(base, {
+		projectKeys: [],
+		fullImport: false,
+		fetchGlobal: true,
+	});
+
+	const remaining = await db
+		.select({ sourceId: permissionGrants.sourceId })
+		.from(permissionGrants)
+		.where(inArray(permissionGrants.sourceId, grantSources));
+	expect(remaining.map((row) => row.sourceId).sort()).toEqual(
+		grantSources.sort(),
+	);
 });
