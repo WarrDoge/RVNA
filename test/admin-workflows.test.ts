@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, like } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	type Definition,
 	describeChanges,
@@ -584,6 +584,47 @@ describe("workflow administration API", () => {
 		).toBe(204);
 	});
 
+	test("concurrent creates cannot take names that differ only by case", async () => {
+		const suffix = randomUUID().slice(0, 6);
+		const first = `${tag} Race ${suffix}`;
+		const second = `${tag} race ${suffix}`;
+
+		const original = db.transaction.bind(db);
+		let entered = 0;
+		let release = () => {};
+		let bothEntered = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const both = new Promise<void>((resolve) => {
+			bothEntered = resolve;
+		});
+		const restore = swapTransaction(async (callback) => {
+			entered += 1;
+			if (entered === 2) bothEntered();
+			await gate;
+			return original(callback);
+		});
+		try {
+			const left = adminCall("POST", "/api/admin/workflows", { name: first });
+			const right = adminCall("POST", "/api/admin/workflows", { name: second });
+			await both;
+			restore();
+			release();
+			const responses = await Promise.all([left, right]);
+			expect(responses.map((response) => response.statusCode).sort()).toEqual([
+				201, 409,
+			]);
+			const rows = await db
+				.select({ id: workflows.id })
+				.from(workflows)
+				.where(like(workflows.name, `${tag} %${suffix}`));
+			expect(rows).toHaveLength(1);
+		} finally {
+			restore();
+		}
+	});
+
 	test("delete is refused with the project count while a project uses the workflow", async () => {
 		const wf = await fixtureWorkflow(
 			"used",
@@ -752,6 +793,29 @@ describe("workflow administration API", () => {
 			(await adminCall("DELETE", `/api/admin/workflows/${wf.id}/draft`))
 				.statusCode,
 		).toBe(404);
+	});
+
+	test("an unreadable stored draft is logged instead of silently ignored", async () => {
+		const wf = await fixtureWorkflow("bad-draft", ["open", "work"], [], "open");
+		await db.insert(workflowDrafts).values({
+			workflowId: wf.id,
+			definition: { initialStatusId: null } as never,
+			updatedBy: admin.id,
+		});
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const detail = await detailOf(wf.id);
+			expect(detail).toMatchObject({ hasDraft: false, mode: "live" });
+			expect(spy).toHaveBeenCalledWith(
+				expect.stringContaining(wf.id),
+				expect.anything(),
+			);
+		} finally {
+			spy.mockRestore();
+			await db
+				.delete(workflowDrafts)
+				.where(eq(workflowDrafts.workflowId, wf.id));
+		}
 	});
 
 	test("publish refuses incomplete drafts and a dry run changes nothing", async () => {
@@ -1248,6 +1312,73 @@ describe("workflow administration API", () => {
 				})
 			).statusCode,
 		).toBe(400);
+	});
+
+	test("assignment reads issues inside the transaction, so a concurrent create is moved too", async () => {
+		const old = await fixtureWorkflow(
+			"race-old",
+			["open", "work", "done"],
+			baseTransitions,
+			"open",
+		);
+		const next = await fixtureWorkflow(
+			"race-new",
+			["open", "review", "spare"],
+			[
+				{ name: "Review", from: "open", to: "review" },
+				{ name: "Spare", from: "review", to: "spare" },
+			],
+			"open",
+		);
+		const project = await fixtureProject("Q", old.id, ["task"]);
+		await createIssue(project.key, "task");
+
+		const original = db.transaction.bind(db);
+		let racedId = "";
+		const restore = swapTransaction(async (callback) => {
+			if (!racedId) {
+				const [raced] = await db
+					.insert(issues)
+					.values({
+						sourceId: `local:${randomUUID()}`,
+						projectId: project.id,
+						number: 9999,
+						key: `${project.key}-RACE`,
+						typeId: typeId.task,
+						statusId: statusId.done,
+						summary: `${tag} raced issue`,
+					})
+					.returning({ id: issues.id });
+				racedId = raced.id;
+			}
+			return original(callback);
+		});
+		try {
+			const response = await adminCall(
+				"PUT",
+				`/api/admin/workflow-assignments/${project.key}`,
+				{
+					defaultWorkflowId: next.id,
+					perType: [],
+					statusMapping: {
+						[`${typeId.task}:${statusId.done}`]: statusId.review,
+					},
+				},
+			);
+			expect(response.statusCode, response.body).toBe(200);
+		} finally {
+			restore();
+		}
+
+		const rows = await db
+			.select({ id: issues.id, statusId: issues.statusId })
+			.from(issues)
+			.where(eq(issues.projectId, project.id));
+		expect(rows).toHaveLength(2);
+		expect(rows.every((row) => row.statusId !== statusId.done)).toBe(true);
+		expect(rows.find((row) => row.id === racedId)?.statusId).toBe(
+			statusId.review,
+		);
 	});
 
 	test("an issue created after an assignment starts in the configured initial status", async () => {

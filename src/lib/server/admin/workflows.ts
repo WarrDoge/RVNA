@@ -124,8 +124,18 @@ function isUniqueViolation(error: unknown): boolean {
 	return code === "23505" || causeCode === "23505";
 }
 
-async function nameTaken(name: string, exceptId?: string): Promise<boolean> {
-	const rows = await db
+async function lockName(executor: Pick<typeof db, "execute">, name: string) {
+	await executor.execute(
+		sql`select pg_advisory_xact_lock(hashtextextended(lower(${name}), 0))`,
+	);
+}
+
+async function nameTaken(
+	name: string,
+	exceptId?: string,
+	executor: Executor = db,
+): Promise<boolean> {
+	const rows = await executor
 		.select({ id: workflows.id })
 		.from(workflows)
 		.where(
@@ -178,7 +188,14 @@ async function loadDraft(
 	const [row] = lock ? await query.for("update") : await query;
 	if (!row) return null;
 	const parsed = definitionSchema.safeParse(row.definition);
-	return parsed.success ? parsed.data : null;
+	if (!parsed.success) {
+		console.error(
+			`workflow draft ${workflowId} could not be parsed`,
+			parsed.error,
+		);
+		return null;
+	}
+	return parsed.data;
 }
 
 async function statusMap(
@@ -466,8 +483,8 @@ async function projectByKey(key: string) {
 	return project ?? null;
 }
 
-async function assignmentRows(projectId: string) {
-	const rows = await db
+async function assignmentRows(projectId: string, executor: Executor = db) {
+	const rows = await executor
 		.select({
 			issueTypeId: projectWorkflows.issueTypeId,
 			workflowId: projectWorkflows.workflowId,
@@ -508,9 +525,6 @@ export async function createWorkflow(
 ) {
 	requireAdminActor(actor);
 	const { name, description, copyFromId } = body;
-	if (await nameTaken(name)) {
-		throw new HttpError(409, `A workflow named "${name}" already exists`);
-	}
 
 	let source: { name: string; definition: Definition } | null = null;
 	if (copyFromId) {
@@ -528,6 +542,10 @@ export async function createWorkflow(
 
 	try {
 		const id = await db.transaction(async (tx) => {
+			await lockName(tx, name);
+			if (await nameTaken(name, undefined, tx)) {
+				throw new HttpError(409, `A workflow named "${name}" already exists`);
+			}
 			const [created] = await tx
 				.insert(workflows)
 				.values({
@@ -598,9 +616,6 @@ export async function updateWorkflow(
 		.where(eq(workflows.id, id))
 		.limit(1);
 	if (!current) throw new HttpError(404, "Workflow not found");
-	if (name !== undefined && (await nameTaken(name, id))) {
-		throw new HttpError(409, `A workflow named "${name}" already exists`);
-	}
 
 	const nextName = name ?? current.name;
 	const nextDescription =
@@ -612,6 +627,15 @@ export async function updateWorkflow(
 
 	try {
 		await db.transaction(async (tx) => {
+			if (name !== undefined) {
+				await lockName(tx, nextName);
+				if (await nameTaken(nextName, id, tx)) {
+					throw new HttpError(
+						409,
+						`A workflow named "${nextName}" already exists`,
+					);
+				}
+			}
 			await tx
 				.update(workflows)
 				.set({
@@ -1013,160 +1037,193 @@ export async function setWorkflowAssignment(
 		perType.find((row) => row.issueTypeId === typeId)?.workflowId ??
 		defaultWorkflowId;
 
-	const rows = await db
-		.select({
-			typeId: issues.typeId,
-			typeName: issueTypes.name,
-			statusId: issues.statusId,
-			statusName: statuses.name,
-			count: sql<number>`count(*)::int`,
-		})
-		.from(issues)
-		.innerJoin(issueTypes, eq(issueTypes.id, issues.typeId))
-		.innerJoin(statuses, eq(statuses.id, issues.statusId))
-		.where(eq(issues.projectId, project.id))
-		.groupBy(issues.typeId, issueTypes.name, issues.statusId, statuses.name);
+	type AssignmentOutcome =
+		| { kind: "dry-run"; needed: Needed[] }
+		| { kind: "moved"; moved: number };
 
-	const statusesOf = new Map<string, StatusRef[]>();
-	const statusesFor = async (workflowId: string) => {
-		let list = statusesOf.get(workflowId);
-		if (!list) {
-			list = (await db
+	const outcome = await db.transaction(
+		async (tx): Promise<AssignmentOutcome> => {
+			const [locked] = await tx
+				.select({ id: projects.id, key: projects.key })
+				.from(projects)
+				.where(eq(projects.id, project.id))
+				.for("update");
+			if (!locked) throw new HttpError(404, "Project not found");
+
+			const rows = await tx
 				.select({
-					id: statuses.id,
-					name: statuses.name,
-					category: statuses.category,
+					typeId: issues.typeId,
+					typeName: issueTypes.name,
+					statusId: issues.statusId,
+					statusName: statuses.name,
+					count: sql<number>`count(*)::int`,
 				})
-				.from(workflowStatuses)
-				.innerJoin(statuses, eq(statuses.id, workflowStatuses.statusId))
-				.where(eq(workflowStatuses.workflowId, workflowId))
-				.orderBy(asc(statuses.name))) as StatusRef[];
-			statusesOf.set(workflowId, list);
-		}
-		return list;
-	};
+				.from(issues)
+				.innerJoin(issueTypes, eq(issueTypes.id, issues.typeId))
+				.innerJoin(statuses, eq(statuses.id, issues.statusId))
+				.where(eq(issues.projectId, project.id))
+				.groupBy(
+					issues.typeId,
+					issueTypes.name,
+					issues.statusId,
+					statuses.name,
+				);
 
-	const needed: Needed[] = [];
-	const targets = new Map<string, StatusRef>();
-	for (const row of rows) {
-		const workflowId = effective(row.typeId);
-		if (!workflowId) continue;
-		const candidates = await statusesFor(workflowId);
-		if (candidates.some((status) => status.id === row.statusId)) continue;
-		const key = `${row.typeId}:${row.statusId}`;
-		const chosen = mapping[key];
-		const target = chosen
-			? candidates.find((status) => status.id === chosen)
-			: undefined;
-		if (chosen && !target) {
-			throw new HttpError(
-				400,
-				`${row.statusName} of ${row.typeName} cannot be moved to a status the new workflow does not have`,
-			);
-		}
-		if (target) targets.set(key, target);
-		needed.push({
-			issueTypeId: row.typeId,
-			issueTypeName: row.typeName,
-			statusId: row.statusId,
-			statusName: row.statusName,
-			issueCount: row.count,
-			candidates,
-		});
-	}
-
-	const unmapped = needed.filter(
-		(item) => !targets.has(`${item.issueTypeId}:${item.statusId}`),
-	);
-	if (dryRun) {
-		return { ok: true, needed, moved: 0 };
-	}
-	if (unmapped.length > 0) {
-		throw new HttpError(
-			409,
-			"Some issues are in statuses the new workflow does not have. Choose where to move them.",
-			{ details: { needed: unmapped } },
-		);
-	}
-
-	const before = await assignmentRows(project.id);
-	const names = new Map(
-		(
-			await db
-				.select({ id: workflows.id, name: workflows.name })
-				.from(workflows)
-		).map((row) => [row.id, row.name]),
-	);
-	const typeNames = new Map(
-		(
-			await db
-				.select({ id: issueTypes.id, name: issueTypes.name })
-				.from(issueTypes)
-		).map((row) => [row.id, row.name]),
-	);
-	const labelAssignment = (assignment: {
-		defaultWorkflowId: string | null;
-		perType: { issueTypeId: string; workflowId: string }[];
-	}) => ({
-		default: assignment.defaultWorkflowId
-			? (names.get(assignment.defaultWorkflowId) ?? null)
-			: null,
-		...Object.fromEntries(
-			assignment.perType.map((row) => [
-				typeNames.get(row.issueTypeId) ?? row.issueTypeId,
-				names.get(row.workflowId) ?? row.workflowId,
-			]),
-		),
-	});
-	const from = labelAssignment(before);
-	const to = labelAssignment({ defaultWorkflowId, perType });
-
-	const moved = await db.transaction(async (tx) => {
-		await tx
-			.delete(projectWorkflows)
-			.where(eq(projectWorkflows.projectId, project.id));
-		const values = [
-			...(defaultWorkflowId
-				? [{ issueTypeId: null, workflowId: defaultWorkflowId }]
-				: []),
-			...perType,
-		];
-		if (values.length > 0) {
-			await tx.insert(projectWorkflows).values(
-				values.map((row) => ({
-					sourceId: localSource(),
-					projectId: project.id,
-					issueTypeId: row.issueTypeId,
-					workflowId: row.workflowId,
-				})),
-			);
-		}
-
-		let count = 0;
-		for (const item of needed) {
-			count += await moveIssues(
-				tx,
-				actor.id,
-				and(
-					eq(issues.projectId, project.id),
-					eq(issues.typeId, item.issueTypeId),
-					eq(issues.statusId, item.statusId),
+			const involvedWorkflows = [
+				...new Set(
+					rows
+						.map((row) => effective(row.typeId))
+						.filter((workflowId): workflowId is string => Boolean(workflowId)),
 				),
-				targets.get(`${item.issueTypeId}:${item.statusId}`) as StatusRef,
-			);
-		}
+			];
+			const statusesOf = new Map<string, StatusRef[]>();
+			if (involvedWorkflows.length > 0) {
+				const statusRows = await tx
+					.select({
+						workflowId: workflowStatuses.workflowId,
+						id: statuses.id,
+						name: statuses.name,
+						category: statuses.category,
+					})
+					.from(workflowStatuses)
+					.innerJoin(statuses, eq(statuses.id, workflowStatuses.statusId))
+					.where(inArray(workflowStatuses.workflowId, involvedWorkflows))
+					.orderBy(asc(statuses.name));
+				for (const workflowId of involvedWorkflows) {
+					statusesOf.set(workflowId, []);
+				}
+				for (const row of statusRows) {
+					statusesOf.get(row.workflowId)?.push({
+						id: row.id,
+						name: row.name,
+						category: row.category,
+					});
+				}
+			}
 
-		await audit(tx, actor, {
-			action: "workflow.assign",
-			entityType: "project",
-			entityId: project.id,
-			summary:
-				count > 0
-					? `Changed the workflows of project ${project.key} and moved ${count} ${count === 1 ? "issue" : "issues"}`
-					: `Changed the workflows of project ${project.key}`,
-			changes: { from, to },
-		});
-		return count;
-	});
-	return { ok: true, needed: [], moved };
+			const needed: Needed[] = [];
+			const targets = new Map<string, StatusRef>();
+			for (const row of rows) {
+				const workflowId = effective(row.typeId);
+				if (!workflowId) continue;
+				const candidates = statusesOf.get(workflowId) ?? [];
+				if (candidates.some((status) => status.id === row.statusId)) continue;
+				const key = `${row.typeId}:${row.statusId}`;
+				const chosen = mapping[key];
+				const target = chosen
+					? candidates.find((status) => status.id === chosen)
+					: undefined;
+				if (chosen && !target) {
+					throw new HttpError(
+						400,
+						`${row.statusName} of ${row.typeName} cannot be moved to a status the new workflow does not have`,
+					);
+				}
+				if (target) targets.set(key, target);
+				needed.push({
+					issueTypeId: row.typeId,
+					issueTypeName: row.typeName,
+					statusId: row.statusId,
+					statusName: row.statusName,
+					issueCount: row.count,
+					candidates,
+				});
+			}
+
+			const unmapped = needed.filter(
+				(item) => !targets.has(`${item.issueTypeId}:${item.statusId}`),
+			);
+			if (dryRun) return { kind: "dry-run", needed };
+			if (unmapped.length > 0) {
+				throw new HttpError(
+					409,
+					"Some issues are in statuses the new workflow does not have. Choose where to move them.",
+					{ details: { needed: unmapped } },
+				);
+			}
+
+			const before = await assignmentRows(project.id, tx);
+			const names = new Map(
+				(
+					await tx
+						.select({ id: workflows.id, name: workflows.name })
+						.from(workflows)
+				).map((row) => [row.id, row.name]),
+			);
+			const typeNames = new Map(
+				(
+					await tx
+						.select({ id: issueTypes.id, name: issueTypes.name })
+						.from(issueTypes)
+				).map((row) => [row.id, row.name]),
+			);
+			const labelAssignment = (assignment: {
+				defaultWorkflowId: string | null;
+				perType: { issueTypeId: string; workflowId: string }[];
+			}) => ({
+				default: assignment.defaultWorkflowId
+					? (names.get(assignment.defaultWorkflowId) ?? null)
+					: null,
+				...Object.fromEntries(
+					assignment.perType.map((row) => [
+						typeNames.get(row.issueTypeId) ?? row.issueTypeId,
+						names.get(row.workflowId) ?? row.workflowId,
+					]),
+				),
+			});
+			const from = labelAssignment(before);
+			const to = labelAssignment({ defaultWorkflowId, perType });
+
+			await tx
+				.delete(projectWorkflows)
+				.where(eq(projectWorkflows.projectId, project.id));
+			const values = [
+				...(defaultWorkflowId
+					? [{ issueTypeId: null, workflowId: defaultWorkflowId }]
+					: []),
+				...perType,
+			];
+			if (values.length > 0) {
+				await tx.insert(projectWorkflows).values(
+					values.map((row) => ({
+						sourceId: localSource(),
+						projectId: project.id,
+						issueTypeId: row.issueTypeId,
+						workflowId: row.workflowId,
+					})),
+				);
+			}
+
+			let count = 0;
+			for (const item of needed) {
+				count += await moveIssues(
+					tx,
+					actor.id,
+					and(
+						eq(issues.projectId, project.id),
+						eq(issues.typeId, item.issueTypeId),
+						eq(issues.statusId, item.statusId),
+					),
+					targets.get(`${item.issueTypeId}:${item.statusId}`) as StatusRef,
+				);
+			}
+
+			await audit(tx, actor, {
+				action: "workflow.assign",
+				entityType: "project",
+				entityId: project.id,
+				summary:
+					count > 0
+						? `Changed the workflows of project ${project.key} and moved ${count} ${count === 1 ? "issue" : "issues"}`
+						: `Changed the workflows of project ${project.key}`,
+				changes: { from, to },
+			});
+			return { kind: "moved", moved: count };
+		},
+	);
+
+	if (outcome.kind === "dry-run") {
+		return { ok: true, needed: outcome.needed, moved: 0 };
+	}
+	return { ok: true, needed: [], moved: outcome.moved };
 }
