@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { HttpError } from "../src/lib/server/http.ts";
@@ -20,6 +20,9 @@ import {
 } from "../src/lib/server/schema.ts";
 import {
 	addPageLabel,
+	contentDisposition,
+	getPage,
+	listSpaces,
 	uploadPageAttachments,
 } from "../src/lib/server/wiki/service.ts";
 import { buildServer, cleanupTestData, login } from "./helpers.ts";
@@ -413,6 +416,25 @@ describe("space listing", () => {
 		expect(keys).not.toContain(restrictedKey);
 	});
 
+	test("space summaries load the page counts in one batch", async () => {
+		const actor = await actorNamed("alice", [readerGroup, "confluence-users"]);
+		const spy = vi.spyOn(db.$client, "query");
+		let rows: Awaited<ReturnType<typeof listSpaces>>;
+		let countQueries: string[] = [];
+		try {
+			rows = await listSpaces(actor, {});
+			countQueries = spy.mock.calls
+				.map((call) => String((call[0] as { text?: string }).text ?? call[0]))
+				.filter((query) => query.includes("count(*)"));
+		} finally {
+			spy.mockRestore();
+		}
+		const restricted = rows.find((row) => row.key === restrictedKey);
+		expect(restricted?.homePage?.id).toBe(home.id);
+		expect(restricted?.pageCount).toBeGreaterThan(0);
+		expect(countQueries.length).toBe(1);
+	});
+
 	test("shows the space to a member of the read group and to administrators", async () => {
 		for (const session of [alice, carol, admin]) {
 			const response = await get("/api/wiki/spaces", session);
@@ -798,6 +820,103 @@ describe("page detail", () => {
 			await db.delete(pages).where(eq(pages.id, branch.id));
 		}
 	});
+
+	test("loads the creator and last modifier in one query", async () => {
+		const [aliceRow] = await db
+			.select({ id: users.id })
+			.from(users)
+			.where(eq(users.username, `t-${run}-alice`))
+			.limit(1);
+		await db
+			.update(pages)
+			.set({ creatorId: aliceRow?.id, lastModifierId: aliceRow?.id })
+			.where(eq(pages.id, home.id));
+
+		const actor = await actorNamed("alice", [readerGroup, "confluence-users"]);
+		const spy = vi.spyOn(db.$client, "query");
+		try {
+			const detail = await getPage(actor, home.id);
+			const userQueries = spy.mock.calls
+				.map((call) => String((call[0] as { text?: string }).text ?? call[0]))
+				.filter((query) => query.includes('from "users" where'));
+			expect(detail.creator?.id).toBe(aliceRow?.id);
+			expect(detail.lastModifier?.id).toBe(aliceRow?.id);
+			expect(userQueries.length).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("attachments report their author and each version once", async () => {
+		const [aliceRow] = await db
+			.select({ id: users.id })
+			.from(users)
+			.where(eq(users.username, `t-${run}-alice`))
+			.limit(1);
+		const page = await createPage({
+			spaceId: restrictedSpace.id,
+			sourceId: `wa-${run}-attachments`,
+			title: "Attachment page",
+			creatorId: aliceRow?.id,
+		});
+		try {
+			await db.insert(pageAttachments).values([
+				{
+					sourceId: `wa-diagram-1-${run}`,
+					pageId: page.id,
+					fileName: "diagram.png",
+					mimeType: "image/png",
+					size: 10,
+					version: 1,
+					authorId: aliceRow?.id,
+					storagePath: `wa/${run}`,
+					sha256: `wa-${run}`,
+				},
+				{
+					sourceId: `wa-diagram-2-${run}`,
+					pageId: page.id,
+					fileName: "diagram.png",
+					mimeType: "image/png",
+					size: 20,
+					version: 2,
+					authorId: aliceRow?.id,
+					storagePath: `wa/${run}`,
+					sha256: `wa-${run}`,
+				},
+				{
+					sourceId: `wa-notes-1-${run}`,
+					pageId: page.id,
+					fileName: "notes.txt",
+					mimeType: "text/plain",
+					size: 5,
+					version: 1,
+					authorId: aliceRow?.id,
+					storagePath: `wa/${run}`,
+					sha256: `wa-${run}`,
+				},
+			]);
+			const detail = await getPage(
+				await actorNamed("alice", [readerGroup, "confluence-users"]),
+				page.id,
+			);
+			const diagram = detail.attachments.find(
+				(attachment) => attachment.fileName === "diagram.png",
+			);
+			expect(detail.attachments).toHaveLength(2);
+			expect(diagram?.version).toBe(2);
+			expect(diagram?.versions.map((version) => version.version)).toEqual([
+				2, 1,
+			]);
+			expect(diagram?.author?.username).toBe(`t-${run}-alice`);
+			expect(
+				diagram?.versions.every(
+					(version) => version.author?.username === `t-${run}-alice`,
+				),
+			).toBe(true);
+		} finally {
+			await db.delete(pages).where(eq(pages.id, page.id));
+		}
+	});
 });
 
 describe("versions and diff", () => {
@@ -942,6 +1061,12 @@ describe("comments", () => {
 });
 
 describe("attachments", () => {
+	test("the RFC 5987 filename escapes characters attr-char does not allow", () => {
+		expect(contentDisposition("attachment", "O'Brien (1)*.txt")).toBe(
+			`attachment; filename="O'Brien (1)*.txt"; filename*=UTF-8''O%27Brien%20%281%29%2A.txt`,
+		);
+	});
+
 	test("uploads a new file and then a new version of it", async () => {
 		const boundary = "----fatwiki";
 		function multipart(fileName: string, body: string) {
@@ -1114,6 +1239,18 @@ describe("attachments", () => {
 		);
 		expect(byId.statusCode).toBe(200);
 		expect(byId.headers["content-disposition"]).toContain("attachment");
+	});
+
+	test("an invalid version is rejected instead of serving the latest file", async () => {
+		const url = `/download/attachments/${home.sourceId}/notes.txt`;
+		for (const query of [
+			"version=garbage",
+			"version=0",
+			"version=",
+			"version=1.5",
+		]) {
+			expect((await get(`${url}?${query}`, alice)).statusCode, query).toBe(400);
+		}
 	});
 
 	test("deleting one version keeps a file that another version still uses", async () => {

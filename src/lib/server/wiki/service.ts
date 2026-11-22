@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
 	attachmentUploadLimits,
+	contentDisposition,
 	hashFile,
 	MAX_UPLOAD_FILES,
 } from "../attachments/service.ts";
@@ -70,6 +71,8 @@ import {
 	suggestWikiPages,
 } from "./search.ts";
 import { sanitizeWikiBody } from "./storage.ts";
+
+export { contentDisposition };
 
 const iso = (value: Date | null) => value?.toISOString() ?? null;
 
@@ -257,16 +260,6 @@ function isRasterImageMime(mimeType: string | null) {
 	return base.startsWith("image/") && !isActiveMime(base);
 }
 
-export function contentDisposition(
-	kind: "inline" | "attachment",
-	fileName: string,
-) {
-	const fallback = fileName
-		.replace(/[^\x20-\x7e]/g, "_")
-		.replace(/["\\]/g, "_");
-	return `${kind}; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(fileName)}`;
-}
-
 function safeFileName(value: string | undefined) {
 	const name = [...basename(value ?? "attachment")]
 		.filter((character) => {
@@ -416,48 +409,46 @@ export async function getPage(
 	}
 
 	const scope = scopeFor(actor, access, space);
-	const [body, ancestors, labels, attachmentRows, commentRows, children] =
-		await Promise.all([
-			renderPage(
-				{
-					...page,
-					bodyStorage,
-					bodyHtml,
-					versionNumber: versionNumberForPage,
-				},
-				scope,
-			),
-			pageAncestors(access, page),
-			pageLabelsFor(page.id),
-			pageAttachmentVersions(access, page.id),
-			pageCommentRows(page.id),
-			childPages(page.id, access.hiddenPageIds),
-		]);
-
-	const [creator] = page.creatorId
-		? await db
-				.select({
-					id: users.id,
-					username: users.username,
-					displayName: users.displayName,
-					avatarUrl: userAvatarSql(users.id),
-				})
-				.from(users)
-				.where(eq(users.id, page.creatorId))
-				.limit(1)
-		: [];
-	const [modifier] = page.lastModifierId
-		? await db
-				.select({
-					id: users.id,
-					username: users.username,
-					displayName: users.displayName,
-					avatarUrl: userAvatarSql(users.id),
-				})
-				.from(users)
-				.where(eq(users.id, page.lastModifierId))
-				.limit(1)
-		: [];
+	const peopleIds = [page.creatorId, page.lastModifierId].filter(
+		(id): id is string => id !== null,
+	);
+	const [
+		body,
+		ancestors,
+		labels,
+		attachmentRows,
+		commentRows,
+		children,
+		people,
+	] = await Promise.all([
+		renderPage(
+			{
+				...page,
+				bodyStorage,
+				bodyHtml,
+				versionNumber: versionNumberForPage,
+			},
+			scope,
+		),
+		pageAncestors(access, page),
+		pageLabelsFor(page.id),
+		pageAttachmentVersions(access, page.id),
+		pageCommentRows(page.id),
+		childPages(page.id, access.hiddenPageIds),
+		peopleIds.length > 0
+			? db
+					.select({
+						id: users.id,
+						username: users.username,
+						displayName: users.displayName,
+						avatarUrl: userAvatarSql(users.id),
+					})
+					.from(users)
+					.where(inArray(users.id, peopleIds))
+			: [],
+	]);
+	const creator = people.find((row) => row.id === page.creatorId);
+	const modifier = people.find((row) => row.id === page.lastModifierId);
 
 	const [watchers, likes, spaceWatch, restrictions] = await Promise.all([
 		watchState(page.id, actor.id),
@@ -475,28 +466,7 @@ export async function getPage(
 		pageRestrictionRows(page.id),
 	]);
 
-	const attachmentViews = attachmentRows
-		.filter(
-			(row) => row.version === latestVersion(attachmentRows, row.fileName),
-		)
-		.map((row) => ({
-			id: row.id,
-			fileName: row.fileName,
-			mimeType: row.mimeType,
-			size: row.size,
-			version: row.version,
-			author: null,
-			created: row.created,
-			comment: row.comment,
-			versions: attachmentRows
-				.filter((candidate) => candidate.fileName === row.fileName)
-				.map((candidate) => ({
-					version: candidate.version,
-					size: candidate.size,
-					created: candidate.created,
-					author: null,
-				})),
-		}));
+	const attachmentViews = groupAttachments(attachmentRows);
 
 	return {
 		id: page.id,
@@ -743,42 +713,7 @@ export async function resolveComment(
 
 export async function listPageAttachments(actor: CurrentUser, id: string) {
 	const { access, page } = await readablePage(actor, id);
-	const rows = await pageAttachmentVersions(access, page.id);
-	const grouped = new Map<string, typeof rows>();
-	for (const row of rows) {
-		const list = grouped.get(row.fileName) ?? [];
-		list.push(row);
-		grouped.set(row.fileName, list);
-	}
-	return [...grouped.values()].map((versions) => {
-		const latest = versions[0] as (typeof rows)[number];
-		return {
-			id: latest.id,
-			fileName: latest.fileName,
-			mimeType: latest.mimeType,
-			size: latest.size,
-			version: latest.version,
-			author: userRef({
-				id: latest.authorId,
-				username: latest.authorUsername,
-				displayName: latest.author,
-				avatarUrl: latest.authorAvatarUrl,
-			}),
-			created: latest.created,
-			comment: latest.comment,
-			versions: versions.map((version) => ({
-				version: version.version,
-				size: version.size,
-				created: version.created,
-				author: userRef({
-					id: version.authorId,
-					username: version.authorUsername,
-					displayName: version.author,
-					avatarUrl: version.authorAvatarUrl,
-				}),
-			})),
-		};
-	});
+	return groupAttachments(await pageAttachmentVersions(access, page.id));
 }
 
 export async function pageForUpload(actor: CurrentUser, id: string) {
@@ -1392,12 +1327,14 @@ export async function attachmentDownloadByName(
 	const loaded = await loadReadablePage(access, pageId);
 	if (!loaded) throw new HttpError(404, "Attachment not found");
 
-	const version = input.version ? Number(input.version) : undefined;
-	const row = await pageAttachmentByName(
-		loaded.page.id,
-		fileName,
-		Number.isFinite(version) ? version : undefined,
-	);
+	let version: number | undefined;
+	if (input.version !== undefined) {
+		version = Number(input.version);
+		if (!Number.isInteger(version) || version < 1) {
+			throw new HttpError(400, "Invalid version");
+		}
+	}
+	const row = await pageAttachmentByName(loaded.page.id, fileName, version);
 	if (!row) throw new HttpError(404, "Attachment not found");
 
 	return storedFile(row, input.inline);
@@ -1428,18 +1365,50 @@ export async function thumbnailDownload(
 	};
 }
 
-/** Latest version per file name, from a page's full attachment list. */
-function latestVersion(
-	rows: { fileName: string; version: number }[],
-	fileName: string,
-) {
-	let latest = 0;
+type AttachmentVersionRow = Awaited<
+	ReturnType<typeof pageAttachmentVersions>
+>[number];
+
+/**
+ * Latest version per file name; `pageAttachmentVersions` already orders by
+ * file name and version descending, so the first row of a group is the latest.
+ */
+function groupAttachments(rows: AttachmentVersionRow[]) {
+	const grouped = new Map<string, AttachmentVersionRow[]>();
 	for (const row of rows) {
-		if (row.fileName === fileName && row.version > latest) {
-			latest = row.version;
-		}
+		const list = grouped.get(row.fileName) ?? [];
+		list.push(row);
+		grouped.set(row.fileName, list);
 	}
-	return latest;
+	return [...grouped.values()].map((versions) => {
+		const latest = versions[0] as AttachmentVersionRow;
+		return {
+			id: latest.id,
+			fileName: latest.fileName,
+			mimeType: latest.mimeType,
+			size: latest.size,
+			version: latest.version,
+			author: userRef({
+				id: latest.authorId,
+				username: latest.authorUsername,
+				displayName: latest.author,
+				avatarUrl: latest.authorAvatarUrl,
+			}),
+			created: latest.created,
+			comment: latest.comment,
+			versions: versions.map((version) => ({
+				version: version.version,
+				size: version.size,
+				created: version.created,
+				author: userRef({
+					id: version.authorId,
+					username: version.authorUsername,
+					displayName: version.author,
+					avatarUrl: version.authorAvatarUrl,
+				}),
+			})),
+		};
+	});
 }
 
 function visibleSql(access: WikiAccess) {
