@@ -177,4 +177,27 @@ describe("upsert local change markers", () => {
 		expect(second.keptLocalIds).toEqual([]);
 		expect(second.counts).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
 	});
+
+	test("updates a marked row even when its remote values did not change", async () => {
+		const { tx, updates } = trackingExecutor([
+			{
+				id: "row-1",
+				sourceId: "a",
+				name: "same",
+				marker: new Date("2026-01-01T00:00:00Z"),
+			},
+		]);
+
+		const result = await upsertRows(
+			tx,
+			markerTable,
+			[{ sourceId: "a", name: "same" }],
+			(row) => String(row.sourceId),
+			{ localChangeColumn: markerTable.marker, overwriteLocal: true },
+		);
+
+		expect(result.counts).toEqual({ inserted: 0, updated: 1, unchanged: 0 });
+		expect(updates).toHaveLength(1);
+		expect(updates[0]).toHaveProperty("marker");
+	});
 });

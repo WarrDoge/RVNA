@@ -192,6 +192,9 @@ export async function upsertRows(
 			continue;
 		}
 		let changed = false;
+		if (localChangeKey && options.overwriteLocal && existing[localChangeKey]) {
+			changed = true;
+		}
 		const updateValues: CachedRow = { ...row };
 		if (columns.updatedAt) updateValues.updatedAt = new Date();
 		if (localChangeKey) {
