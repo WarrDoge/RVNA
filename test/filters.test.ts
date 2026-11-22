@@ -631,3 +631,36 @@ test("createFilter validates body bounds inside the function", async () => {
 		}),
 	).rejects.toMatchObject({ status: 400 });
 });
+
+test("a failed share write does not leave a filter behind", async () => {
+	const name = `Atomic create ${run}`;
+	await pool.query(`
+		create or replace function test_fail_filter_shares() returns trigger
+		language plpgsql as $$
+		begin
+			if new.project_id = '${visibleProjectId}' then
+				raise exception 'share write failed';
+			end if;
+			return new;
+		end $$`);
+	await pool.query(
+		"create trigger test_fail_filter_shares before insert on filter_shares for each row execute function test_fail_filter_shares()",
+	);
+	try {
+		const response = await request("POST", "/api/filters", ownerSession, {
+			name,
+			jql: "project = DEMO",
+			sharedProjectIds: [visibleProjectId],
+		});
+		expect(response.statusCode).toBe(500);
+		const rows = await pool.query("select id from filters where name = $1", [
+			name,
+		]);
+		expect(rows.rows).toHaveLength(0);
+	} finally {
+		await pool.query(
+			"drop trigger if exists test_fail_filter_shares on filter_shares",
+		);
+		await pool.query("drop function if exists test_fail_filter_shares()");
+	}
+});

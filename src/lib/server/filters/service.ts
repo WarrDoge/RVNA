@@ -18,6 +18,8 @@ import {
 	users,
 } from "../schema.ts";
 
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export const filterParams = z.object({ id: z.uuid() });
 
 export const filterSchema = z.object({
@@ -211,6 +213,7 @@ async function visibleShareIds(user: PermissionUser): Promise<ShareVisibility> {
  * editor cannot see stays untouched, whatever list a client posts.
  */
 async function replaceShares(
+	tx: Transaction,
 	filterId: string,
 	projectIds: string[] | undefined,
 	groupIds: string[] | undefined,
@@ -218,59 +221,57 @@ async function replaceShares(
 ) {
 	// Two editors saving at once would otherwise merge their lists: the delete and
 	// the insert of each must not interleave.
-	await db.transaction(async (tx) => {
-		await tx.execute(
-			sql`select 1 from filters where id = ${filterId} for update`,
-		);
-		if (projectIds !== undefined) {
-			await tx
-				.delete(filterShares)
-				.where(
-					and(
-						eq(filterShares.filterId, filterId),
-						isNotNull(filterShares.projectId),
-						visible
-							? visible.projectIds.length > 0
-								? inArray(filterShares.projectId, visible.projectIds)
-								: sql`false`
-							: undefined,
-					),
-				);
-			const rows = [...new Set(projectIds)].map((projectId) => ({
-				filterId,
-				projectId,
-			}));
-			if (rows.length > 0) {
-				await tx.insert(filterShares).values(rows).onConflictDoNothing();
-			}
+	await tx.execute(
+		sql`select 1 from filters where id = ${filterId} for update`,
+	);
+	if (projectIds !== undefined) {
+		await tx
+			.delete(filterShares)
+			.where(
+				and(
+					eq(filterShares.filterId, filterId),
+					isNotNull(filterShares.projectId),
+					visible
+						? visible.projectIds.length > 0
+							? inArray(filterShares.projectId, visible.projectIds)
+							: sql`false`
+						: undefined,
+				),
+			);
+		const rows = [...new Set(projectIds)].map((projectId) => ({
+			filterId,
+			projectId,
+		}));
+		if (rows.length > 0) {
+			await tx.insert(filterShares).values(rows).onConflictDoNothing();
 		}
-		if (groupIds !== undefined) {
-			await tx
-				.delete(filterShares)
-				.where(
-					and(
-						eq(filterShares.filterId, filterId),
-						isNotNull(filterShares.groupId),
-						visible
-							? visible.groupIds.length > 0
-								? inArray(filterShares.groupId, visible.groupIds)
-								: sql`false`
-							: undefined,
-					),
-				);
-			const rows = [...new Set(groupIds)].map((groupId) => ({
-				filterId,
-				groupId,
-			}));
-			if (rows.length > 0) {
-				await tx.insert(filterShares).values(rows).onConflictDoNothing();
-			}
+	}
+	if (groupIds !== undefined) {
+		await tx
+			.delete(filterShares)
+			.where(
+				and(
+					eq(filterShares.filterId, filterId),
+					isNotNull(filterShares.groupId),
+					visible
+						? visible.groupIds.length > 0
+							? inArray(filterShares.groupId, visible.groupIds)
+							: sql`false`
+						: undefined,
+				),
+			);
+		const rows = [...new Set(groupIds)].map((groupId) => ({
+			filterId,
+			groupId,
+		}));
+		if (rows.length > 0) {
+			await tx.insert(filterShares).values(rows).onConflictDoNothing();
 		}
-	});
+	}
 }
 
-async function loadShareIds(filterId: string) {
-	const rows = await db
+async function loadShareIds(ex: Transaction, filterId: string) {
+	const rows = await ex
 		.select({
 			projectId: filterShares.projectId,
 			groupId: filterShares.groupId,
@@ -530,26 +531,28 @@ export async function createFilter(
 	);
 	if (shareError) throw new HttpError(400, shareError);
 
-	const [created] = await db
-		.insert(filters)
-		.values({
-			name: input.name,
-			description: input.description ?? null,
-			jql: input.jql,
-			ownerId: actor.id,
-			columns: input.columns ?? [],
-			shared: input.shared ?? false,
-		})
-		.returning({ id: filters.id });
-
-	if (created) {
+	const created = await db.transaction(async (tx) => {
+		const [row] = await tx
+			.insert(filters)
+			.values({
+				name: input.name,
+				description: input.description ?? null,
+				jql: input.jql,
+				ownerId: actor.id,
+				columns: input.columns ?? [],
+				shared: input.shared ?? false,
+			})
+			.returning({ id: filters.id });
+		if (!row) return null;
 		await replaceShares(
-			created.id,
+			tx,
+			row.id,
 			input.sharedProjectIds,
 			input.sharedGroupIds,
 			visible,
 		);
-	}
+		return row;
+	});
 	const row = created ? await loadFilter(created.id, actor.id) : null;
 	if (!row) throw new HttpError(400, "Filter was not created");
 
