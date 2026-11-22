@@ -179,7 +179,7 @@ export type CustomFieldOption = {
 	id: string;
 	value: string;
 	disabled: boolean;
-	children: CustomFieldOption[];
+	children: { id: string; value: string; disabled: boolean }[];
 };
 
 /** A configurable custom field, without the value an issue stores for it. */

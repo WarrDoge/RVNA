@@ -1,8 +1,4 @@
-import type {
-	CustomFieldOption,
-	CustomFieldSpec,
-	UserRef,
-} from "#lib/api-types.ts";
+import type { CustomFieldSpec, UserRef } from "#lib/api-types.ts";
 
 export type StoredUser = { id: string; name: string; displayName: string };
 export type StoredOption = { id?: string; value: string };
@@ -90,10 +86,9 @@ export function toStoredUser(user: UserRef): StoredUser {
 }
 
 /** Enabled options, plus the value already stored even when it was disabled since. */
-export function visibleOptions(
-	options: CustomFieldOption[],
-	selected: StoredOption | null,
-) {
+export function visibleOptions<
+	T extends { id: string; value: string; disabled: boolean },
+>(options: T[], selected: StoredOption | null): T[] {
 	const enabled = options.filter((option) => !option.disabled);
 	if (
 		selected &&
