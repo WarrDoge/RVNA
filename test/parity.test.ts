@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import type pg from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { ConfluenceClient } from "../src/importer/confluence.ts";
 import { JiraClient } from "../src/importer/jira.ts";
@@ -527,6 +528,139 @@ describe("parity checks", () => {
 				[issueId],
 			);
 		}
+	});
+
+	test("a project-scoped snapshot ignores local changes in other projects", async () => {
+		const otherKey = "PARITYO";
+		await pool.query(
+			`insert into projects (source_id, key, name, project_type)
+			 values ($1, $2, $3, 'software')`,
+			["parity-other-project", otherKey, "Parity Other Project"],
+		);
+		const type = await pool.query<{ id: string }>(
+			"select id from issue_types where source_id = $1",
+			[metadata.issueType],
+		);
+		const status = await pool.query<{ id: string }>(
+			"select id from statuses where source_id = $1",
+			[metadata.status],
+		);
+		await pool.query(
+			`insert into issues
+			 (source_id, project_id, number, key, type_id, status_id, summary, locally_changed_at)
+			 select $1, project.id, 1, $2, $3, $4, $5, now()
+			 from projects project where project.key = $6`,
+			[
+				"local:parity-other-1",
+				`${otherKey}-1`,
+				type.rows[0]?.id,
+				status.rows[0]?.id,
+				"Other local issue",
+				otherKey,
+			],
+		);
+		try {
+			const tables = await loadTableSet(pool);
+			const database = await loadJiraSnapshot(pool, tables, {
+				projectKeys: [projectKey],
+			});
+			const localIssues = database.localIssues ?? new Set<string>();
+			expect(localIssues.has(`${otherKey}-1`)).toBe(false);
+			expect(database.issues.has(`${otherKey}-1`)).toBe(false);
+		} finally {
+			await pool.query("delete from projects where key = $1", [otherKey]);
+		}
+	});
+
+	test("a space-scoped snapshot ignores local changes in other spaces", async () => {
+		const otherSpaceKey = "PARITYO";
+		await pool.query(
+			`insert into spaces (source_id, key, name) values ($1, $2, $3)`,
+			["parity-other-space", otherSpaceKey, "Parity Other Space"],
+		);
+		await pool.query(
+			`insert into pages
+			 (source_id, space_id, title, type, status, version_number, position, locally_changed_at)
+			 select $1, space.id, $2, 'page', 'current', 1, 0, now()
+			 from spaces space where space.key = $3`,
+			["parity-other-local-page", "Other local page", otherSpaceKey],
+		);
+		await pool.query(
+			`insert into pages
+			 (source_id, space_id, title, type, status, version_number, position)
+			 select $1, space.id, $2, 'page', 'current', 1, 0
+			 from spaces space where space.key = $3`,
+			["parity-other-fat-page", "Other fat page", otherSpaceKey],
+		);
+		await pool.query(
+			`insert into pages
+			 (source_id, space_id, title, type, status, version_number, position)
+			 select $1, space.id, $2, 'page', 'current', 1, 0
+			 from spaces space where space.key = $3`,
+			["parity-scoped-fat-page", "Scoped fat page", spaceKey],
+		);
+		await pool.query(
+			`insert into page_versions (source_id, page_id, number, title)
+			 select $1, page.id, 1, $2 from pages page where page.source_id = $3`,
+			["fat:parity-other:1", "Other fat page", "parity-other-fat-page"],
+		);
+		await pool.query(
+			`insert into page_versions (source_id, page_id, number, title)
+			 select $1, page.id, 1, $2 from pages page where page.source_id = $3`,
+			["fat:parity-scoped:1", "Scoped fat page", "parity-scoped-fat-page"],
+		);
+		try {
+			const tables = await loadTableSet(pool);
+			const database = await loadWikiSnapshot(pool, tables, {
+				spaceKeys: [spaceKey],
+			});
+			if (!database) throw new Error("seeded wiki was not loaded");
+			const localPages = database.localPages ?? new Set<string>();
+			expect(localPages.has("parity-scoped-fat-page")).toBe(true);
+			expect(localPages.has("parity-other-local-page")).toBe(false);
+			expect(localPages.has("parity-other-fat-page")).toBe(false);
+		} finally {
+			await pool.query(
+				"delete from page_versions where source_id = any($1::text[])",
+				[["fat:parity-other:1", "fat:parity-scoped:1"]],
+			);
+			await pool.query("delete from pages where source_id = any($1::text[])", [
+				[
+					"parity-other-local-page",
+					"parity-other-fat-page",
+					"parity-scoped-fat-page",
+				],
+			]);
+			await pool.query("delete from spaces where key = $1", [otherSpaceKey]);
+		}
+	});
+
+	test("optional wiki tables with missing columns are skipped", async () => {
+		const poolWithMissingColumns = {
+			query: async (sql: string) => {
+				if (
+					/page_versions|page_comments|page_attachments|page_labels|page_restrictions|space_permissions/.test(
+						sql,
+					)
+				) {
+					throw new Error("column does not exist");
+				}
+				return { rows: [] };
+			},
+		} as unknown as pg.Pool;
+		const tables: TableSet = {
+			has: () => true,
+			columns: () => new Set(),
+			hasColumns: () => false,
+		};
+		const database = await loadWikiSnapshot(poolWithMissingColumns, tables);
+		if (!database) throw new Error("wiki snapshot was not loaded");
+		expect(database.versions.size).toBe(0);
+		expect(database.comments.size).toBe(0);
+		expect(database.attachments.size).toBe(0);
+		expect(database.labels.size).toBe(0);
+		expect(database.restrictions.size).toBe(0);
+		expect(database.permissions.size).toBe(0);
 	});
 
 	test("an unparsable update date does not disable changed-since detection", async () => {

@@ -325,11 +325,13 @@ export async function loadJiraSnapshot(
 	tables: TableSet,
 	options: { projectKeys?: string[] } = {},
 ): Promise<JiraDatabaseSnapshot> {
-	const projectFilter =
-		options.projectKeys && options.projectKeys.length > 0
-			? `where project.key = any($1::text[])`
-			: "";
-	const projectParams = [options.projectKeys ?? []];
+	const projectKeys = options.projectKeys ?? [];
+	const scopedProjects = projectKeys.length > 0;
+	const projectFilter = scopedProjects
+		? `where project.key = any($1::text[])`
+		: "";
+	const projectAnd = scopedProjects ? `and project.key = any($1::text[])` : "";
+	const projectParams = [projectKeys];
 	const projects = await pool.query<{ key: string }>(
 		`select key from projects project ${projectFilter} order by key`,
 		projectFilter ? projectParams : [],
@@ -337,16 +339,15 @@ export async function loadJiraSnapshot(
 	const localIssues = new Set<string>();
 	if (tables.hasColumns("issues", ["locally_changed_at"])) {
 		const rows = await pool.query<{ key: string }>(
-			`select key from issues
-			 where locally_changed_at is not null
-			    or source_id like 'fat:%' or source_id like 'local:%'`,
+			`select issue.key from issues issue
+			 join projects project on project.id = issue.project_id
+			 where (issue.locally_changed_at is not null
+			    or issue.source_id like 'fat:%' or issue.source_id like 'local:%')
+			 ${projectAnd}`,
+			projectAnd ? projectParams : [],
 		);
 		for (const row of rows.rows) localIssues.add(row.key);
 	}
-	const issueFilter =
-		options.projectKeys && options.projectKeys.length > 0
-			? `where project.key = any($1::text[])`
-			: "";
 	const issueRows = await pool.query<{
 		key: string;
 		number: number;
@@ -385,10 +386,10 @@ export async function loadJiraSnapshot(
 		join statuses status on status.id = issue.status_id
 		left join resolutions resolution on resolution.id = issue.resolution_id
 		left join users assignee on assignee.id = issue.assignee_id
-		${issueFilter}
+		${projectFilter}
 		order by issue.key
 		`,
-		issueFilter ? projectParams : [],
+		projectFilter ? projectParams : [],
 	);
 	const issues = new Map<string, JiraIssueData>();
 	for (const row of issueRows.rows) {
@@ -439,10 +440,6 @@ export async function loadJiraSnapshot(
 		"select source_id from link_types order by source_id",
 	);
 
-	const versionFilter =
-		options.projectKeys && options.projectKeys.length > 0
-			? "where project.key = any($1::text[])"
-			: "";
 	const versions = await pool.query<{
 		project_key: string;
 		source_id: string;
@@ -451,10 +448,10 @@ export async function loadJiraSnapshot(
 		select project.key as project_key, version.source_id
 		from versions version
 		join projects project on project.id = version.project_id
-		${versionFilter}
+		${projectFilter}
 		order by project.key, version.source_id
 		`,
-		versionFilter ? projectParams : [],
+		projectFilter ? projectParams : [],
 	);
 	const components = await pool.query<{
 		project_key: string;
@@ -464,10 +461,10 @@ export async function loadJiraSnapshot(
 		select project.key as project_key, component.source_id
 		from components component
 		join projects project on project.id = component.project_id
-		${versionFilter}
+		${projectFilter}
 		order by project.key, component.source_id
 		`,
-		versionFilter ? projectParams : [],
+		projectFilter ? projectParams : [],
 	);
 	const versionsByProject = new Map<string, string[]>();
 	const componentsByProject = new Map<string, string[]>();
@@ -501,11 +498,11 @@ export async function loadJiraSnapshot(
 		left join issue_types issue_type on issue_type.id = project_workflow.issue_type_id
 		left join workflow_statuses workflow_status on workflow_status.workflow_id = workflow.id
 		left join statuses status on status.id = workflow_status.status_id
-		${versionFilter}
+		${projectFilter}
 		group by project.key, issue_type.source_id, workflow.id
 		order by project.key, issue_type.source_id nulls first
 		`,
-		versionFilter ? projectParams : [],
+		projectFilter ? projectParams : [],
 	);
 	const projectWorkflows: JiraProjectWorkflowData[] = workflowRows.rows.map(
 		(row) => ({
@@ -548,11 +545,12 @@ export async function loadWikiSnapshot(
 	options: { spaceKeys?: string[] } = {},
 ): Promise<WikiDatabaseSnapshot | null> {
 	if (!tables.has("spaces") || !tables.has("pages")) return null;
-	const spaceFilter =
-		options.spaceKeys && options.spaceKeys.length > 0
-			? "where key = any($1::text[])"
-			: "";
-	const spaceParams = [options.spaceKeys ?? []];
+	const spaceKeys = options.spaceKeys ?? [];
+	const scopedSpaces = spaceKeys.length > 0;
+	const spaceParams = [spaceKeys];
+	const spaceFilter = scopedSpaces ? "where key = any($1::text[])" : "";
+	const pageFilter = scopedSpaces ? "where space.key = any($1::text[])" : "";
+	const socialFilter = scopedSpaces ? "and space.key = any($1::text[])" : "";
 	const spaces = await pool.query<{
 		key: string;
 		source_id: string;
@@ -564,24 +562,27 @@ export async function loadWikiSnapshot(
 	const localPages = new Set<string>();
 	if (tables.hasColumns("pages", ["locally_changed_at"])) {
 		const rows = await pool.query<{ source_id: string }>(
-			`select source_id from pages
-			 where locally_changed_at is not null
-			    or source_id like 'fat:%' or source_id like 'local:%'`,
+			`select page.source_id
+			 from pages page
+			 join spaces space on space.id = page.space_id
+			 where (page.locally_changed_at is not null
+			    or page.source_id like 'fat:%' or page.source_id like 'local:%')
+			 ${socialFilter}`,
+			socialFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) localPages.add(row.source_id);
 	}
-	if (tables.has("page_versions")) {
+	if (tables.hasColumns("page_versions", ["source_id", "page_id"])) {
 		const rows = await pool.query<{ source_id: string }>(
 			`select distinct page.source_id
-			 from page_versions version join pages page on page.id = version.page_id
-			 where version.source_id like 'fat:%'`,
+			 from page_versions version
+			 join pages page on page.id = version.page_id
+			 join spaces space on space.id = page.space_id
+			 where version.source_id like 'fat:%' ${socialFilter}`,
+			socialFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) localPages.add(row.source_id);
 	}
-	const pageFilter =
-		options.spaceKeys && options.spaceKeys.length > 0
-			? "where space.key = any($1::text[])"
-			: "";
 	const pageRows = await pool.query<{
 		source_id: string;
 		space_key: string;
@@ -620,12 +621,8 @@ export async function loadWikiSnapshot(
 		});
 	}
 
-	const wikiFilter =
-		options.spaceKeys && options.spaceKeys.length > 0
-			? "where space.key = any($1::text[])"
-			: "";
 	const versions = new Map<string, number>();
-	if (tables.has("page_versions")) {
+	if (tables.hasColumns("page_versions", ["source_id", "page_id"])) {
 		const rows = await pool.query<{ page_source_id: string; count: number }>(
 			`
 			select page.source_id as page_source_id, count(*)::int as count
@@ -634,16 +631,16 @@ export async function loadWikiSnapshot(
 			join spaces space on space.id = page.space_id
 			where version.source_id not like 'fat:%'
 			  and version.source_id not like 'local:%'
-			  ${wikiFilter ? "and space.key = any($1::text[])" : ""}
+			  ${socialFilter}
 			group by page.source_id
 			`,
-			wikiFilter ? spaceParams : [],
+			socialFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) versions.set(row.page_source_id, row.count);
 	}
 
 	const comments = new Map<string, { page: number; inline: number }>();
-	if (tables.has("page_comments")) {
+	if (tables.hasColumns("page_comments", ["page_id", "inline"])) {
 		const rows = await pool.query<{
 			page_source_id: string;
 			page: number;
@@ -656,10 +653,10 @@ export async function loadWikiSnapshot(
 			from page_comments comment
 			join pages page on page.id = comment.page_id
 			join spaces space on space.id = page.space_id
-			${wikiFilter}
+			${pageFilter}
 			group by page.source_id
 			`,
-			wikiFilter ? spaceParams : [],
+			pageFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows)
 			comments.set(row.page_source_id, {
@@ -669,7 +666,14 @@ export async function loadWikiSnapshot(
 	}
 
 	const attachments = new Map<string, WikiAttachmentData[]>();
-	if (tables.has("page_attachments")) {
+	if (
+		tables.hasColumns("page_attachments", [
+			"page_id",
+			"source_id",
+			"size",
+			"sha256",
+		])
+	) {
 		const rows = await pool.query<{
 			page_source_id: string;
 			source_id: string;
@@ -681,9 +685,9 @@ export async function loadWikiSnapshot(
 			from page_attachments attachment
 			join pages page on page.id = attachment.page_id
 			join spaces space on space.id = page.space_id
-			${wikiFilter}
+			${pageFilter}
 			`,
-			wikiFilter ? spaceParams : [],
+			pageFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) {
 			const list = attachments.get(row.page_source_id) ?? [];
@@ -697,17 +701,17 @@ export async function loadWikiSnapshot(
 	}
 
 	const labels = new Map<string, string[]>();
-	if (tables.has("page_labels")) {
+	if (tables.hasColumns("page_labels", ["page_id", "label"])) {
 		const rows = await pool.query<{ page_source_id: string; label: string }>(
 			`
 			select page.source_id as page_source_id, label.label
 			from page_labels label
 			join pages page on page.id = label.page_id
 			join spaces space on space.id = page.space_id
-			${wikiFilter}
+			${pageFilter}
 			order by page.source_id, label.label
 			`,
-			wikiFilter ? spaceParams : [],
+			pageFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) {
 			const list = labels.get(row.page_source_id) ?? [];
@@ -717,7 +721,14 @@ export async function loadWikiSnapshot(
 	}
 
 	const restrictions = new Map<string, string[]>();
-	if (tables.has("page_restrictions")) {
+	if (
+		tables.hasColumns("page_restrictions", [
+			"page_id",
+			"operation",
+			"group_name",
+			"user_id",
+		])
+	) {
 		const rows = await pool.query<{
 			page_source_id: string;
 			operation: string;
@@ -731,9 +742,9 @@ export async function loadWikiSnapshot(
 			join pages page on page.id = restriction.page_id
 			join spaces space on space.id = page.space_id
 			left join users subject on subject.id = restriction.user_id
-			${wikiFilter}
+			${pageFilter}
 			`,
-			wikiFilter ? spaceParams : [],
+			pageFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) {
 			const subject = row.group_name
@@ -749,7 +760,15 @@ export async function loadWikiSnapshot(
 	}
 
 	const permissions = new Map<string, string[]>();
-	if (tables.has("space_permissions")) {
+	if (
+		tables.hasColumns("space_permissions", [
+			"space_id",
+			"permission",
+			"anonymous",
+			"group_name",
+			"user_id",
+		])
+	) {
 		const rows = await pool.query<{
 			space_key: string;
 			permission: string;
@@ -763,9 +782,9 @@ export async function loadWikiSnapshot(
 			from space_permissions permission
 			join spaces space on space.id = permission.space_id
 			left join users subject on subject.id = permission.user_id
-			${wikiFilter}
+			${pageFilter}
 			`,
-			wikiFilter ? spaceParams : [],
+			pageFilter ? spaceParams : [],
 		);
 		for (const row of rows.rows) {
 			const subject = row.anonymous
@@ -782,10 +801,6 @@ export async function loadWikiSnapshot(
 		}
 	}
 
-	const socialFilter =
-		options.spaceKeys && options.spaceKeys.length > 0
-			? "and space.key = any($1::text[])"
-			: "";
 	const pageWatchers = new Map<string, number>();
 	if (tables.hasColumns("page_watchers", ["page_id", "source_id"])) {
 		const rows = await pool.query<{ page_source_id: string; count: number }>(
