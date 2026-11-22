@@ -220,7 +220,7 @@ describe("parseSprintDescriptor", () => {
 	});
 });
 
-type ImportDatabase = Parameters<typeof importAgileLocal>[0];
+type ImportDatabase = NonNullable<Parameters<typeof importAgileLocal>[0]>;
 
 /** Fails the insert of one table, so an import can be interrupted midway. */
 function databaseFailingOn(

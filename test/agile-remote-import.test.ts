@@ -283,7 +283,7 @@ class FakeClient {
 	}
 }
 
-type ImportDatabase = Parameters<typeof importJiraAgile>[1];
+type ImportDatabase = NonNullable<Parameters<typeof importJiraAgile>[1]>;
 
 /** Fails the insert of one table, so a replacement can be interrupted midway. */
 function databaseFailingOn(
