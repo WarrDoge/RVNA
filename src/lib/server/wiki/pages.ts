@@ -180,7 +180,7 @@ export async function spaceTreeRoots(space: SpaceRow) {
 		const [home] = await db
 			.select(pageRefColumns)
 			.from(pages)
-			.where(eq(pages.id, space.homePageId))
+			.where(and(eq(pages.id, space.homePageId), eq(pages.status, "current")))
 			.limit(1);
 		if (home) {
 			return [{ ...home, hasChildren: await hasChildren(home.id) }];
