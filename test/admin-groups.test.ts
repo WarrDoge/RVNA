@@ -130,6 +130,59 @@ test("concurrent identical group names answer 409", async () => {
 	}
 });
 
+test("concurrent group names that differ only in case keep one group", async () => {
+	const groupName = name("case-race");
+	const otherName = name("CASE-RACE");
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	const fn = `group_case_delay_${run}`;
+	await pool.query(`drop trigger if exists ${fn} on groups`);
+	await pool.query(`drop function if exists ${fn}()`);
+	await pool.query(
+		`create function ${fn}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.4); return new; end $$`,
+	);
+	await pool.query(
+		`create trigger ${fn} before insert on groups for each row execute function ${fn}()`,
+	);
+	try {
+		const first = createGroup(groupName);
+		const second = createGroup(otherName);
+		await both;
+		restore();
+		release();
+		const responses = await Promise.all([first, second]);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			201, 409,
+		]);
+		const rows = await db
+			.select({ id: groups.id })
+			.from(groups)
+			.where(sql`lower(${groups.name}) = ${groupName.toLowerCase()}`);
+		expect(rows).toHaveLength(1);
+	} finally {
+		restore();
+		await pool.query(`drop trigger if exists ${fn} on groups`);
+		await pool.query(`drop function if exists ${fn}()`);
+		await db
+			.delete(groups)
+			.where(sql`lower(${groups.name}) = ${groupName.toLowerCase()}`);
+	}
+});
+
 test("a name that an SSO group already uses is refused", async () => {
 	const created = await createGroup(name("sso"));
 	expect(created.statusCode).toBe(409);
@@ -336,6 +389,12 @@ test("members of an SSO group follow their source, members added here are editab
 	expect(
 		local.json().group.members.map((member: { id: string }) => member.id),
 	).toEqual([bob.id]);
+	const removal = (await auditRows(ssoGroupId)).find(
+		(row) =>
+			row.action === "group.member.remove" &&
+			row.summary.includes(bob.username),
+	);
+	expect(removal?.summary).toContain("local membership");
 
 	const deleted = await injectAs(app, admin.session, "DELETE", url);
 	expect(deleted.statusCode).toBe(409);
@@ -343,6 +402,86 @@ test("members of an SSO group follow their source, members added here are editab
 	expect(
 		await db.select().from(groups).where(eq(groups.id, ssoGroupId)),
 	).toHaveLength(1);
+});
+
+test("a member with several sources appears once", async () => {
+	const created = await createGroup(name("multi-source"));
+	const groupId = created.json().group.id;
+	await db.insert(userGroups).values([
+		{ userId: alice.id, groupId, source: "local" },
+		{ userId: alice.id, groupId, source: "oidc" },
+	]);
+
+	const detail = await injectAs(
+		app,
+		admin.session,
+		"GET",
+		`/api/admin/groups/${groupId}`,
+	);
+	expect(detail.statusCode).toBe(200);
+	const members = detail.json().members as {
+		id: string;
+		sources: string[];
+	}[];
+	expect(members).toHaveLength(1);
+	expect(members[0]?.id).toBe(alice.id);
+	expect(members[0]?.sources.sort()).toEqual(["local", "oidc"]);
+});
+
+test("concurrent member removals audit once", async () => {
+	const created = await createGroup(name("member-race"));
+	const groupId = created.json().group.id;
+	const carol = await makeUser(run, "carol");
+	const added = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		`/api/admin/groups/${groupId}/members`,
+		{ userId: carol.id },
+	);
+	expect(added.statusCode).toBe(200);
+
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const request = () =>
+			injectAs(
+				app,
+				admin.session,
+				"DELETE",
+				`/api/admin/groups/${groupId}/members/${carol.id}`,
+			);
+		const first = request();
+		const second = request();
+		await both;
+		restore();
+		release();
+		const responses = await Promise.all([first, second]);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			200, 404,
+		]);
+		const removals = (await auditRows(groupId)).filter(
+			(row) => row.action === "group.member.remove",
+		);
+		expect(removals).toHaveLength(1);
+	} finally {
+		restore();
+		release();
+	}
 });
 
 test("deleting a local group removes its memberships", async () => {

@@ -82,10 +82,16 @@ async function groupDetail(id: string) {
 	const members: (Omit<(typeof rows)[number], "source"> & {
 		sources: string[];
 	})[] = [];
+	const byId = new Map<string, (typeof members)[number]>();
 	for (const { source, ...member } of rows) {
-		const existing = members.find((item) => item.id === member.id);
-		if (existing) existing.sources.push(source);
-		else members.push({ ...member, sources: [source] });
+		const existing = byId.get(member.id);
+		if (existing) {
+			existing.sources.push(source);
+			continue;
+		}
+		const added = { ...member, sources: [source] };
+		members.push(added);
+		byId.set(added.id, added);
 	}
 	return { ...group, members };
 }
@@ -146,6 +152,9 @@ export async function createGroup(
 	const name = body.name;
 	try {
 		const created = await db.transaction(async (tx) => {
+			await tx.execute(
+				sql`select pg_advisory_xact_lock(hashtext(lower(${name}))::bigint)`,
+			);
 			const [existing] = await tx
 				.select({ id: groups.id })
 				.from(groups)
@@ -272,9 +281,10 @@ export async function removeGroupMember(
 	if (!memberships.some((row) => row.source === "local")) {
 		throw new HttpError(409, followsSourceMessage);
 	}
+	const otherSources = memberships.some((row) => row.source !== "local");
 
 	await db.transaction(async (tx) => {
-		await tx
+		const [removed] = await tx
 			.delete(userGroups)
 			.where(
 				and(
@@ -282,12 +292,18 @@ export async function removeGroupMember(
 					eq(userGroups.userId, member.id),
 					eq(userGroups.source, "local"),
 				),
-			);
+			)
+			.returning({ source: userGroups.source });
+		if (!removed) {
+			throw new HttpError(404, "That user is not a member of this group");
+		}
 		await audit(tx, actor, {
 			action: "group.member.remove",
 			entityType: "group",
 			entityId: group.id,
-			summary: `Removed ${member.username} from group ${group.name}`,
+			summary: otherSources
+				? `Removed the local membership of ${member.username} from group ${group.name}`
+				: `Removed ${member.username} from group ${group.name}`,
 			changes: {
 				from: { group: group.name, user: member.username },
 				to: null,
