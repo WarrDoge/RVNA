@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../db.ts";
 import { projects, projectWorkflows, workflowTransitions } from "../schema.ts";
 import {
@@ -71,12 +71,17 @@ export async function projectGitlabSettings(projectId: string) {
 		.where(eq(gitlabProjectSettings.projectId, projectId))
 		.limit(1);
 	const repositories = await repositoriesForProject(projectId);
+	const linkedRepositoryIds = repositories
+		.filter((repository) => repository.linked)
+		.map((repository) => repository.id);
 	return {
 		repositories,
-		linkedRepositoryIds: repositories
-			.filter((repository) => repository.linked)
-			.map((repository) => repository.id),
-		defaultRepositoryId: row?.defaultRepositoryId ?? null,
+		linkedRepositoryIds,
+		defaultRepositoryId:
+			row?.defaultRepositoryId &&
+			linkedRepositoryIds.includes(row.defaultRepositoryId)
+				? row.defaultRepositoryId
+				: (linkedRepositoryIds[0] ?? null),
 		smartCommitsEnabled: row?.smartCommitsEnabled ?? false,
 		mergeRequestOpenedEnabled: row?.mergeRequestOpenedEnabled ?? false,
 		mergeRequestOpenedTransitions: stringList(
@@ -100,17 +105,43 @@ export async function saveProjectGitlabSettings(
 	projectId: string,
 	body: ProjectGitlabSettingsBody,
 ) {
-	const known = await db
-		.select({ id: gitlabRepositories.id })
-		.from(gitlabRepositories);
+	const requestedIds = [...new Set(body.linkedRepositoryIds)];
+	const [known, availableTransitions] = await Promise.all([
+		db
+			.select({ id: gitlabRepositories.id })
+			.from(gitlabRepositories)
+			.where(inArray(gitlabRepositories.id, requestedIds)),
+		availableTransitionNames(projectId),
+	]);
 	const knownIds = new Set(known.map((row) => row.id));
-	const linked = [...new Set(body.linkedRepositoryIds)].filter((id) =>
-		knownIds.has(id),
-	);
+	const linked = requestedIds.filter((id) => knownIds.has(id));
 	const defaultRepositoryId =
 		body.defaultRepositoryId && linked.includes(body.defaultRepositoryId)
 			? body.defaultRepositoryId
 			: (linked[0] ?? null);
+	const canonicalTransitions = new Map(
+		availableTransitions.map((name) => [name.toLowerCase(), name]),
+	);
+	const transitions = (names: string[]) => {
+		const result: string[] = [];
+		for (const name of names) {
+			const canonical = canonicalTransitions.get(name.toLowerCase());
+			if (canonical && !result.includes(canonical)) result.push(canonical);
+		}
+		return result;
+	};
+	const settings = {
+		defaultRepositoryId,
+		smartCommitsEnabled: body.smartCommitsEnabled,
+		mergeRequestOpenedEnabled: body.mergeRequestOpenedEnabled,
+		mergeRequestOpenedTransitions: transitions(
+			body.mergeRequestOpenedTransitions,
+		),
+		mergeRequestMergedEnabled: body.mergeRequestMergedEnabled,
+		mergeRequestMergedTransitions: transitions(
+			body.mergeRequestMergedTransitions,
+		),
+	};
 
 	await db.transaction(async (tx) => {
 		await tx
@@ -123,26 +154,10 @@ export async function saveProjectGitlabSettings(
 		}
 		await tx
 			.insert(gitlabProjectSettings)
-			.values({
-				projectId,
-				defaultRepositoryId,
-				smartCommitsEnabled: body.smartCommitsEnabled,
-				mergeRequestOpenedEnabled: body.mergeRequestOpenedEnabled,
-				mergeRequestOpenedTransitions: body.mergeRequestOpenedTransitions,
-				mergeRequestMergedEnabled: body.mergeRequestMergedEnabled,
-				mergeRequestMergedTransitions: body.mergeRequestMergedTransitions,
-			})
+			.values({ projectId, ...settings })
 			.onConflictDoUpdate({
 				target: gitlabProjectSettings.projectId,
-				set: {
-					defaultRepositoryId,
-					smartCommitsEnabled: body.smartCommitsEnabled,
-					mergeRequestOpenedEnabled: body.mergeRequestOpenedEnabled,
-					mergeRequestOpenedTransitions: body.mergeRequestOpenedTransitions,
-					mergeRequestMergedEnabled: body.mergeRequestMergedEnabled,
-					mergeRequestMergedTransitions: body.mergeRequestMergedTransitions,
-					updatedAt: new Date(),
-				},
+				set: { ...settings, updatedAt: new Date() },
 			});
 	});
 }
