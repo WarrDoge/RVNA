@@ -161,7 +161,7 @@ interface SystemAvatars {
 async function loadSystemAvatars(
 	client: JiraClient,
 	baseUrl: string,
-	kind: "user" | "project" | "issuetype",
+	kind: "user" | "project" | "issuetype" | "priority",
 	onlyIds?: ReadonlySet<string>,
 ): Promise<SystemAvatars> {
 	const response = await client.getJson<{
@@ -184,8 +184,12 @@ async function loadSystemAvatars(
 			pending ??= (async () => {
 				const hashes = new Set<string>();
 				for (const url of candidates) {
-					const bytes = await client.getBytes(requestPath(url, baseUrl));
-					hashes.add(createHash("sha256").update(bytes).digest("hex"));
+					try {
+						const bytes = await client.getBytes(requestPath(url, baseUrl));
+						hashes.add(createHash("sha256").update(bytes).digest("hex"));
+					} catch {
+						// One unavailable system avatar must not stop the whole import.
+					}
 				}
 				return hashes;
 			})();
@@ -215,17 +219,27 @@ async function saveAvatar(
 	id: string,
 	file: string,
 	sourceUrl: string | null,
+	previous: string | null,
+	avatarsDir: string,
 ) {
 	if (table === users) {
 		await db
 			.update(users)
-			.set({ avatarFile: file, avatarUrl: sourceUrl, updatedAt: new Date() })
+			.set({
+				avatarFile: file,
+				avatarUrl: sourceUrl,
+				avatarSource: null,
+				updatedAt: new Date(),
+			})
 			.where(eq(users.id, id));
 	} else {
 		await db
 			.update(projects)
 			.set({ avatarFile: file, avatarUrl: sourceUrl, updatedAt: new Date() })
 			.where(eq(projects.id, id));
+	}
+	if (previous && previous !== file) {
+		await deleteAvatarFileIfUnused(avatarsDir, previous);
 	}
 }
 
@@ -240,6 +254,7 @@ async function saveUserSource(
 		.set({
 			avatarUrl: sourceUrl,
 			avatarFile: file ? null : undefined,
+			avatarSource: file ? null : undefined,
 			updatedAt: new Date(),
 		})
 		.where(eq(users.id, id));
@@ -329,7 +344,7 @@ async function clearStoredIcon(
 	} else {
 		await db
 			.update(priorities)
-			.set({ iconFile: null, updatedAt: new Date() })
+			.set({ iconUrl: null, iconFile: null, updatedAt: new Date() })
 			.where(eq(priorities.id, id));
 	}
 	if (file) await deleteAvatarFileIfUnused(avatarsDir, file);
@@ -422,7 +437,14 @@ async function importJiraUsers(
 			counts.unchanged++;
 			continue;
 		}
-		await saveAvatar(users, row.id, stored.file, url);
+		await saveAvatar(
+			users,
+			row.id,
+			stored.file,
+			url,
+			row.avatarFile,
+			options.avatarsDir,
+		);
 		addResult(counts, row.avatarFile, stored.file);
 	}
 }
@@ -511,7 +533,14 @@ async function importJiraProjects(
 			counts.unchanged++;
 			continue;
 		}
-		await saveAvatar(projects, row.id, stored.file, url);
+		await saveAvatar(
+			projects,
+			row.id,
+			stored.file,
+			url,
+			row.avatarFile,
+			options.avatarsDir,
+		);
 		addResult(counts, row.avatarFile, stored.file);
 	}
 }
@@ -544,7 +573,7 @@ async function importJiraIssueTypes(
 		const row = bySource.get(item.id);
 		if (!row) continue;
 		const url = item.iconUrl ?? null;
-		if (isBuiltInJiraIcon({ url, baseUrl, systemIds })) {
+		if (!url || isBuiltInJiraIcon({ url, baseUrl, systemIds })) {
 			if (row.iconFile || row.iconUrl !== null) {
 				await clearStoredIcon(
 					issueTypes,
@@ -558,10 +587,6 @@ async function importJiraIssueTypes(
 		}
 		if (row.iconFile && row.iconUrl === url) {
 			counts.unchanged++;
-			continue;
-		}
-		if (!url) {
-			counts.skipped++;
 			continue;
 		}
 		let bytes: Buffer;
@@ -596,6 +621,7 @@ async function importJiraPriorities(
 	baseUrl: string,
 	options: AvatarImportOptions,
 	counts: AvatarKindCounts,
+	systemIds: ReadonlySet<string> | null,
 ) {
 	const remote = await client.getJson<JiraPriority[]>("/rest/api/2/priority");
 	const wanted = new Set(remote.map((item) => item.id));
@@ -603,6 +629,7 @@ async function importJiraPriorities(
 		.select({
 			id: priorities.id,
 			sourceId: priorities.sourceId,
+			iconUrl: priorities.iconUrl,
 			iconFile: priorities.iconFile,
 		})
 		.from(priorities)
@@ -617,8 +644,8 @@ async function importJiraPriorities(
 		const row = bySource.get(item.id);
 		if (!row) continue;
 		const url = item.iconUrl ?? null;
-		if (isBuiltInJiraIcon({ url, baseUrl })) {
-			if (row.iconFile) {
+		if (!url || isBuiltInJiraIcon({ url, baseUrl, systemIds })) {
+			if (row.iconFile || row.iconUrl !== null) {
 				await clearStoredIcon(
 					priorities,
 					row.id,
@@ -629,12 +656,8 @@ async function importJiraPriorities(
 			counts.skipped++;
 			continue;
 		}
-		if (row.iconFile) {
+		if (row.iconFile && row.iconUrl === url) {
 			counts.unchanged++;
-			continue;
-		}
-		if (!url) {
-			counts.skipped++;
 			continue;
 		}
 		let bytes: Buffer;
@@ -651,7 +674,7 @@ async function importJiraPriorities(
 		}
 		await db
 			.update(priorities)
-			.set({ iconFile: stored.file, updatedAt: new Date() })
+			.set({ iconUrl: url, iconFile: stored.file, updatedAt: new Date() })
 			.where(eq(priorities.id, row.id));
 		if (row.iconFile && row.iconFile !== stored.file) {
 			await deleteAvatarFileIfUnused(options.avatarsDir, row.iconFile);
@@ -666,13 +689,17 @@ export async function importJiraAvatars(
 ): Promise<AvatarImportCounts> {
 	const baseUrl = options.baseUrl;
 	const counts = emptyAvatarImportCounts();
-	const [userSystem, projectSystem, issueTypeSystemIds] = await Promise.all([
-		loadSystemAvatars(client, baseUrl, "user"),
-		loadSystemAvatars(client, baseUrl, "project", GENERIC_PROJECT_AVATAR_IDS),
-		loadSystemAvatars(client, baseUrl, "issuetype")
-			.then((system) => system.ids)
-			.catch(() => null),
-	]);
+	const [userSystem, projectSystem, issueTypeSystemIds, prioritySystemIds] =
+		await Promise.all([
+			loadSystemAvatars(client, baseUrl, "user"),
+			loadSystemAvatars(client, baseUrl, "project", GENERIC_PROJECT_AVATAR_IDS),
+			loadSystemAvatars(client, baseUrl, "issuetype")
+				.then((system) => system.ids)
+				.catch(() => null),
+			loadSystemAvatars(client, baseUrl, "priority")
+				.then((system) => system.ids)
+				.catch(() => null),
+		]);
 	await importJiraUsers(client, baseUrl, options, counts.users, userSystem);
 	await importJiraProjects(
 		client,
@@ -688,7 +715,13 @@ export async function importJiraAvatars(
 		counts.issueTypes,
 		issueTypeSystemIds,
 	);
-	await importJiraPriorities(client, baseUrl, options, counts.priorities);
+	await importJiraPriorities(
+		client,
+		baseUrl,
+		options,
+		counts.priorities,
+		prioritySystemIds,
+	);
 	return counts;
 }
 
@@ -713,16 +746,26 @@ async function importConfluenceSpaces(
 			key: spaces.key,
 			iconPath: spaces.iconPath,
 			iconFile: spaces.iconFile,
+			iconSource: spaces.iconSource,
 		})
 		.from(spaces)
 		.where(scope ? inArray(spaces.id, scope) : undefined);
 
 	for (const row of rows) {
 		if (defaultConfluencePicture(row.iconPath)) {
+			if (row.iconFile || row.iconSource) {
+				await db
+					.update(spaces)
+					.set({ iconFile: null, iconSource: null, updatedAt: new Date() })
+					.where(eq(spaces.id, row.id));
+				if (row.iconFile) {
+					await deleteAvatarFileIfUnused(options.avatarsDir, row.iconFile);
+				}
+			}
 			counts.skipped++;
 			continue;
 		}
-		if (row.iconFile) {
+		if (row.iconFile && row.iconSource === row.iconPath) {
 			counts.unchanged++;
 			continue;
 		}
@@ -742,8 +785,15 @@ async function importConfluenceSpaces(
 		}
 		await db
 			.update(spaces)
-			.set({ iconFile: stored.file, updatedAt: new Date() })
+			.set({
+				iconFile: stored.file,
+				iconSource: row.iconPath,
+				updatedAt: new Date(),
+			})
 			.where(eq(spaces.id, row.id));
+		if (row.iconFile && row.iconFile !== stored.file) {
+			await deleteAvatarFileIfUnused(options.avatarsDir, row.iconFile);
+		}
 		addResult(counts, row.iconFile, stored.file);
 	}
 }
@@ -762,6 +812,7 @@ async function importConfluenceUsers(
 			username: users.username,
 			sourceKey: users.sourceKey,
 			avatarFile: users.avatarFile,
+			avatarSource: users.avatarSource,
 		})
 		.from(users)
 		.where(scope ? inArray(users.id, scope) : isNotNull(users.sourceKey));
@@ -778,21 +829,30 @@ async function importConfluenceUsers(
 			bySource.get(key) ??
 			(user.username ? byUsername.get(user.username.toLowerCase()) : undefined);
 		if (!row) continue;
-		if (row.avatarFile) {
-			counts.unchanged++;
-			continue;
-		}
 		const path = user.profilePicture?.path ?? null;
 		if (
 			!path ||
 			user.profilePicture?.isDefault === true ||
 			defaultConfluencePicture(path)
 		) {
+			if (row.avatarFile || row.avatarSource) {
+				await db
+					.update(users)
+					.set({ avatarFile: null, avatarSource: null, updatedAt: new Date() })
+					.where(eq(users.id, row.id));
+				if (row.avatarFile) {
+					await deleteAvatarFileIfUnused(options.avatarsDir, row.avatarFile);
+				}
+			}
 			counts.skipped++;
 			continue;
 		}
 		if (!sameOrigin(path, baseUrl)) {
 			counts.skipped++;
+			continue;
+		}
+		if (row.avatarFile && row.avatarSource === path) {
+			counts.unchanged++;
 			continue;
 		}
 		let bytes: Buffer;
@@ -809,8 +869,15 @@ async function importConfluenceUsers(
 		}
 		await db
 			.update(users)
-			.set({ avatarFile: stored.file, updatedAt: new Date() })
+			.set({
+				avatarFile: stored.file,
+				avatarSource: path,
+				updatedAt: new Date(),
+			})
 			.where(eq(users.id, row.id));
+		if (row.avatarFile && row.avatarFile !== stored.file) {
+			await deleteAvatarFileIfUnused(options.avatarsDir, row.avatarFile);
+		}
 		addResult(counts, row.avatarFile, stored.file);
 	}
 }
@@ -829,7 +896,7 @@ export async function importConfluenceAvatars(
 
 async function wikiTablesExist() {
 	const result = await db.execute(
-		"select to_regclass('public.spaces') is not null as present",
+		"select to_regclass('spaces') is not null as present",
 	);
 	return Boolean(
 		(result.rows[0] as { present?: boolean } | undefined)?.present,

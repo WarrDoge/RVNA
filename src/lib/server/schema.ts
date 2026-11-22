@@ -26,6 +26,7 @@ export const users = pgTable("users", {
 	displayName: text("display_name").notNull(),
 	avatarUrl: text("avatar_url"),
 	avatarFile: text("avatar_file"),
+	avatarSource: text("avatar_source"),
 	active: boolean("active").notNull().default(true),
 	isAdmin: boolean("is_admin").notNull().default(false),
 	adminLocal: boolean("admin_local").notNull().default(false),
@@ -168,6 +169,7 @@ export const priorities = pgTable("priorities", {
 	name: text("name").notNull(),
 	sequence: integer("sequence").notNull().default(0),
 	iconColor: text("icon_color"),
+	iconUrl: text("icon_url"),
 	iconFile: text("icon_file"),
 	...importedAt,
 });

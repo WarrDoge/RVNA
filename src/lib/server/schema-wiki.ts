@@ -52,6 +52,7 @@ export const spaces = pgTable(
 			.default("current"),
 		iconPath: text("icon_path"),
 		iconFile: text("icon_file"),
+		iconSource: text("icon_source"),
 		created: timestamp("created", { withTimezone: true }),
 		creatorId: uuid("creator_id").references(() => users.id, {
 			onDelete: "set null",

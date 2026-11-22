@@ -49,6 +49,18 @@ const priorityPng = Buffer.concat([
 	Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
 	Buffer.from("priority"),
 ]);
+const customPriorityAvatarPng = Buffer.concat([
+	Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+	Buffer.from("custom-priority-avatar"),
+]);
+const firstRefreshPriorityPng = Buffer.concat([
+	Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+	Buffer.from("priority-one"),
+]);
+const secondPriorityPng = Buffer.concat([
+	Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+	Buffer.from("priority-two"),
+]);
 
 const systemUserUrl = `${baseUrl}/system-user.png?avatarId=10335`;
 const systemProjectUrl = `${baseUrl}/system-project.png?avatarId=10324`;
@@ -56,6 +68,8 @@ const customUserUrl = `${baseUrl}/custom-user.png?ownerId=JIRAUSER1&avatarId=109
 const customProjectUrl = `${baseUrl}/custom-project.png?ownerId=1&avatarId=11000`;
 const typeIconUrl = `${baseUrl}/type.svg`;
 const priorityIconUrl = `${baseUrl}/priority.png`;
+const prioritySystemUrl = `${baseUrl}/secure/viewavatar?avatarId=10000&avatarType=priority`;
+const customPriorityAvatarUrl = `${baseUrl}/secure/viewavatar?avatarId=10904&avatarType=priority`;
 const builtinTypeUrl = `${baseUrl}/images/icons/issuetypes/bug.svg`;
 const builtinPriorityUrl = `${baseUrl}/images/icons/priorities/highest.svg`;
 const staleTypeFile = `${"a".repeat(64)}.svg`;
@@ -104,6 +118,18 @@ class MockJiraClient {
 						id: "10300",
 						urls: {
 							"48x48": `${baseUrl}/images/icons/issuetypes/generic.svg`,
+						},
+					},
+				],
+			} as T;
+		}
+		if (path === "/rest/api/2/avatar/priority/system") {
+			return {
+				system: [
+					{
+						id: "10000",
+						urls: {
+							"48x48": `${baseUrl}/images/icons/priorities/highest.svg`,
 						},
 					},
 				],
@@ -179,8 +205,14 @@ class MockJiraClient {
 
 	async getBytes(path: string): Promise<Buffer> {
 		this.downloads.push(path);
-		const pathname = new URL(path, baseUrl).pathname;
-		switch (pathname) {
+		const url = new URL(path, baseUrl);
+		if (url.pathname === "/secure/viewavatar") {
+			const avatarId = url.searchParams.get("avatarId");
+			if (avatarId === "10000") return priorityPng;
+			if (avatarId === "10904") return customPriorityAvatarPng;
+			throw new Error(`Unexpected avatar id ${avatarId}`);
+		}
+		switch (url.pathname) {
 			case "/system-user.png":
 				return systemUserPng;
 			case "/custom-user.png":
@@ -194,8 +226,92 @@ class MockJiraClient {
 			case "/priority.png":
 				return priorityPng;
 			default:
-				throw new Error(`Unexpected download ${pathname}`);
+				throw new Error(`Unexpected download ${url.pathname}`);
 		}
+	}
+}
+
+class BrokenSystemClient extends MockJiraClient {
+	override async getJson<T>(
+		path: string,
+		params?: Record<string, string | number | boolean | undefined>,
+	): Promise<T> {
+		if (path === "/rest/api/2/avatar/user/system") {
+			return {
+				system: [
+					{
+						id: "10335",
+						urls: {
+							"48x48": `${baseUrl}/broken-system.png?avatarId=10335`,
+						},
+					},
+				],
+			} as T;
+		}
+		return super.getJson<T>(path, params);
+	}
+
+	override async getBytes(path: string): Promise<Buffer> {
+		if (new URL(path, baseUrl).pathname === "/broken-system.png") {
+			throw new Error("system avatar unavailable");
+		}
+		return super.getBytes(path);
+	}
+}
+
+class PriorityListClient extends MockJiraClient {
+	private readonly priorities: {
+		id: string;
+		name: string;
+		iconUrl: string;
+	}[];
+
+	constructor(priorities: { id: string; name: string; iconUrl: string }[]) {
+		super();
+		this.priorities = priorities;
+	}
+
+	override async getJson<T>(
+		path: string,
+		params?: Record<string, string | number | boolean | undefined>,
+	): Promise<T> {
+		if (path === "/rest/api/2/priority") return this.priorities as T;
+		return super.getJson<T>(path, params);
+	}
+}
+
+class ChangingPriorityClient extends MockJiraClient {
+	private readonly iconUrl: string;
+	private readonly bytes: Buffer;
+
+	constructor(iconUrl: string, bytes: Buffer) {
+		super();
+		this.iconUrl = iconUrl;
+		this.bytes = bytes;
+	}
+
+	override async getJson<T>(
+		path: string,
+		params?: Record<string, string | number | boolean | undefined>,
+	): Promise<T> {
+		if (path === "/rest/api/2/priority") {
+			return [
+				{
+					id: `${prefix}:priority-refresh`,
+					name: "Refresh Priority",
+					iconUrl: this.iconUrl,
+				},
+			] as T;
+		}
+		return super.getJson<T>(path, params);
+	}
+
+	override async getBytes(path: string): Promise<Buffer> {
+		if (new URL(path, baseUrl).href === this.iconUrl) {
+			this.downloads.push(path);
+			return this.bytes;
+		}
+		return super.getBytes(path);
 	}
 }
 
@@ -352,9 +468,10 @@ async function rows() {
 	const priorities = await pool.query<{
 		source_id: string;
 		icon_file: string | null;
+		icon_url: string | null;
 		updated_at: string;
 	}>(
-		"select source_id, icon_file, updated_at::text from priorities where source_id like $1 order by source_id",
+		"select source_id, icon_file, icon_url, updated_at::text from priorities where source_id like $1 order by source_id",
 		[`${prefix}:%`],
 	);
 	return {
@@ -507,10 +624,11 @@ describe("jira avatar import", () => {
 		);
 		expect(customType?.icon_file).toMatch(/^[0-9a-f]{64}\.svg$/);
 		expect(customPriority?.icon_file).toMatch(/^[0-9a-f]{64}\.png$/);
+		expect(customPriority?.icon_url).toBe(priorityIconUrl);
 		expect(builtinType).toMatchObject({ icon_file: null, icon_url: null });
 		expect(staleType).toMatchObject({ icon_file: null, icon_url: null });
-		expect(builtinPriority?.icon_file).toBeNull();
-		expect(stalePriority?.icon_file).toBeNull();
+		expect(builtinPriority).toMatchObject({ icon_file: null, icon_url: null });
+		expect(stalePriority).toMatchObject({ icon_file: null, icon_url: null });
 		expect(
 			client.downloads.some((path) => path.includes("/images/icons/")),
 		).toBe(false);
@@ -627,6 +745,224 @@ describe("jira avatar import", () => {
 		await expect(
 			readFile(join(avatarsDir, reimportStaleFile)),
 		).rejects.toMatchObject({ code: "ENOENT" });
+	});
+
+	test("one failing system avatar download does not abort the user import", async () => {
+		const username = `t-${run}-hashfail`;
+		const inserted = await pool.query<{ id: string }>(
+			`insert into users (source_key, username, display_name)
+			 values ($1, $2, 'Hash Fail')
+			 returning id`,
+			[`${prefix}:user:hashfail`, username],
+		);
+		const id = inserted.rows[0]?.id;
+		if (!id) throw new Error("hash failure user was not inserted");
+
+		try {
+			const counts = await importJiraAvatars(
+				new BrokenSystemClient() as never,
+				{
+					baseUrl,
+					avatarsDir,
+					scope: {
+						userIds: [id],
+						projectIds: [],
+						issueTypeIds: [],
+						priorityIds: [],
+					},
+				},
+			);
+			expect(counts.users).toMatchObject({ stored: 1, failed: 0 });
+			const stored = await pool.query<{ avatar_file: string | null }>(
+				"select avatar_file from users where id = $1",
+				[id],
+			);
+			expect(stored.rows[0]?.avatar_file).toMatch(/^[0-9a-f]{64}\.png$/);
+		} finally {
+			await pool.query("delete from users where id = $1", [id]);
+		}
+	});
+
+	test("replacing a user avatar removes the previous file", async () => {
+		const oldFile = `${"f".repeat(64)}.png`;
+		await writeFile(join(avatarsDir, oldFile), customPng);
+		await pool.query(
+			"update users set avatar_file = $1, avatar_url = $2 where id = $3",
+			[oldFile, `${baseUrl}/old-user.png`, userIds[0]],
+		);
+
+		await importJiraAvatars(client as never, {
+			baseUrl,
+			avatarsDir,
+			scope: scope(),
+		});
+
+		const user = (await rows()).users.find((row) => row.id === userIds[0]);
+		expect(user?.avatar_file).toMatch(/^[0-9a-f]{64}\.png$/);
+		expect(user?.avatar_file).not.toBe(oldFile);
+		await expect(readFile(join(avatarsDir, oldFile))).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
+	test("replacing a project logo removes the previous file", async () => {
+		const oldFile = `${"1".repeat(64)}.png`;
+		await writeFile(join(avatarsDir, oldFile), customProjectPng);
+		await pool.query(
+			"update projects set avatar_file = $1, avatar_url = $2 where id = $3",
+			[oldFile, `${baseUrl}/old-project.png`, projectIds[0]],
+		);
+
+		await importJiraAvatars(client as never, {
+			baseUrl,
+			avatarsDir,
+			scope: scope(),
+		});
+
+		const project = (await rows()).projects.find(
+			(row) => row.id === projectIds[0],
+		);
+		expect(project?.avatar_file).toMatch(/^[0-9a-f]{64}\.png$/);
+		expect(project?.avatar_file).not.toBe(oldFile);
+		await expect(readFile(join(avatarsDir, oldFile))).rejects.toMatchObject({
+			code: "ENOENT",
+		});
+	});
+
+	test("a built-in priority icon addressed by avatar id is not stored", async () => {
+		const builtinSource = `${prefix}:priority-avatar-builtin`;
+		const customSource = `${prefix}:priority-avatar-custom`;
+		const inserted = await pool.query<{ id: string; source_id: string }>(
+			`insert into priorities (source_id, name, sequence, icon_url)
+			 values ($1, 'Builtin Avatar Priority', 10, $3),
+			        ($2, 'Custom Avatar Priority', 11, $4)
+			 returning id, source_id`,
+			[builtinSource, customSource, prioritySystemUrl, customPriorityAvatarUrl],
+		);
+		const ids = new Map(
+			inserted.rows.map((row) => [row.source_id, row.id] as const),
+		);
+
+		try {
+			const avatarClient = new PriorityListClient([
+				{
+					id: builtinSource,
+					name: "Builtin Avatar Priority",
+					iconUrl: prioritySystemUrl,
+				},
+				{
+					id: customSource,
+					name: "Custom Avatar Priority",
+					iconUrl: customPriorityAvatarUrl,
+				},
+			]);
+			const counts = await importJiraAvatars(avatarClient as never, {
+				baseUrl,
+				avatarsDir,
+				scope: {
+					userIds: [],
+					projectIds: [],
+					issueTypeIds: [],
+					priorityIds: [...ids.values()],
+				},
+			});
+			expect(counts.priorities).toMatchObject({
+				stored: 1,
+				skipped: 1,
+				failed: 0,
+			});
+			expect(
+				avatarClient.downloads.some((path) => path.includes("avatarId=10000")),
+			).toBe(false);
+
+			const stored = await pool.query<{
+				source_id: string;
+				icon_file: string | null;
+				icon_url: string | null;
+			}>(
+				`select source_id, icon_file, icon_url
+				 from priorities where source_id = any($1::text[])`,
+				[[builtinSource, customSource]],
+			);
+			const builtin = stored.rows.find(
+				(row) => row.source_id === builtinSource,
+			);
+			const custom = stored.rows.find((row) => row.source_id === customSource);
+			expect(builtin).toMatchObject({ icon_file: null, icon_url: null });
+			expect(custom?.icon_file).toMatch(/^[0-9a-f]{64}\.png$/);
+			expect(custom?.icon_url).toBe(customPriorityAvatarUrl);
+		} finally {
+			await pool.query(
+				"delete from priorities where source_id = any($1::text[])",
+				[[builtinSource, customSource]],
+			);
+		}
+	});
+
+	test("a changed priority icon is stored again", async () => {
+		const sourceId = `${prefix}:priority-refresh`;
+		const firstUrl = `${baseUrl}/priority-refresh-1.png`;
+		const secondUrl = `${baseUrl}/priority-refresh-2.png`;
+		const inserted = await pool.query<{ id: string }>(
+			`insert into priorities (source_id, name, sequence, icon_url)
+			 values ($1, 'Refresh Priority', 12, $2)
+			 returning id`,
+			[sourceId, firstUrl],
+		);
+		const id = inserted.rows[0]?.id;
+		if (!id) throw new Error("refresh priority was not inserted");
+
+		try {
+			const first = await importJiraAvatars(
+				new ChangingPriorityClient(firstUrl, firstRefreshPriorityPng) as never,
+				{
+					baseUrl,
+					avatarsDir,
+					scope: {
+						userIds: [],
+						projectIds: [],
+						issueTypeIds: [],
+						priorityIds: [id],
+					},
+				},
+			);
+			expect(first.priorities).toMatchObject({ stored: 1, failed: 0 });
+			const firstRow = await pool.query<{
+				icon_file: string | null;
+				icon_url: string | null;
+			}>("select icon_file, icon_url from priorities where id = $1", [id]);
+			const oldFile = firstRow.rows[0]?.icon_file;
+			expect(oldFile).toMatch(/^[0-9a-f]{64}\.png$/);
+			expect(firstRow.rows[0]?.icon_url).toBe(firstUrl);
+
+			const second = await importJiraAvatars(
+				new ChangingPriorityClient(secondUrl, secondPriorityPng) as never,
+				{
+					baseUrl,
+					avatarsDir,
+					scope: {
+						userIds: [],
+						projectIds: [],
+						issueTypeIds: [],
+						priorityIds: [id],
+					},
+				},
+			);
+			expect(second.priorities).toMatchObject({ updated: 1, unchanged: 0 });
+			const secondRow = await pool.query<{
+				icon_file: string | null;
+				icon_url: string | null;
+			}>("select icon_file, icon_url from priorities where id = $1", [id]);
+			expect(secondRow.rows[0]?.icon_url).toBe(secondUrl);
+			expect(secondRow.rows[0]?.icon_file).not.toBe(oldFile);
+			await expect(
+				readFile(join(avatarsDir, oldFile ?? "")),
+			).rejects.toMatchObject({ code: "ENOENT" });
+		} finally {
+			await pool.query("delete from priorities where source_id = $1", [
+				sourceId,
+			]);
+		}
 	});
 });
 
