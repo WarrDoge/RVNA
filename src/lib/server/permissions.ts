@@ -647,14 +647,18 @@ export function permissionDenied(permission: string) {
 }
 
 /** The built-in scheme's admin role actor for a project created in the app. */
-export async function addProjectAdmin(projectId: string, userId: string) {
-	const [user] = await db
+export async function addProjectAdmin(
+	projectId: string,
+	userId: string,
+	database: Pick<typeof db, "select" | "insert"> = db,
+) {
+	const [user] = await database
 		.select({ username: users.username })
 		.from(users)
 		.where(eq(users.id, userId))
 		.limit(1);
 	if (!user) return;
-	await db
+	await database
 		.insert(projectRoleActors)
 		.values({
 			sourceId: `local:${projectId}:admin:user:${user.username}`,
