@@ -555,18 +555,18 @@ export async function applyMergeRequestTrigger(input: {
 }) {
 	if (input.issues.length === 0) return;
 
-	const [alreadyApplied] = await db
-		.select({ id: gitlabAutomationEvents.id })
+	const applied = await db
+		.select({ issueId: gitlabAutomationEvents.issueId })
 		.from(gitlabAutomationEvents)
 		.where(
 			and(
+				eq(gitlabAutomationEvents.repositoryId, input.repositoryId),
 				eq(gitlabAutomationEvents.mergeRequestId, input.mergeRequestId),
 				eq(gitlabAutomationEvents.kind, input.kind),
 				eq(gitlabAutomationEvents.status, "applied"),
 			),
-		)
-		.limit(1);
-	if (alreadyApplied) return;
+		);
+	const appliedIssueIds = new Set(applied.map((event) => event.issueId));
 
 	const [actor, linkedProjects] = await Promise.all([
 		userByEmail(input.actorEmail),
@@ -574,6 +574,7 @@ export async function applyMergeRequestTrigger(input: {
 	]);
 
 	for (const issue of input.issues) {
+		if (appliedIssueIds.has(issue.id)) continue;
 		const settings = await projectSettings(issue.projectId);
 		const enabled =
 			input.kind === "merge_request_opened"

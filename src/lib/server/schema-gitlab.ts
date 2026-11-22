@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
 	bigint,
 	boolean,
@@ -9,6 +10,7 @@ import {
 	text,
 	timestamp,
 	unique,
+	uniqueIndex,
 	uuid,
 } from "drizzle-orm/pg-core";
 import { issues, projects } from "./schema.ts";
@@ -303,5 +305,8 @@ export const gitlabAutomationEvents = pgTable(
 			table.mergeRequestId,
 			table.kind,
 		),
+		uniqueIndex("gitlab_automation_events_applied_unique")
+			.on(table.mergeRequestId, table.issueId, table.kind)
+			.where(sql`status = 'applied'`),
 	],
 );

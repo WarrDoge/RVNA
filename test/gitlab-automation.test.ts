@@ -426,6 +426,79 @@ describe("merge request triggers", () => {
 		).toEqual(["merge_request_merged", "merge_request_opened"]);
 	});
 
+	test("a retry applies the trigger to issues that were skipped", async () => {
+		const fixture = await createGitlabFixture(`${tag}k`);
+		const repositoryId = await linkFixtureRepository(fixture);
+		await saveProjectGitlabSettings(
+			fixture.projectId,
+			settingsFor({
+				linkedRepositoryIds: [repositoryId],
+				mergeRequestMergedEnabled: true,
+				mergeRequestMergedTransitions: ["Finish"],
+			}),
+		);
+
+		const [first] = await db
+			.select({ typeId: issues.typeId })
+			.from(issues)
+			.where(eq(issues.id, fixture.issueId));
+		const statusRows = await db
+			.select({ id: statuses.id, name: statuses.name })
+			.from(statuses)
+			.where(eq(statuses.sourceId, `${fixture.tag}:status:progress`));
+		const doneRows = await db
+			.select({ id: statuses.id })
+			.from(statuses)
+			.where(eq(statuses.sourceId, `${fixture.tag}:status:done`));
+		const progressStatusId = statusRows[0]?.id;
+		const doneStatusId = doneRows[0]?.id;
+		if (!first || !progressStatusId || !doneStatusId) {
+			throw new Error("fixture statuses missing");
+		}
+
+		const [second] = await db
+			.insert(issues)
+			.values({
+				sourceId: `${fixture.tag}:issue:2`,
+				projectId: fixture.projectId,
+				number: 2,
+				key: `${fixture.projectKey}-2`,
+				typeId: first.typeId,
+				statusId: doneStatusId,
+				summary: "Second issue",
+				created: new Date("2026-01-01T00:00:00Z"),
+				updated: new Date("2026-01-01T00:00:00Z"),
+			})
+			.returning();
+		await db
+			.update(issues)
+			.set({ statusId: progressStatusId })
+			.where(eq(issues.id, fixture.issueId));
+
+		const payload = mergeRequestPayload(fixture, {
+			iid: 9,
+			title: `${fixture.issueKey} ${second.key}`,
+			state: "merged",
+			action: "merge",
+			sourceBranch: `${fixture.issueKey}-retry`,
+		});
+		await deliverDirect("Merge Request Hook", payload, `${tag}:partial-1`);
+
+		await db
+			.update(issues)
+			.set({ statusId: progressStatusId })
+			.where(eq(issues.id, second.id));
+		await deliverDirect("Merge Request Hook", payload, `${tag}:partial-2`);
+
+		const [after] = await db
+			.select({ statusId: issues.statusId })
+			.from(issues)
+			.where(eq(issues.id, second.id));
+		expect(after?.statusId).toBe(doneStatusId);
+
+		await cleanupGitlabFixture(fixture);
+	});
+
 	test("records a reason when the acting user is unknown", async () => {
 		const other = await createGitlabFixture(`${tag}c`);
 		const repositoryId = await linkFixtureRepository(other);
