@@ -1121,13 +1121,16 @@ export async function importJiraAgile(
 		const boardId = boardDbIds.get(plan.board.id);
 		const config = boardConfigs.get(plan.board.id);
 		if (!boardId || !config) continue;
-		await replaceColumns(database, boardId, config, statusIds, counts);
-		await replaceSwimlanes(database, boardId, config, counts);
-		await replaceQuickFilters(database, boardId, config, counts);
 		const associationIds = (boardSprintSourceIds.get(plan.board.id) ?? [])
 			.map((sourceId) => sprintIdsBySource.get(sourceId))
 			.filter((id): id is string => Boolean(id));
-		await replaceBoardSprints(database, boardId, associationIds, counts);
+		await database.transaction(async (tx) => {
+			const transaction = tx as unknown as Database;
+			await replaceColumns(transaction, boardId, config, statusIds, counts);
+			await replaceSwimlanes(transaction, boardId, config, counts);
+			await replaceQuickFilters(transaction, boardId, config, counts);
+			await replaceBoardSprints(transaction, boardId, associationIds, counts);
+		});
 	}
 
 	const issueKeys = new Set<string>();

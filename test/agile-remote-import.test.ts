@@ -283,6 +283,34 @@ class FakeClient {
 	}
 }
 
+type ImportDatabase = Parameters<typeof importJiraAgile>[1];
+
+/** Fails the insert of one table, so a replacement can be interrupted midway. */
+function databaseFailingOn(
+	shouldFail: (table: unknown) => boolean,
+): ImportDatabase {
+	const wrap = (base: object): ImportDatabase =>
+		new Proxy(base, {
+			get(target, property) {
+				if (property === "transaction") {
+					return (callback: (tx: object) => unknown) =>
+						Reflect.get(target, property).call(target, (tx: object) =>
+							callback(wrap(tx)),
+						);
+				}
+				if (property === "insert") {
+					return (table: unknown) => {
+						if (shouldFail(table)) throw new Error("injected insert failure");
+						return Reflect.get(target, property).call(target, table);
+					};
+				}
+				const value = Reflect.get(target, property);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}) as ImportDatabase;
+	return wrap(db);
+}
+
 async function cleanup() {
 	await db
 		.delete(boards)
@@ -573,6 +601,60 @@ describe("importJiraAgile", () => {
 		expect(after).toHaveLength(1);
 		expect(after[0].name).toBe(boardRow.name);
 		expect(issueIds).toHaveLength(2);
+	});
+
+	test("a failed board configuration rebuild keeps the previous columns", async () => {
+		await importJiraAgile(new FakeClient() as unknown as JiraClient, db, {
+			privateApis: true,
+		});
+		const [boardRow] = await db
+			.select()
+			.from(boards)
+			.where(eq(boards.sourceId, String(rapidViewId)));
+		const before = await db
+			.select()
+			.from(boardColumns)
+			.where(eq(boardColumns.boardId, boardRow.id))
+			.orderBy(boardColumns.sequence);
+		expect(before).toHaveLength(4);
+
+		class TwoColumnClient extends FakeClient {
+			override async getJson(path: string): Promise<unknown> {
+				if (path === "/rest/greenhopper/1.0/rapidviewconfig/editmodel.json") {
+					return {
+						...editModel,
+						rapidListConfig: {
+							mappedColumns: (
+								editModel.rapidListConfig?.mappedColumns ?? []
+							).slice(0, 2),
+						},
+					};
+				}
+				return super.getJson(path);
+			}
+		}
+
+		const database = databaseFailingOn(
+			(table) => table === boardColumnStatuses,
+		);
+		await expect(
+			importJiraAgile(
+				new TwoColumnClient() as unknown as JiraClient,
+				database,
+				{
+					privateApis: true,
+				},
+			),
+		).rejects.toThrow("injected insert failure");
+
+		const after = await db
+			.select()
+			.from(boardColumns)
+			.where(eq(boardColumns.boardId, boardRow.id))
+			.orderBy(boardColumns.sequence);
+		expect(after.map((column) => column.name)).toEqual(
+			before.map((column) => column.name),
+		);
 	});
 
 	test("a locally changed issue keeps its rank and sprint membership", async () => {
