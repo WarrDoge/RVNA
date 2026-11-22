@@ -160,19 +160,21 @@ async function loadThread(roomId: string, event: MatrixEvent) {
 	return thread ?? null;
 }
 
+const requestColumns = {
+	id: issues.id,
+	key: issues.key,
+	summary: issues.summary,
+	projectId: issues.projectId,
+	requestTypeId: issues.requestTypeId,
+	reporterId: issues.reporterId,
+	creatorId: issues.creatorId,
+	statusName: statuses.name,
+	assigneeName: users.displayName,
+};
+
 async function loadRequest(issueId: string) {
 	const [issue] = await db
-		.select({
-			id: issues.id,
-			key: issues.key,
-			summary: issues.summary,
-			projectId: issues.projectId,
-			requestTypeId: issues.requestTypeId,
-			reporterId: issues.reporterId,
-			creatorId: issues.creatorId,
-			statusName: statuses.name,
-			assigneeName: users.displayName,
-		})
+		.select(requestColumns)
 		.from(issues)
 		.innerJoin(statuses, eq(statuses.id, issues.statusId))
 		.leftJoin(users, eq(users.id, issues.assigneeId))
@@ -183,27 +185,13 @@ async function loadRequest(issueId: string) {
 
 async function loadRequestByKey(key: string) {
 	const [issue] = await db
-		.select({
-			id: issues.id,
-			key: issues.key,
-			summary: issues.summary,
-			projectId: issues.projectId,
-			requestTypeId: issues.requestTypeId,
-			reporterId: issues.reporterId,
-			creatorId: issues.creatorId,
-			statusName: statuses.name,
-			assigneeName: users.displayName,
-		})
+		.select(requestColumns)
 		.from(issues)
 		.innerJoin(statuses, eq(statuses.id, issues.statusId))
 		.leftJoin(users, eq(users.id, issues.assigneeId))
 		.where(eq(issues.key, key.toUpperCase()))
 		.limit(1);
 	return issue ?? null;
-}
-
-async function deskForIssue(projectId: string) {
-	return deskByProjectId(projectId);
 }
 
 async function handleThreadReply(
@@ -225,7 +213,7 @@ async function handleThreadReply(
 	}
 	const issue = await loadRequest(thread.issueId);
 	if (!issue) return;
-	const desk = await deskForIssue(issue.projectId);
+	const desk = await deskByProjectId(issue.projectId);
 	if (!desk) return;
 	if (!(await canViewRequest(user, desk, issue))) {
 		await reply(settings, roomId, thread.rootEventId, "Request not found.");
@@ -234,11 +222,10 @@ async function handleThreadReply(
 	const text = body.trim();
 	if (text === "") return;
 	const html = await sanitizeBodyHtml(plainTextToHtml(text));
-	if (!html) return;
+	if (!html) throw new Error("Comment body is empty");
 	const result = await addCustomerComment(desk, issue.key, user, html);
-	if (result.ok) {
-		await matrixReact(settings, roomId, event.event_id as string, CHECK_MARK);
-	}
+	if (!result.ok) throw new Error(result.error);
+	await matrixReact(settings, roomId, event.event_id as string, CHECK_MARK);
 }
 
 async function handleAttachment(
@@ -250,7 +237,7 @@ async function handleAttachment(
 	if (thread.attachmentNotified || !user) return;
 	const issue = await loadRequest(thread.issueId);
 	if (!issue) return;
-	const desk = await deskForIssue(issue.projectId);
+	const desk = await deskByProjectId(issue.projectId);
 	if (!desk || !(await canViewRequest(user, desk, issue))) return;
 	await matrixSendText(
 		settings,
@@ -334,7 +321,7 @@ async function createTicket(
 			settings,
 			roomId,
 			event.event_id as string,
-			`You can open at most ${RATE_LIMIT} requests every 10 minutes. Try again later.`,
+			`You can open at most ${RATE_LIMIT} requests every ${Math.round(RATE_WINDOW_MS / 60_000)} minutes. Try again later.`,
 		);
 		return;
 	}
@@ -361,20 +348,29 @@ async function createTicket(
 		return;
 	}
 
-	await db
-		.insert(messengerThreads)
-		.values({
-			issueId: result.id,
-			roomId,
-			rootEventId: event.event_id as string,
-		})
-		.onConflictDoNothing();
-	await reply(
-		settings,
-		roomId,
-		event.event_id as string,
-		`Created ${result.key}: ${summary}\n${portalRequestLink(desk.id, result.key)}`,
-	);
+	const confirmation = `Created ${result.key}: ${summary}\n${portalRequestLink(desk.id, result.key)}`;
+	try {
+		await db
+			.insert(messengerThreads)
+			.values({
+				issueId: result.id,
+				roomId,
+				rootEventId: event.event_id as string,
+			})
+			.onConflictDoNothing();
+	} catch (error) {
+		// The request exists; losing the thread link must not make the sender resend it.
+		await recordMessengerError(
+			`${new Date().toISOString()} Could not record the chat thread for ${result.key}: ${errorReason(error)}`,
+		).catch(() => undefined);
+	}
+	try {
+		await reply(settings, roomId, event.event_id as string, confirmation);
+	} catch (error) {
+		await recordMessengerError(
+			`${new Date().toISOString()} Could not confirm ${result.key} in the chat: ${errorReason(error)}`,
+		).catch(() => undefined);
+	}
 }
 
 async function statusReply(
@@ -394,7 +390,7 @@ async function statusReply(
 		return;
 	}
 	const issue = await loadRequestByKey(key.trim());
-	const desk = issue ? await deskForIssue(issue.projectId) : null;
+	const desk = issue ? await deskByProjectId(issue.projectId) : null;
 	if (!issue || !desk || !(await canViewRequest(user, desk, issue))) {
 		await reply(
 			settings,

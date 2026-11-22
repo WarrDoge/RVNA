@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
+import * as htmlModule from "../src/lib/server/html.ts";
 import { stopMessengerQueue } from "../src/lib/server/messenger/notices.ts";
 import {
 	createMessengerWorker,
@@ -36,6 +37,7 @@ import {
 	workflowStatuses,
 	workflows,
 } from "../src/lib/server/schema.ts";
+import * as portal from "../src/lib/server/servicedesk/portal.ts";
 import { FakeMatrix } from "./helpers/fake-matrix.ts";
 import { adminGroup, buildServer, cleanupTestData, login } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
@@ -794,6 +796,80 @@ describe("sync worker", () => {
 		);
 	});
 
+	test("a comment the portal rejects is reported in the thread", async () => {
+		const spy = vi.spyOn(portal, "addCustomerComment").mockResolvedValue({
+			ok: false,
+			status: 404,
+			error: "Request not found",
+		});
+		try {
+			const before = fake.sent.length;
+			fake.pushTimeline(roomId, [
+				{
+					type: "m.room.message",
+					event_id: `$rejected-reply-${run}`,
+					sender: `@t-${run}-alice:matrix.test`,
+					content: {
+						msgtype: "m.text",
+						body: "This comment is refused",
+						"m.relates_to": { rel_type: "m.thread", event_id: ticketRoot },
+					},
+				},
+			]);
+			const body = await fake.waitFor(() => {
+				const found = fake.sent
+					.slice(before)
+					.find(
+						(item) =>
+							item.eventType === "m.room.message" &&
+							typeof item.content.body === "string" &&
+							item.content.body.includes("comment could not be added"),
+					);
+				return found ? (found.content.body as string) : null;
+			});
+			expect(body).toContain("Send it again.");
+			expect(
+				fake.sent.slice(before).some((item) => item.eventType === "m.reaction"),
+			).toBe(false);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("a comment that sanitizes to nothing is reported in the thread", async () => {
+		const spy = vi
+			.spyOn(htmlModule, "sanitizeBodyHtml")
+			.mockResolvedValue(null);
+		try {
+			const before = fake.sent.length;
+			fake.pushTimeline(roomId, [
+				{
+					type: "m.room.message",
+					event_id: `$empty-reply-${run}`,
+					sender: `@t-${run}-alice:matrix.test`,
+					content: {
+						msgtype: "m.text",
+						body: "This comment disappears",
+						"m.relates_to": { rel_type: "m.thread", event_id: ticketRoot },
+					},
+				},
+			]);
+			await fake.waitFor(() =>
+				fake.sent
+					.slice(before)
+					.some(
+						(item) =>
+							item.eventType === "m.room.message" &&
+							String(item.content.body ?? "").includes(
+								"comment could not be added",
+							),
+					),
+			);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
 	test("an attachment notice is sent only to someone who may see the request", async () => {
 		const before = fake.sent.length;
 		fake.pushTimeline(roomId, [
@@ -969,6 +1045,60 @@ describe("sync worker", () => {
 		expect(issue.descriptionHtml?.length).toBeLessThanOrEqual(200_000);
 	});
 
+	test("a ticket still reports its key when the thread link cannot be stored", async () => {
+		await db.execute(
+			sql`drop trigger if exists test_fail_messenger_thread on messenger_threads`,
+		);
+		await db.execute(sql`drop function if exists test_fail_messenger_thread()`);
+		await db.execute(
+			sql`create function test_fail_messenger_thread() returns trigger language plpgsql as $$ begin raise exception 'thread bookkeeping failed'; end $$`,
+		);
+		await db.execute(
+			sql`create trigger test_fail_messenger_thread before insert on messenger_threads for each row execute function test_fail_messenger_thread()`,
+		);
+		try {
+			const before = fake.sent.length;
+			fake.pushTimeline(roomId, [
+				{
+					type: "m.room.message",
+					event_id: `$partial-ticket-${run}`,
+					sender: `@t-${run}-alice:matrix.test`,
+					content: {
+						msgtype: "m.text",
+						body: "!ticket Partial thread request",
+					},
+				},
+			]);
+			const body = await fake.waitFor(() => {
+				const found = fake.sent
+					.slice(before)
+					.find(
+						(item) =>
+							item.eventType === "m.room.message" &&
+							typeof item.content.body === "string" &&
+							(item.content.body.includes("Created ") ||
+								item.content.body.includes("could not be created")),
+					);
+				return found ? (found.content.body as string) : null;
+			});
+			expect(body).toContain("Created ");
+			const [issue] = await db
+				.select()
+				.from(issues)
+				.where(eq(issues.summary, "Partial thread request"))
+				.limit(1);
+			expect(issue).toBeDefined();
+			expect(body).toContain(issue.key);
+		} finally {
+			await db.execute(
+				sql`drop trigger if exists test_fail_messenger_thread on messenger_threads`,
+			);
+			await db.execute(
+				sql`drop function if exists test_fail_messenger_thread()`,
+			);
+		}
+	});
+
 	test("a thread reply that fails is answered in the thread", async () => {
 		const before = fake.sent.length;
 		fake.pushTimeline(roomId, [
@@ -983,7 +1113,17 @@ describe("sync worker", () => {
 				},
 			},
 		]);
-		await waitForSend((text) => text.includes("comment could not be added"));
+		await fake.waitFor(() =>
+			fake.sent
+				.slice(before)
+				.some(
+					(item) =>
+						item.eventType === "m.room.message" &&
+						String(item.content.body ?? "").includes(
+							"comment could not be added",
+						),
+				),
+		);
 		const answer = fake.sent
 			.slice(before)
 			.find((item) =>
