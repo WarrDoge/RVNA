@@ -8,6 +8,7 @@ import {
 	filters as filtersTable,
 	groups,
 	projects,
+	SYSTEM_DASHBOARD_ID,
 	users,
 } from "../lib/server/schema.ts";
 import {
@@ -313,9 +314,6 @@ export function mapGadgets(
 		};
 	});
 }
-
-/** Jira's built-in System Dashboard; the REST list marks no default, so the id identifies it. */
-export const SYSTEM_DASHBOARD_ID = "10000";
 
 /**
  * Jira does not expose who sees a dashboard, so a dashboard comes in private to
