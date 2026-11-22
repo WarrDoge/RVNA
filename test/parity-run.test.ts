@@ -173,7 +173,6 @@ beforeEach(() => {
 	fetchWikiLiveMock.mockResolvedValue(liveWiki);
 	jiraChecksMock.mockReturnValue({
 		checks: [ok("jira.projects")],
-		notes: [],
 		watermark: null,
 		changedSinceImport: [],
 	});
