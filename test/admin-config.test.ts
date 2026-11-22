@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
@@ -410,6 +410,98 @@ describe("issue types", () => {
 		);
 		expect(stillThere.statusCode).toBe(404);
 	});
+
+	test("migrates a type used by more issues than one insert can bind", async () => {
+		const source = await createRow<IssueTypeRow>(
+			"/api/admin/issue-types",
+			{ name: name("Bulk source type") },
+			created.issueTypes,
+		);
+		const target = await createRow<IssueTypeRow>(
+			"/api/admin/issue-types",
+			{ name: name("Bulk target type") },
+			created.issueTypes,
+		);
+		const open = await createRow<StatusRow>(
+			"/api/admin/statuses",
+			{ name: name("Open for bulk migration"), category: "new" },
+			created.statuses,
+		);
+		const total = 8200;
+		const rows = Array.from({ length: total }, (_, index) => {
+			issueCounter += 1;
+			return {
+				sourceId: `${tag}:issue:bulk:${index}`,
+				projectId,
+				number: 20_000 + issueCounter,
+				key: `C${run.slice(0, 4).toUpperCase()}-B${index}`,
+				typeId: source.id,
+				statusId: open.id,
+				summary: `Bulk fixture issue ${index}`,
+				created: new Date("2020-01-01T00:00:00Z"),
+				updated: new Date("2020-01-01T00:00:00Z"),
+			};
+		});
+		for (let start = 0; start < rows.length; start += 500) {
+			const inserted = await db
+				.insert(issues)
+				.values(rows.slice(start, start + 500))
+				.returning({ id: issues.id });
+			created.issues.push(...inserted.map((row) => row.id));
+		}
+
+		const migrated = await call(
+			"DELETE",
+			`/api/admin/issue-types/${source.id}?migrateTo=${target.id}`,
+		);
+		expect(migrated.statusCode, migrated.body).toBe(204);
+
+		const [history] = await db
+			.select({ count: sql<number>`count(*)::int` })
+			.from(issueHistoryItems)
+			.where(
+				and(
+					eq(issueHistoryItems.field, "issuetype"),
+					eq(issueHistoryItems.fromText, source.name),
+				),
+			);
+		expect(history?.count).toBe(total);
+	}, 120_000);
+
+	test("a concurrent create with the same name returns a conflict", async () => {
+		const fn = `cfg_slow_issue_type_${run}`;
+		await pool.query(`drop trigger if exists ${fn} on issue_types`);
+		await pool.query(`drop function if exists ${fn}()`);
+		await pool.query(
+			`create function ${fn}() returns trigger language plpgsql as $$ begin perform pg_sleep(0.3); return new; end $$`,
+		);
+		await pool.query(
+			`create trigger ${fn} before insert on issue_types for each row execute function ${fn}()`,
+		);
+		try {
+			const body = { name: name("Concurrent type") };
+			const responses = await Promise.all([
+				call("POST", "/api/admin/issue-types", body),
+				call("POST", "/api/admin/issue-types", body),
+			]);
+			for (const response of responses) {
+				if (response.statusCode === 201) {
+					created.issueTypes.push((response.json() as { id: string }).id);
+				}
+			}
+			expect(responses.map((response) => response.statusCode).sort()).toEqual([
+				201, 409,
+			]);
+			const rows = await db
+				.select({ id: issueTypes.id })
+				.from(issueTypes)
+				.where(sql`lower(${issueTypes.name}) = lower(${body.name})`);
+			expect(rows).toHaveLength(1);
+		} finally {
+			await pool.query(`drop trigger if exists ${fn} on issue_types`);
+			await pool.query(`drop function if exists ${fn}()`);
+		}
+	});
 });
 
 describe("priorities", () => {
@@ -594,6 +686,59 @@ describe("priorities", () => {
 			.from(auditLog)
 			.where(eq(auditLog.action, "priority.reorder"));
 		expect(audit.length).toBeGreaterThan(0);
+	});
+
+	test("records the previous sequence order in the audit", async () => {
+		const first = await createRow<PriorityRow>(
+			"/api/admin/priorities",
+			{ name: name("Audit order one") },
+			created.priorities,
+		);
+		await createRow<PriorityRow>(
+			"/api/admin/priorities",
+			{ name: name("Audit order two") },
+			created.priorities,
+		);
+		// Move the first row to the front and to the end of the heap, so a
+		// fetch without ORDER BY no longer matches the sequence order.
+		await db
+			.update(priorities)
+			.set({ sequence: 0 })
+			.where(eq(priorities.id, first.id));
+
+		const before = (
+			await call("GET", "/api/admin/priorities")
+		).json() as PriorityRow[];
+		const beforeOrder = before.map((row) => row.name);
+		expect(beforeOrder[0]).toBe(first.name);
+		const reversed = [...before].reverse().map((row) => row.id);
+
+		try {
+			const saved = await call("PUT", "/api/admin/priorities/order", {
+				ids: reversed,
+			});
+			expect(saved.statusCode, saved.body).toBe(204);
+
+			const [audit] = await db
+				.select({ changes: auditLog.changes })
+				.from(auditLog)
+				.where(
+					and(
+						eq(auditLog.action, "priority.reorder"),
+						eq(auditLog.actorId, admin.id),
+					),
+				)
+				.orderBy(desc(auditLog.createdAt))
+				.limit(1);
+			const changes = audit?.changes as
+				| { from: { order: string[] } }
+				| undefined;
+			expect(changes?.from.order).toEqual(beforeOrder);
+		} finally {
+			await call("PUT", "/api/admin/priorities/order", {
+				ids: before.map((row) => row.id),
+			});
+		}
 	});
 });
 
@@ -841,6 +986,39 @@ describe("statuses", () => {
 		expect(body.canMigrate).toBe(false);
 		expect(body.error).toContain(workflow.name);
 		expect(body.workflows).toEqual([{ id: workflow.id, name: workflow.name }]);
+	});
+
+	test("refuses to delete a status a workflow starts with", async () => {
+		const row = await createRow<StatusRow>(
+			"/api/admin/statuses",
+			{ name: name("Initial status"), category: "new" },
+			created.statuses,
+		);
+		const [workflow] = await db
+			.insert(workflows)
+			.values({
+				sourceId: `${tag}:workflow:initial`,
+				name: name("Initial workflow"),
+				initialStatusId: row.id,
+			})
+			.returning();
+		created.workflows.push(workflow.id);
+
+		const references = await call(
+			"GET",
+			`/api/admin/statuses/${row.id}/references`,
+		);
+		expect(references.json()).toMatchObject({
+			count: 0,
+			canMigrate: false,
+			workflows: [{ id: workflow.id, name: workflow.name }],
+		});
+
+		const refused = await call("DELETE", `/api/admin/statuses/${row.id}`);
+		expect(refused.statusCode).toBe(409);
+		expect((refused.json() as { error: string }).error).toContain(
+			workflow.name,
+		);
 	});
 
 	test("refuses to migrate issues to a status of another workflow", async () => {
@@ -1102,5 +1280,84 @@ describe("link types", () => {
 			.from(issueLinks)
 			.where(eq(issueLinks.id, link.id));
 		expect(repointed.typeId).toBe(target.id);
+	});
+});
+
+describe("deleting with an unused migration target", () => {
+	test("records a plain delete when nothing moves", async () => {
+		const cases: {
+			url: string;
+			source: Record<string, unknown>;
+			target: Record<string, unknown>;
+			collection: string[];
+			action: string;
+		}[] = [
+			{
+				url: "/api/admin/issue-types",
+				source: { name: name("Unused type source") },
+				target: { name: name("Unused type target") },
+				collection: created.issueTypes,
+				action: "issuetype.delete",
+			},
+			{
+				url: "/api/admin/priorities",
+				source: { name: name("Unused priority source") },
+				target: { name: name("Unused priority target") },
+				collection: created.priorities,
+				action: "priority.delete",
+			},
+			{
+				url: "/api/admin/resolutions",
+				source: { name: name("Unused resolution source") },
+				target: { name: name("Unused resolution target") },
+				collection: created.resolutions,
+				action: "resolution.delete",
+			},
+			{
+				url: "/api/admin/statuses",
+				source: { name: name("Unused status source"), category: "new" },
+				target: { name: name("Unused status target"), category: "done" },
+				collection: created.statuses,
+				action: "status.delete",
+			},
+			{
+				url: "/api/admin/link-types",
+				source: {
+					name: name("Unused link source"),
+					inward: "is caused by",
+					outward: "causes",
+				},
+				target: {
+					name: name("Unused link target"),
+					inward: "is followed by",
+					outward: "follows",
+				},
+				collection: created.linkTypes,
+				action: "linktype.delete",
+			},
+		];
+
+		for (const entry of cases) {
+			const source = await createRow<{ id: string }>(
+				entry.url,
+				entry.source,
+				entry.collection,
+			);
+			const target = await createRow<{ id: string }>(
+				entry.url,
+				entry.target,
+				entry.collection,
+			);
+			const deleted = await call(
+				"DELETE",
+				`${entry.url}/${source.id}?migrateTo=${target.id}`,
+			);
+			expect(deleted.statusCode, deleted.body).toBe(204);
+			const audit = await auditRows(source.id);
+			expect(audit.at(-1)).toMatchObject({
+				action: entry.action,
+				changes: { to: null },
+			});
+		}
 	});
 });

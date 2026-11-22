@@ -35,6 +35,10 @@ export const builtinIconKeys = [
 	"default",
 ] as const;
 
+const builtinIconPattern = new RegExp(
+	`^builtin:(${builtinIconKeys.join("|")})$`,
+);
+
 export const idParams = z.object({ id: z.uuid() });
 export const migrateQuery = z.object({ migrateTo: z.uuid().optional() });
 export const orderBody = z.object({ ids: z.array(z.uuid()).max(2000) });
@@ -58,9 +62,7 @@ const iconBody = z
 	.optional()
 	.refine(
 		(value) =>
-			value === null ||
-			value === undefined ||
-			/^builtin:(epic|subtask|bug|story|change|task|default)$/.test(value),
+			value === null || value === undefined || builtinIconPattern.test(value),
 		"Choose one of the built-in icons",
 	);
 const sequenceBody = z.number().int().min(0).max(1_000_000).optional();
@@ -181,6 +183,13 @@ function requireRow<T>(row: T | undefined, message: string): T {
 	return row;
 }
 
+/** Serialise creates and renames that target the same case-insensitive name. */
+async function lockName(tx: Tx, name: string) {
+	await tx.execute(
+		sql`select pg_advisory_xact_lock(hashtextextended(lower(${name}), 0))`,
+	);
+}
+
 type HistoryItem = {
 	field: string;
 	fieldType: string;
@@ -200,30 +209,35 @@ async function writeHistory(
 	item: HistoryItem,
 ) {
 	if (issueIds.length === 0) return;
-	const entries = await tx
-		.insert(issueHistory)
-		.values(
-			issueIds.map((issueId) => ({
-				sourceId: localSource(),
-				issueId,
-				authorId,
-				created: new Date(),
+	const created = new Date();
+	const batchSize = 1000;
+	for (let start = 0; start < issueIds.length; start += batchSize) {
+		const batch = issueIds.slice(start, start + batchSize);
+		const entries = await tx
+			.insert(issueHistory)
+			.values(
+				batch.map((issueId) => ({
+					sourceId: localSource(),
+					issueId,
+					authorId,
+					created,
+				})),
+			)
+			.returning({ id: issueHistory.id });
+		await tx.insert(issueHistoryItems).values(
+			entries.map((entry) => ({
+				sourceId: null,
+				historyId: entry.id,
+				field: item.field,
+				fieldType: item.fieldType,
+				fromValue: item.fromValue,
+				fromText: item.fromText,
+				toValue: item.toValue,
+				toText: item.toText,
+				sequence: 0,
 			})),
-		)
-		.returning({ id: issueHistory.id });
-	await tx.insert(issueHistoryItems).values(
-		entries.map((entry) => ({
-			sourceId: null,
-			historyId: entry.id,
-			field: item.field,
-			fieldType: item.fieldType,
-			fromValue: item.fromValue,
-			fromText: item.fromText,
-			toValue: item.toValue,
-			toText: item.toText,
-			sequence: 0,
-		})),
-	);
+		);
+	}
 }
 
 const changed = (from: Record<string, unknown>, to: Record<string, unknown>) =>
@@ -297,19 +311,19 @@ export async function createIssueType(
 	body: z.infer<typeof issueTypeCreateBody>,
 ) {
 	requireAdminActor(actor);
-	const [clash] = await db
-		.select({ id: issueTypes.id })
-		.from(issueTypes)
-		.where(sql`lower(${issueTypes.name}) = lower(${body.name})`)
-		.limit(1);
-	if (clash) {
-		throw new HttpError(
-			409,
-			`An issue type named "${body.name}" already exists`,
-		);
-	}
-
 	const row = await db.transaction(async (tx) => {
+		await lockName(tx, body.name);
+		const [clash] = await tx
+			.select({ id: issueTypes.id })
+			.from(issueTypes)
+			.where(sql`lower(${issueTypes.name}) = lower(${body.name})`)
+			.limit(1);
+		if (clash) {
+			throw new HttpError(
+				409,
+				`An issue type named "${body.name}" already exists`,
+			);
+		}
 		const [created] = await tx
 			.insert(issueTypes)
 			.values({
@@ -362,25 +376,6 @@ export async function updateIssueType(
 		.limit(1);
 	if (!row) throw new HttpError(404, "Issue type not found");
 
-	if (body.name !== undefined && body.name !== row.name) {
-		const [clash] = await db
-			.select({ id: issueTypes.id })
-			.from(issueTypes)
-			.where(
-				and(
-					sql`lower(${issueTypes.name}) = lower(${body.name})`,
-					ne(issueTypes.id, row.id),
-				),
-			)
-			.limit(1);
-		if (clash) {
-			throw new HttpError(
-				409,
-				`An issue type named "${body.name}" already exists`,
-			);
-		}
-	}
-
 	const [counts] = await db
 		.select({ count: sql<number>`count(*)::int` })
 		.from(issues)
@@ -426,6 +421,25 @@ export async function updateIssueType(
 	if (Object.keys(to).length > 0) {
 		updates.updatedAt = new Date();
 		await db.transaction(async (tx) => {
+			if (body.name !== undefined && body.name !== row.name) {
+				await lockName(tx, body.name);
+				const [clash] = await tx
+					.select({ id: issueTypes.id })
+					.from(issueTypes)
+					.where(
+						and(
+							sql`lower(${issueTypes.name}) = lower(${body.name})`,
+							ne(issueTypes.id, row.id),
+						),
+					)
+					.limit(1);
+				if (clash) {
+					throw new HttpError(
+						409,
+						`An issue type named "${body.name}" already exists`,
+					);
+				}
+			}
 			await tx.update(issueTypes).set(updates).where(eq(issueTypes.id, row.id));
 			await audit(tx, actor, {
 				action: "issuetype.update",
@@ -516,6 +530,7 @@ export async function deleteIssueType(
 		);
 	}
 
+	const movedTo = count > 0 ? target : null;
 	await db.transaction(async (tx) => {
 		if (target && count > 0) {
 			const affected = await tx
@@ -555,15 +570,15 @@ export async function deleteIssueType(
 		}
 		await tx.delete(issueTypes).where(eq(issueTypes.id, row.id));
 		await audit(tx, actor, {
-			action: target ? "issuetype.migrate" : "issuetype.delete",
+			action: movedTo ? "issuetype.migrate" : "issuetype.delete",
 			entityType: "issuetype",
 			entityId: row.id,
-			summary: target
-				? `Deleted issue type ${row.name} and moved ${plural(count, "issue")} to ${target.name}`
+			summary: movedTo
+				? `Deleted issue type ${row.name} and moved ${plural(count, "issue")} to ${movedTo.name}`
 				: `Deleted issue type ${row.name}`,
 			changes: {
 				from: { name: row.name, subtask: row.subtask },
-				to: target ? { name: target.name, movedIssues: count } : null,
+				to: movedTo ? { name: movedTo.name, movedIssues: count } : null,
 			},
 		});
 	});
@@ -610,15 +625,6 @@ export async function createPriority(
 	body: z.infer<typeof priorityCreateBody>,
 ) {
 	requireAdminActor(actor);
-	const [clash] = await db
-		.select({ id: priorities.id })
-		.from(priorities)
-		.where(sql`lower(${priorities.name}) = lower(${body.name})`)
-		.limit(1);
-	if (clash) {
-		throw new HttpError(409, `A priority named "${body.name}" already exists`);
-	}
-
 	const [highest] = await db
 		.select({
 			value: sql<number>`coalesce(max(${priorities.sequence}), 0)::int`,
@@ -626,6 +632,18 @@ export async function createPriority(
 		.from(priorities);
 
 	const row = await db.transaction(async (tx) => {
+		await lockName(tx, body.name);
+		const [clash] = await tx
+			.select({ id: priorities.id })
+			.from(priorities)
+			.where(sql`lower(${priorities.name}) = lower(${body.name})`)
+			.limit(1);
+		if (clash) {
+			throw new HttpError(
+				409,
+				`A priority named "${body.name}" already exists`,
+			);
+		}
 		const [created] = await tx
 			.insert(priorities)
 			.values({
@@ -674,25 +692,6 @@ export async function updatePriority(
 		.limit(1);
 	if (!row) throw new HttpError(404, "Priority not found");
 
-	if (body.name !== undefined && body.name !== row.name) {
-		const [clash] = await db
-			.select({ id: priorities.id })
-			.from(priorities)
-			.where(
-				and(
-					sql`lower(${priorities.name}) = lower(${body.name})`,
-					ne(priorities.id, row.id),
-				),
-			)
-			.limit(1);
-		if (clash) {
-			throw new HttpError(
-				409,
-				`A priority named "${body.name}" already exists`,
-			);
-		}
-	}
-
 	const updates: Partial<typeof priorities.$inferInsert> = {};
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
@@ -715,6 +714,25 @@ export async function updatePriority(
 	if (Object.keys(to).length > 0) {
 		updates.updatedAt = new Date();
 		await db.transaction(async (tx) => {
+			if (body.name !== undefined && body.name !== row.name) {
+				await lockName(tx, body.name);
+				const [clash] = await tx
+					.select({ id: priorities.id })
+					.from(priorities)
+					.where(
+						and(
+							sql`lower(${priorities.name}) = lower(${body.name})`,
+							ne(priorities.id, row.id),
+						),
+					)
+					.limit(1);
+				if (clash) {
+					throw new HttpError(
+						409,
+						`A priority named "${body.name}" already exists`,
+					);
+				}
+			}
 			await tx.update(priorities).set(updates).where(eq(priorities.id, row.id));
 			await audit(tx, actor, {
 				action: "priority.update",
@@ -795,6 +813,7 @@ export async function deletePriority(
 		);
 	}
 
+	const movedTo = count > 0 ? target : null;
 	await db.transaction(async (tx) => {
 		if (target && count > 0) {
 			const affected = await tx
@@ -821,15 +840,15 @@ export async function deletePriority(
 		}
 		await tx.delete(priorities).where(eq(priorities.id, row.id));
 		await audit(tx, actor, {
-			action: target ? "priority.migrate" : "priority.delete",
+			action: movedTo ? "priority.migrate" : "priority.delete",
 			entityType: "priority",
 			entityId: row.id,
-			summary: target
-				? `Deleted priority ${row.name} and moved ${plural(count, "issue")} to ${target.name}`
+			summary: movedTo
+				? `Deleted priority ${row.name} and moved ${plural(count, "issue")} to ${movedTo.name}`
 				: `Deleted priority ${row.name}`,
 			changes: {
 				from: { name: row.name, iconColor: row.iconColor },
-				to: target ? { name: target.name, movedIssues: count } : null,
+				to: movedTo ? { name: movedTo.name, movedIssues: count } : null,
 			},
 		});
 	});
@@ -844,7 +863,8 @@ export async function reorderPriorities(
 
 	const rows = await db
 		.select({ id: priorities.id, name: priorities.name })
-		.from(priorities);
+		.from(priorities)
+		.orderBy(asc(priorities.sequence), sql`lower(${priorities.name})`);
 	const known = new Set(rows.map((row) => row.id));
 	if (
 		ids.length !== rows.length ||
@@ -859,11 +879,17 @@ export async function reorderPriorities(
 
 	const nameOf = (id: string) => rows.find((row) => row.id === id)?.name ?? id;
 	await db.transaction(async (tx) => {
-		for (const [index, id] of ids.entries()) {
+		if (ids.length > 0) {
 			await tx
 				.update(priorities)
-				.set({ sequence: index + 1, updatedAt: new Date() })
-				.where(eq(priorities.id, id));
+				.set({
+					sequence: sql`case ${priorities.id} ${sql.join(
+						ids.map((id, index) => sql`when ${id}::uuid then ${index + 1}`),
+						sql` `,
+					)} else ${priorities.sequence} end`,
+					updatedAt: new Date(),
+				})
+				.where(inArray(priorities.id, ids));
 		}
 		await audit(tx, actor, {
 			action: "priority.reorder",
@@ -918,18 +944,6 @@ export async function createResolution(
 	body: z.infer<typeof resolutionCreateBody>,
 ) {
 	requireAdminActor(actor);
-	const [clash] = await db
-		.select({ id: resolutions.id })
-		.from(resolutions)
-		.where(sql`lower(${resolutions.name}) = lower(${body.name})`)
-		.limit(1);
-	if (clash) {
-		throw new HttpError(
-			409,
-			`A resolution named "${body.name}" already exists`,
-		);
-	}
-
 	const [highest] = await db
 		.select({
 			value: sql<number>`coalesce(max(${resolutions.sequence}), 0)::int`,
@@ -937,6 +951,18 @@ export async function createResolution(
 		.from(resolutions);
 
 	const row = await db.transaction(async (tx) => {
+		await lockName(tx, body.name);
+		const [clash] = await tx
+			.select({ id: resolutions.id })
+			.from(resolutions)
+			.where(sql`lower(${resolutions.name}) = lower(${body.name})`)
+			.limit(1);
+		if (clash) {
+			throw new HttpError(
+				409,
+				`A resolution named "${body.name}" already exists`,
+			);
+		}
 		const [created] = await tx
 			.insert(resolutions)
 			.values({
@@ -985,25 +1011,6 @@ export async function updateResolution(
 		.limit(1);
 	if (!row) throw new HttpError(404, "Resolution not found");
 
-	if (body.name !== undefined && body.name !== row.name) {
-		const [clash] = await db
-			.select({ id: resolutions.id })
-			.from(resolutions)
-			.where(
-				and(
-					sql`lower(${resolutions.name}) = lower(${body.name})`,
-					ne(resolutions.id, row.id),
-				),
-			)
-			.limit(1);
-		if (clash) {
-			throw new HttpError(
-				409,
-				`A resolution named "${body.name}" already exists`,
-			);
-		}
-	}
-
 	const updates: Partial<typeof resolutions.$inferInsert> = {};
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
@@ -1026,6 +1033,25 @@ export async function updateResolution(
 	if (Object.keys(to).length > 0) {
 		updates.updatedAt = new Date();
 		await db.transaction(async (tx) => {
+			if (body.name !== undefined && body.name !== row.name) {
+				await lockName(tx, body.name);
+				const [clash] = await tx
+					.select({ id: resolutions.id })
+					.from(resolutions)
+					.where(
+						and(
+							sql`lower(${resolutions.name}) = lower(${body.name})`,
+							ne(resolutions.id, row.id),
+						),
+					)
+					.limit(1);
+				if (clash) {
+					throw new HttpError(
+						409,
+						`A resolution named "${body.name}" already exists`,
+					);
+				}
+			}
 			await tx
 				.update(resolutions)
 				.set(updates)
@@ -1109,6 +1135,7 @@ export async function deleteResolution(
 		);
 	}
 
+	const movedTo = count > 0 ? target : null;
 	await db.transaction(async (tx) => {
 		if (target && count > 0) {
 			const affected = await tx
@@ -1135,15 +1162,15 @@ export async function deleteResolution(
 		}
 		await tx.delete(resolutions).where(eq(resolutions.id, row.id));
 		await audit(tx, actor, {
-			action: target ? "resolution.migrate" : "resolution.delete",
+			action: movedTo ? "resolution.migrate" : "resolution.delete",
 			entityType: "resolution",
 			entityId: row.id,
-			summary: target
-				? `Deleted resolution ${row.name} and moved ${plural(count, "issue")} to ${target.name}`
+			summary: movedTo
+				? `Deleted resolution ${row.name} and moved ${plural(count, "issue")} to ${movedTo.name}`
 				: `Deleted resolution ${row.name}`,
 			changes: {
 				from: { name: row.name },
-				to: target ? { name: target.name, movedIssues: count } : null,
+				to: movedTo ? { name: movedTo.name, movedIssues: count } : null,
 			},
 		});
 	});
@@ -1158,7 +1185,8 @@ export async function reorderResolutions(
 
 	const rows = await db
 		.select({ id: resolutions.id, name: resolutions.name })
-		.from(resolutions);
+		.from(resolutions)
+		.orderBy(asc(resolutions.sequence), sql`lower(${resolutions.name})`);
 	const known = new Set(rows.map((row) => row.id));
 	if (
 		ids.length !== rows.length ||
@@ -1173,11 +1201,17 @@ export async function reorderResolutions(
 
 	const nameOf = (id: string) => rows.find((row) => row.id === id)?.name ?? id;
 	await db.transaction(async (tx) => {
-		for (const [index, id] of ids.entries()) {
+		if (ids.length > 0) {
 			await tx
 				.update(resolutions)
-				.set({ sequence: index + 1, updatedAt: new Date() })
-				.where(eq(resolutions.id, id));
+				.set({
+					sequence: sql`case ${resolutions.id} ${sql.join(
+						ids.map((id, index) => sql`when ${id}::uuid then ${index + 1}`),
+						sql` `,
+					)} else ${resolutions.sequence} end`,
+					updatedAt: new Date(),
+				})
+				.where(inArray(resolutions.id, ids));
 		}
 		await audit(tx, actor, {
 			action: "resolution.reorder",
@@ -1201,7 +1235,7 @@ export async function listStatuses(_actor: CurrentUser) {
 		.select({ id: issues.statusId, count: sql<number>`count(*)::int` })
 		.from(issues)
 		.groupBy(issues.statusId);
-	const users = await db
+	const workflowRows = await db
 		.select({
 			statusId: workflowStatuses.statusId,
 			id: workflows.id,
@@ -1215,7 +1249,7 @@ export async function listStatuses(_actor: CurrentUser) {
 		name: row.name,
 		category: row.category,
 		issueCount: counts.find((entry) => entry.id === row.id)?.count ?? 0,
-		workflows: users
+		workflows: workflowRows
 			.filter((entry) => entry.statusId === row.id)
 			.map((entry) => ({ id: entry.id, name: entry.name })),
 	}));
@@ -1247,16 +1281,16 @@ export async function createStatus(
 	body: z.infer<typeof statusCreateBody>,
 ) {
 	requireAdminActor(actor);
-	const [clash] = await db
-		.select({ id: statuses.id })
-		.from(statuses)
-		.where(sql`lower(${statuses.name}) = lower(${body.name})`)
-		.limit(1);
-	if (clash) {
-		throw new HttpError(409, `A status named "${body.name}" already exists`);
-	}
-
 	const row = await db.transaction(async (tx) => {
+		await lockName(tx, body.name);
+		const [clash] = await tx
+			.select({ id: statuses.id })
+			.from(statuses)
+			.where(sql`lower(${statuses.name}) = lower(${body.name})`)
+			.limit(1);
+		if (clash) {
+			throw new HttpError(409, `A status named "${body.name}" already exists`);
+		}
 		const [created] = await tx
 			.insert(statuses)
 			.values({
@@ -1300,22 +1334,6 @@ export async function updateStatus(
 		.limit(1);
 	if (!row) throw new HttpError(404, "Status not found");
 
-	if (body.name !== undefined && body.name !== row.name) {
-		const [clash] = await db
-			.select({ id: statuses.id })
-			.from(statuses)
-			.where(
-				and(
-					sql`lower(${statuses.name}) = lower(${body.name})`,
-					ne(statuses.id, row.id),
-				),
-			)
-			.limit(1);
-		if (clash) {
-			throw new HttpError(409, `A status named "${body.name}" already exists`);
-		}
-	}
-
 	const updates: Partial<typeof statuses.$inferInsert> = {};
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
@@ -1333,6 +1351,25 @@ export async function updateStatus(
 	if (Object.keys(to).length > 0) {
 		updates.updatedAt = new Date();
 		await db.transaction(async (tx) => {
+			if (body.name !== undefined && body.name !== row.name) {
+				await lockName(tx, body.name);
+				const [clash] = await tx
+					.select({ id: statuses.id })
+					.from(statuses)
+					.where(
+						and(
+							sql`lower(${statuses.name}) = lower(${body.name})`,
+							ne(statuses.id, row.id),
+						),
+					)
+					.limit(1);
+				if (clash) {
+					throw new HttpError(
+						409,
+						`A status named "${body.name}" already exists`,
+					);
+				}
+			}
 			await tx.update(statuses).set(updates).where(eq(statuses.id, row.id));
 			await audit(tx, actor, {
 				action: "status.update",
@@ -1463,6 +1500,7 @@ export async function deleteStatus(
 		}
 	}
 
+	const movedTo = count > 0 ? target : null;
 	await db.transaction(async (tx) => {
 		if (target && count > 0) {
 			const affected = await tx
@@ -1489,15 +1527,15 @@ export async function deleteStatus(
 		}
 		await tx.delete(statuses).where(eq(statuses.id, row.id));
 		await audit(tx, actor, {
-			action: target ? "status.migrate" : "status.delete",
+			action: movedTo ? "status.migrate" : "status.delete",
 			entityType: "status",
 			entityId: row.id,
-			summary: target
-				? `Deleted status ${row.name} and moved ${plural(count, "issue")} to ${target.name}`
+			summary: movedTo
+				? `Deleted status ${row.name} and moved ${plural(count, "issue")} to ${movedTo.name}`
 				: `Deleted status ${row.name}`,
 			changes: {
 				from: { name: row.name, category: row.category },
-				to: target ? { name: target.name, movedIssues: count } : null,
+				to: movedTo ? { name: movedTo.name, movedIssues: count } : null,
 			},
 		});
 	});
@@ -1544,16 +1582,19 @@ export async function createLinkType(
 	body: z.infer<typeof linkTypeCreateBody>,
 ) {
 	requireAdminActor(actor);
-	const [clash] = await db
-		.select({ id: linkTypes.id })
-		.from(linkTypes)
-		.where(sql`lower(${linkTypes.name}) = lower(${body.name})`)
-		.limit(1);
-	if (clash) {
-		throw new HttpError(409, `A link type named "${body.name}" already exists`);
-	}
-
 	const row = await db.transaction(async (tx) => {
+		await lockName(tx, body.name);
+		const [clash] = await tx
+			.select({ id: linkTypes.id })
+			.from(linkTypes)
+			.where(sql`lower(${linkTypes.name}) = lower(${body.name})`)
+			.limit(1);
+		if (clash) {
+			throw new HttpError(
+				409,
+				`A link type named "${body.name}" already exists`,
+			);
+		}
 		const [created] = await tx
 			.insert(linkTypes)
 			.values({
@@ -1602,25 +1643,6 @@ export async function updateLinkType(
 		.limit(1);
 	if (!row) throw new HttpError(404, "Link type not found");
 
-	if (body.name !== undefined && body.name !== row.name) {
-		const [clash] = await db
-			.select({ id: linkTypes.id })
-			.from(linkTypes)
-			.where(
-				and(
-					sql`lower(${linkTypes.name}) = lower(${body.name})`,
-					ne(linkTypes.id, row.id),
-				),
-			)
-			.limit(1);
-		if (clash) {
-			throw new HttpError(
-				409,
-				`A link type named "${body.name}" already exists`,
-			);
-		}
-	}
-
 	const updates: Partial<typeof linkTypes.$inferInsert> = {};
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
@@ -1636,6 +1658,25 @@ export async function updateLinkType(
 	if (Object.keys(to).length > 0) {
 		updates.updatedAt = new Date();
 		await db.transaction(async (tx) => {
+			if (body.name !== undefined && body.name !== row.name) {
+				await lockName(tx, body.name);
+				const [clash] = await tx
+					.select({ id: linkTypes.id })
+					.from(linkTypes)
+					.where(
+						and(
+							sql`lower(${linkTypes.name}) = lower(${body.name})`,
+							ne(linkTypes.id, row.id),
+						),
+					)
+					.limit(1);
+				if (clash) {
+					throw new HttpError(
+						409,
+						`A link type named "${body.name}" already exists`,
+					);
+				}
+			}
 			await tx.update(linkTypes).set(updates).where(eq(linkTypes.id, row.id));
 			await audit(tx, actor, {
 				action: "linktype.update",
@@ -1712,6 +1753,7 @@ export async function deleteLinkType(
 		);
 	}
 
+	const movedTo = count > 0 ? target : null;
 	await db.transaction(async (tx) => {
 		if (target && count > 0) {
 			await tx
@@ -1721,15 +1763,15 @@ export async function deleteLinkType(
 		}
 		await tx.delete(linkTypes).where(eq(linkTypes.id, row.id));
 		await audit(tx, actor, {
-			action: target ? "linktype.migrate" : "linktype.delete",
+			action: movedTo ? "linktype.migrate" : "linktype.delete",
 			entityType: "linktype",
 			entityId: row.id,
-			summary: target
-				? `Deleted link type ${row.name} and moved ${plural(count, "link")} to ${target.name}`
+			summary: movedTo
+				? `Deleted link type ${row.name} and moved ${plural(count, "link")} to ${movedTo.name}`
 				: `Deleted link type ${row.name}`,
 			changes: {
 				from: { name: row.name },
-				to: target ? { name: target.name, movedLinks: count } : null,
+				to: movedTo ? { name: movedTo.name, movedLinks: count } : null,
 			},
 		});
 	});
@@ -1751,9 +1793,13 @@ async function workflowsUsingStatus(statusId: string) {
 				eq(workflowTransitions.toStatusId, statusId),
 			),
 		);
+	const initial = await db
+		.select({ id: workflows.id, name: workflows.name })
+		.from(workflows)
+		.where(eq(workflows.initialStatusId, statusId));
 
 	const byId = new Map<string, { id: string; name: string }>();
-	for (const workflow of [...listed, ...transitioned]) {
+	for (const workflow of [...listed, ...transitioned, ...initial]) {
 		byId.set(workflow.id, workflow);
 	}
 	return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
