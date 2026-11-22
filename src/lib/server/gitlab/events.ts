@@ -266,19 +266,23 @@ async function handleMergeRequest(
 	const approvedReviewers = payload.reviewers.filter(
 		(reviewer) => reviewer.state === "approved",
 	).length;
-	let approvals = attributes.approvals ?? existing?.approvals ?? 0;
-	if (payload.reviewers.length > 0) {
+	let approvals: number;
+	if (attributes.approvals != null) {
+		approvals = attributes.approvals;
+	} else if (payload.reviewers.length > 0) {
 		approvals = approvedReviewers;
 	} else if (
 		attributes.action === "approval" ||
 		attributes.action === "approved"
 	) {
-		approvals = attributes.approvals ?? (existing?.approvals ?? 0) + 1;
+		approvals = (existing?.approvals ?? 0) + 1;
 	} else if (
 		attributes.action === "unapproval" ||
 		attributes.action === "unapproved"
 	) {
 		approvals = Math.max(0, (existing?.approvals ?? 0) - 1);
+	} else {
+		approvals = existing?.approvals ?? 0;
 	}
 
 	const authorName =
@@ -291,6 +295,13 @@ async function handleMergeRequest(
 		existing?.authorEmail ??
 		payload.user?.email ??
 		null;
+	const reviewers = payload.reviewers.map((reviewer) => ({
+		name: reviewer.name ?? null,
+		username: reviewer.username ?? null,
+		email: reviewer.email ?? null,
+	}));
+	const webUrl =
+		attributes.url ?? `${repository.webUrl}/-/merge_requests/${attributes.iid}`;
 	const [row] = await db
 		.insert(gitlabMergeRequests)
 		.values({
@@ -302,15 +313,9 @@ async function handleMergeRequest(
 			targetBranch: attributes.target_branch ?? null,
 			authorName,
 			authorEmail,
-			reviewers: payload.reviewers.map((reviewer) => ({
-				name: reviewer.name ?? null,
-				username: reviewer.username ?? null,
-				email: reviewer.email ?? null,
-			})),
+			reviewers,
 			approvals,
-			webUrl:
-				attributes.url ??
-				`${repository.webUrl}/-/merge_requests/${attributes.iid}`,
+			webUrl,
 			gitlabUpdatedAt: date(attributes.updated_at),
 		})
 		.onConflictDoUpdate({
@@ -322,15 +327,9 @@ async function handleMergeRequest(
 				targetBranch: attributes.target_branch ?? null,
 				authorName,
 				authorEmail,
-				reviewers: payload.reviewers.map((reviewer) => ({
-					name: reviewer.name ?? null,
-					username: reviewer.username ?? null,
-					email: reviewer.email ?? null,
-				})),
+				reviewers,
 				approvals,
-				webUrl:
-					attributes.url ??
-					`${repository.webUrl}/-/merge_requests/${attributes.iid}`,
+				webUrl,
 				gitlabUpdatedAt: date(attributes.updated_at),
 				updatedAt: new Date(),
 			},
@@ -433,17 +432,22 @@ async function handlePipeline(
 			if (issue) linked.set(issue.id, issue);
 		}
 	}
-	if (linked.size > 0) {
-		await db
-			.insert(gitlabPipelineIssues)
-			.values(
-				[...linked.values()].map((issue) => ({
-					pipelineId: row.id,
-					issueId: issue.id,
-				})),
-			)
-			.onConflictDoNothing();
-	}
+	await db.transaction(async (tx) => {
+		await tx
+			.delete(gitlabPipelineIssues)
+			.where(eq(gitlabPipelineIssues.pipelineId, row.id));
+		if (linked.size > 0) {
+			await tx
+				.insert(gitlabPipelineIssues)
+				.values(
+					[...linked.values()].map((issue) => ({
+						pipelineId: row.id,
+						issueId: issue.id,
+					})),
+				)
+				.onConflictDoNothing();
+		}
+	});
 
 	return {
 		status: "processed",
@@ -461,6 +465,14 @@ async function handleNote(): Promise<{
 export type DeliveryResult = {
 	status: "processed" | "ignored";
 	reason?: string;
+};
+
+const EVENT_KIND_BY_HEADER: Record<string, string> = {
+	"Push Hook": "push",
+	"Tag Push Hook": "tag_push",
+	"Merge Request Hook": "merge_request",
+	"Pipeline Hook": "pipeline",
+	"Note Hook": "note",
 };
 
 export async function handleGitlabEvent(
@@ -481,26 +493,17 @@ export async function handleGitlabEvent(
 	const kind =
 		header === "System Hook"
 			? objectKind
-			: header === "Push Hook"
-				? "push"
-				: header === "Tag Push Hook"
-					? "tag_push"
-					: header === "Merge Request Hook"
-						? "merge_request"
-						: header === "Pipeline Hook"
-							? "pipeline"
-							: header === "Note Hook"
-								? "note"
-								: objectKind;
+			: (EVENT_KIND_BY_HEADER[header] ?? objectKind);
 
-	const context = await deliveryContext(deliveryId);
+	let context: Promise<DeliveryContext> | null = null;
+	const contextFor = () => (context ??= deliveryContext(deliveryId));
 
 	if (kind === "push") {
 		const parsed = pushPayload.safeParse(payload);
 		if (!parsed.success) {
 			return { status: "ignored", reason: "unreadable push payload" };
 		}
-		return handlePush(context, parsed.data);
+		return handlePush(await contextFor(), parsed.data);
 	}
 	if (kind === "tag_push") {
 		return { status: "ignored", reason: "tag pushes are not tracked" };
@@ -510,14 +513,14 @@ export async function handleGitlabEvent(
 		if (!parsed.success) {
 			return { status: "ignored", reason: "unreadable merge request payload" };
 		}
-		return handleMergeRequest(context, parsed.data);
+		return handleMergeRequest(await contextFor(), parsed.data);
 	}
 	if (kind === "pipeline") {
 		const parsed = pipelinePayload.safeParse(payload);
 		if (!parsed.success) {
 			return { status: "ignored", reason: "unreadable pipeline payload" };
 		}
-		return handlePipeline(context, parsed.data);
+		return handlePipeline(await contextFor(), parsed.data);
 	}
 	if (kind === "note") {
 		return handleNote();
@@ -549,6 +552,13 @@ export async function processGitlabDelivery(deliveryId: string) {
 		.returning();
 	if (!delivery) return;
 
+	const claimedAt = delivery.startedAt;
+	if (!claimedAt) return;
+	const owned = and(
+		eq(gitlabDeliveries.id, delivery.id),
+		eq(gitlabDeliveries.startedAt, claimedAt),
+	);
+
 	let result: DeliveryResult;
 	try {
 		result = await handleGitlabEvent(
@@ -556,21 +566,26 @@ export async function processGitlabDelivery(deliveryId: string) {
 			delivery.payload,
 			delivery.id,
 		);
-		await db
+		const [updated] = await db
 			.update(gitlabDeliveries)
 			.set({
 				status: result.status,
 				reason: result.reason ?? null,
 				processedAt: new Date(),
 			})
-			.where(eq(gitlabDeliveries.id, delivery.id));
+			.where(owned)
+			.returning({ id: gitlabDeliveries.id });
+		if (!updated) return;
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		await db
+		const [updated] = await db
 			.update(gitlabDeliveries)
 			.set({ status: "failed", reason: message, processedAt: new Date() })
-			.where(eq(gitlabDeliveries.id, delivery.id));
-		await recordDelivery(`${delivery.event}: failed`).catch(() => undefined);
+			.where(owned)
+			.returning({ id: gitlabDeliveries.id });
+		if (updated) {
+			await recordDelivery(`${delivery.event}: failed`).catch(() => undefined);
+		}
 		throw error;
 	}
 	await recordDelivery(`${delivery.event}: ${result.status}`).catch(
