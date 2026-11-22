@@ -220,6 +220,34 @@ describe("parseSprintDescriptor", () => {
 	});
 });
 
+type ImportDatabase = Parameters<typeof importAgileLocal>[0];
+
+/** Fails the insert of one table, so an import can be interrupted midway. */
+function databaseFailingOn(
+	shouldFail: (table: unknown) => boolean,
+): ImportDatabase {
+	const wrap = (base: object): ImportDatabase =>
+		new Proxy(base, {
+			get(target, property) {
+				if (property === "transaction") {
+					return (callback: (tx: object) => unknown) =>
+						Reflect.get(target, property).call(target, (tx: object) =>
+							callback(wrap(tx)),
+						);
+				}
+				if (property === "insert") {
+					return (table: unknown) => {
+						if (shouldFail(table)) throw new Error("injected insert failure");
+						return Reflect.get(target, property).call(target, table);
+					};
+				}
+				const value = Reflect.get(target, property);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}) as ImportDatabase;
+	return wrap(db);
+}
+
 describe("importAgileLocal", () => {
 	test("creates the board, sprints and memberships from issue data", async () => {
 		const counts = await importAgileLocal(db);
@@ -308,6 +336,44 @@ describe("importAgileLocal", () => {
 			.from(issueSprints)
 			.where(eq(issueSprints.issueId, issueIds[1]));
 		expect(memberships).toHaveLength(2);
+	});
+
+	test("a failed import keeps the memberships it had before", async () => {
+		await importAgileLocal(db);
+		const [board] = await db
+			.select()
+			.from(boards)
+			.where(eq(boards.sourceId, String(rapidViewId)));
+		const [stale] = await db
+			.insert(sprints)
+			.values({
+				sourceId: `${tag}:stale-sprint`,
+				boardId: board.id,
+				name: "Stale sprint",
+				state: "future",
+			})
+			.returning();
+		await db.insert(issueSprints).values({
+			issueId: issueIds[0],
+			sprintId: stale.id,
+			isOpen: false,
+		});
+
+		const database = databaseFailingOn((table) => table === issueSprints);
+		await expect(importAgileLocal(database)).rejects.toThrow(
+			"injected insert failure",
+		);
+
+		const kept = await db
+			.select()
+			.from(issueSprints)
+			.where(
+				and(
+					eq(issueSprints.issueId, issueIds[0]),
+					eq(issueSprints.sprintId, stale.id),
+				),
+			);
+		expect(kept).toHaveLength(1);
 	});
 
 	test("does not overwrite a board whose real configuration was imported", async () => {

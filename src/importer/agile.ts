@@ -266,6 +266,14 @@ async function planBoards(
 export async function importAgileLocal(
 	database: Database,
 ): Promise<AgileImportCounts> {
+	return database.transaction((tx) =>
+		importAgileLocalTransaction(tx as unknown as Database),
+	);
+}
+
+async function importAgileLocalTransaction(
+	database: Database,
+): Promise<AgileImportCounts> {
 	const descriptors = new Map<string, ParsedSprint>();
 	const sprintSourceId = await sprintFieldSourceId(database);
 	const plans = sprintSourceId
