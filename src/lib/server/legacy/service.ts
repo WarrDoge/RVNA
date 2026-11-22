@@ -1,16 +1,11 @@
-import { and, eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
-import {
-	type CurrentUser,
-	loginPath,
-	SESSION_COOKIE,
-	sha256,
-} from "../auth.ts";
+import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import { getFilter } from "../filters/service.ts";
 import { isHttpError } from "../http.ts";
 import { requireBrowseIssue } from "../permissions.ts";
-import { dashboards, filters, sessions } from "../schema.ts";
+import { filters } from "../schema.ts";
 
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 
@@ -22,17 +17,6 @@ export type LegacyOutcome =
 
 function redirect(location: string): LegacyOutcome {
 	return { kind: "redirect", location };
-}
-
-export async function logout(
-	actor: CurrentUser | null,
-	sessionId: string | undefined,
-): Promise<LegacyOutcome> {
-	if (!actor) return { kind: "login" };
-	if (sessionId) {
-		await db.delete(sessions).where(eq(sessions.idHash, sha256(sessionId)));
-	}
-	return redirect(loginPath());
 }
 
 export async function quickSearch(
@@ -118,30 +102,6 @@ export async function issueFilter(
 	return redirect(`/issues/?${query.toString()}`);
 }
 
-export async function dashboard(
-	actor: CurrentUser | null,
-	input: { pageId?: string },
-): Promise<LegacyOutcome> {
-	if (!actor) return { kind: "login" };
-	const pageId = input.pageId;
-	if (!pageId || z.uuid().safeParse(pageId).success) return { kind: "none" };
-
-	const [row] = await db
-		.select({ id: dashboards.id })
-		.from(dashboards)
-		.where(
-			and(
-				eq(dashboards.sourceId, pageId),
-				actor.isAdmin
-					? undefined
-					: sql`(${dashboards.shared} or ${dashboards.ownerId} = ${actor.id}::uuid)`,
-			),
-		)
-		.limit(1);
-	if (!row) return { kind: "none" };
-	return redirect(`/secure/Dashboard.jspa?selectPageId=${row.id}`);
-}
-
 function safeDecode(value: string) {
 	try {
 		return decodeURIComponent(value);
@@ -149,5 +109,3 @@ function safeDecode(value: string) {
 		return value;
 	}
 }
-
-export { SESSION_COOKIE };
