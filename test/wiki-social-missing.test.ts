@@ -35,3 +35,16 @@ test("another failure still stops the import", async () => {
 		fetchPageSocial(client as never, "1", "current", { privateApis: true }),
 	).rejects.toThrow("500");
 });
+
+test("a page the token cannot see counts as none", async () => {
+	const client = {
+		getJson: async (path: string) => {
+			throw new GetOnlyRequestError(403, path);
+		},
+	};
+	expect(
+		await fetchPageSocial(client as never, "1", "current", {
+			privateApis: true,
+		}),
+	).toEqual(none);
+});

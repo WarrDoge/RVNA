@@ -45,6 +45,7 @@ function initialSocial(): SocialState {
 					name: "fixture-social-one",
 					fullName: "Fixture Social One",
 					userKey: "uk-one",
+					avatarUrl: "/avatars/watch-one.png",
 				},
 				{
 					username: "fixture-social-two",
@@ -81,6 +82,7 @@ function initialSocial(): SocialState {
 						name: "fixture-social-one",
 						fullName: "Fixture Social One",
 						userKey: "uk-one",
+						profilePicture: { path: "/avatars/like-one.png" },
 					},
 				},
 			],
@@ -279,6 +281,10 @@ describe("Confluence page and space watchers and page likes", () => {
 		expect(page?.likes.map((user) => user.username)).toEqual([
 			"fixture-social-one",
 		]);
+		expect(
+			page?.watchers.find((user) => user.userKey === "uk-one")?.avatarUrl,
+		).toBe("/avatars/watch-one.png");
+		expect(page?.likes[0]?.avatarUrl).toBe("/avatars/like-one.png");
 	});
 
 	test("imports the rows once and counts unknown users", async () => {

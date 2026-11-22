@@ -33,7 +33,8 @@ export function toSocialUser(value: unknown): WikiSocialUser | null {
 		username,
 		displayName:
 			text(user.fullName) ?? text(user.displayName) ?? username ?? userKey,
-		avatarUrl: text(user.avatarUrl),
+		avatarUrl:
+			text(user.avatarUrl) ?? text(objectOf(user.profilePicture)?.path),
 	};
 }
 
@@ -52,11 +53,13 @@ function arrayOf(value: unknown): unknown[] | null {
 	return Array.isArray(value) ? value : null;
 }
 
-function parseUsers(value: unknown): WikiSocialUser[] {
-	const values = arrayOf(value) ?? [];
+function collectUsers(
+	values: unknown[] | null,
+	extract: (entry: unknown) => unknown,
+): WikiSocialUser[] {
 	const users = new Map<string, WikiSocialUser>();
-	for (const entry of values) {
-		const user = toSocialUser(entry);
+	for (const entry of values ?? []) {
+		const user = toSocialUser(extract(entry));
 		if (!user) continue;
 		const key = socialUserKey(user);
 		if (key) users.set(key, user);
@@ -64,18 +67,15 @@ function parseUsers(value: unknown): WikiSocialUser[] {
 	return [...users.values()];
 }
 
+function parseUsers(value: unknown): WikiSocialUser[] {
+	return collectUsers(arrayOf(value), (entry) => entry);
+}
+
 function parseLikes(value: unknown): WikiSocialUser[] {
-	const values = arrayOf(value) ?? [];
-	const users = new Map<string, WikiSocialUser>();
-	for (const entry of values) {
-		const like = objectOf(entry);
-		if (!like) continue;
-		const user = toSocialUser(like.user);
-		if (!user) continue;
-		const key = socialUserKey(user);
-		if (key) users.set(key, user);
-	}
-	return [...users.values()];
+	return collectUsers(
+		arrayOf(value),
+		(entry) => objectOf(entry)?.user ?? entry,
+	);
 }
 
 function noneWhenMissing(none: unknown) {
