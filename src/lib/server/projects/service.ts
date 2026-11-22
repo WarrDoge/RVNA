@@ -119,25 +119,27 @@ const leadColumns = {
 	avatarUrl: userAvatarSql(users.id),
 };
 
+const projectColumns = {
+	id: projects.id,
+	key: projects.key,
+	name: projects.name,
+	description: projects.description,
+	type: projects.projectType,
+	category: projects.categoryName,
+	avatarUrl: projectAvatarSql(projects.id),
+	archived: projects.archived,
+	issueCount: sql<number>`(
+		select count(*)::int from ${issues} where ${issues.projectId} = ${projects.id}
+	)`,
+	leadId: users.id,
+	leadUsername: users.username,
+	leadDisplayName: users.displayName,
+	leadAvatarUrl: userAvatarSql(users.id),
+};
+
 async function loadProject(key: string) {
 	const [row] = await db
-		.select({
-			id: projects.id,
-			key: projects.key,
-			name: projects.name,
-			description: projects.description,
-			type: projects.projectType,
-			category: projects.categoryName,
-			avatarUrl: projectAvatarSql(projects.id),
-			archived: projects.archived,
-			issueCount: sql<number>`(
-				select count(*)::int from ${issues} where ${issues.projectId} = ${projects.id}
-			)`,
-			leadId: users.id,
-			leadUsername: users.username,
-			leadDisplayName: users.displayName,
-			leadAvatarUrl: userAvatarSql(users.id),
-		})
+		.select(projectColumns)
 		.from(projects)
 		.leftJoin(users, eq(users.id, projects.leadId))
 		.where(eq(projects.key, key.toUpperCase()))
@@ -168,23 +170,7 @@ export async function listProjects(actor: CurrentUser) {
 	if (visible.length === 0) return [];
 
 	const rows = await db
-		.select({
-			id: projects.id,
-			key: projects.key,
-			name: projects.name,
-			description: projects.description,
-			type: projects.projectType,
-			category: projects.categoryName,
-			avatarUrl: projectAvatarSql(projects.id),
-			archived: projects.archived,
-			issueCount: sql<number>`(
-				select count(*)::int from ${issues} where ${issues.projectId} = ${projects.id}
-			)`,
-			leadId: users.id,
-			leadUsername: users.username,
-			leadDisplayName: users.displayName,
-			leadAvatarUrl: userAvatarSql(users.id),
-		})
+		.select(projectColumns)
 		.from(projects)
 		.leftJoin(users, eq(users.id, projects.leadId))
 		.where(and(eq(projects.archived, false), inArray(projects.id, visible)))
@@ -364,55 +350,62 @@ export async function listProjectIssues(
 	if (!project) throw new HttpError(404, "Project not found");
 	await requireProjectPermission(actor, project.id, "BROWSE_PROJECTS");
 
-	const rows = await db
-		.select({
-			id: issues.id,
-			key: issues.key,
-			summary: issues.summary,
-			created: issues.created,
-			updated: issues.updated,
-			typeId: issueTypes.id,
-			typeName: issueTypes.name,
-			typeSubtask: issueTypes.subtask,
-			typeIconUrl: issueTypeIconSql(
-				issueTypes.id,
-				issueTypes.iconFile,
-				issueTypes.iconUrl,
-			),
-			statusId: statuses.id,
-			statusName: statuses.name,
-			statusCategory: statuses.category,
-			priorityId: priorities.id,
-			priorityName: priorities.name,
-			priorityColor: priorities.iconColor,
-			priorityIconUrl: priorityIconSql(priorities.id, priorities.iconFile),
-			resolutionId: resolutions.id,
-			resolutionName: resolutions.name,
-			assigneeId: users.id,
-			assigneeUsername: users.username,
-			assigneeDisplayName: users.displayName,
-			assigneeAvatarUrl: userAvatarSql(users.id),
-			reporterId: reporter.id,
-			reporterUsername: reporter.username,
-			reporterDisplayName: reporter.displayName,
-			reporterAvatarUrl: userAvatarSql(reporter.id),
-		})
-		.from(issues)
-		.innerJoin(issueTypes, eq(issueTypes.id, issues.typeId))
-		.innerJoin(statuses, eq(statuses.id, issues.statusId))
-		.leftJoin(priorities, eq(priorities.id, issues.priorityId))
-		.leftJoin(resolutions, eq(resolutions.id, issues.resolutionId))
-		.leftJoin(users, eq(users.id, issues.assigneeId))
-		.leftJoin(reporter, eq(reporter.id, issues.reporterId))
-		.where(eq(issues.projectId, project.id))
-		.orderBy(sql`${issues.created} desc nulls last`, desc(issues.number))
-		.offset(input.offset)
-		.limit(input.limit);
+	const { rows, total } = await db.transaction(
+		async (tx) => {
+			const rows = await tx
+				.select({
+					id: issues.id,
+					key: issues.key,
+					summary: issues.summary,
+					created: issues.created,
+					updated: issues.updated,
+					typeId: issueTypes.id,
+					typeName: issueTypes.name,
+					typeSubtask: issueTypes.subtask,
+					typeIconUrl: issueTypeIconSql(
+						issueTypes.id,
+						issueTypes.iconFile,
+						issueTypes.iconUrl,
+					),
+					statusId: statuses.id,
+					statusName: statuses.name,
+					statusCategory: statuses.category,
+					priorityId: priorities.id,
+					priorityName: priorities.name,
+					priorityColor: priorities.iconColor,
+					priorityIconUrl: priorityIconSql(priorities.id, priorities.iconFile),
+					resolutionId: resolutions.id,
+					resolutionName: resolutions.name,
+					assigneeId: users.id,
+					assigneeUsername: users.username,
+					assigneeDisplayName: users.displayName,
+					assigneeAvatarUrl: userAvatarSql(users.id),
+					reporterId: reporter.id,
+					reporterUsername: reporter.username,
+					reporterDisplayName: reporter.displayName,
+					reporterAvatarUrl: userAvatarSql(reporter.id),
+				})
+				.from(issues)
+				.innerJoin(issueTypes, eq(issueTypes.id, issues.typeId))
+				.innerJoin(statuses, eq(statuses.id, issues.statusId))
+				.leftJoin(priorities, eq(priorities.id, issues.priorityId))
+				.leftJoin(resolutions, eq(resolutions.id, issues.resolutionId))
+				.leftJoin(users, eq(users.id, issues.assigneeId))
+				.leftJoin(reporter, eq(reporter.id, issues.reporterId))
+				.where(eq(issues.projectId, project.id))
+				.orderBy(sql`${issues.created} desc nulls last`, desc(issues.number))
+				.offset(input.offset)
+				.limit(input.limit);
 
-	const [count] = await db
-		.select({ total: sql<number>`count(*)::int` })
-		.from(issues)
-		.where(eq(issues.projectId, project.id));
+			const [count] = await tx
+				.select({ total: sql<number>`count(*)::int` })
+				.from(issues)
+				.where(eq(issues.projectId, project.id));
+
+			return { rows, total: count?.total ?? 0 };
+		},
+		{ isolationLevel: "repeatable read" },
+	);
 
 	return {
 		issues: rows.map((row) => ({
@@ -456,7 +449,7 @@ export async function listProjectIssues(
 			created: row.created?.toISOString() ?? null,
 			updated: row.updated?.toISOString() ?? null,
 		})),
-		total: count?.total ?? 0,
+		total,
 		offset: input.offset,
 		limit: input.limit,
 	};
@@ -472,13 +465,8 @@ export async function updateProject(
 	await requireProjectPermission(actor, project.id, "ADMINISTER_PROJECTS");
 
 	const { name, description, leadId } = body;
-	if (leadId) {
-		const [lead] = await db
-			.select({ id: users.id })
-			.from(users)
-			.where(and(eq(users.id, leadId), eq(users.active, true)))
-			.limit(1);
-		if (!lead) throw new HttpError(400, "Unknown project lead");
+	if (leadId && !(await validLead(leadId))) {
+		throw new HttpError(400, "Unknown project lead");
 	}
 
 	await db
