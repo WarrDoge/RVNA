@@ -277,42 +277,50 @@ async function applyTime(
 	deliveryId: string,
 	repositoryId: string,
 ) {
-	const context = await transitionContext(issue.id);
-	if (!context) return;
-	const timeSpent = (context.timeSpent ?? 0) + command.seconds;
-	const remainingEstimate =
-		context.remainingEstimate === null
-			? null
-			: Math.max(0, context.remainingEstimate - command.seconds);
-
-	const items: HistoryItem[] = [
-		{
-			field: "timespent",
-			fieldType: "jira",
-			fromValue: context.timeSpent === null ? null : String(context.timeSpent),
-			fromText: context.timeSpent === null ? null : String(context.timeSpent),
-			toValue: String(timeSpent),
-			toText: String(timeSpent),
-		},
-	];
-	if (remainingEstimate !== context.remainingEstimate) {
-		items.push({
-			field: "timeestimate",
-			fieldType: "jira",
-			fromValue:
-				context.remainingEstimate === null
-					? null
-					: String(context.remainingEstimate),
-			fromText:
-				context.remainingEstimate === null
-					? null
-					: String(context.remainingEstimate),
-			toValue: remainingEstimate === null ? null : String(remainingEstimate),
-			toText: remainingEstimate === null ? null : String(remainingEstimate),
-		});
-	}
-
 	await db.transaction(async (tx) => {
+		const [context] = await tx
+			.select({
+				timeSpent: issues.timeSpent,
+				remainingEstimate: issues.remainingEstimate,
+			})
+			.from(issues)
+			.where(eq(issues.id, issue.id))
+			.for("update");
+		if (!context) return;
+		const timeSpent = (context.timeSpent ?? 0) + command.seconds;
+		const remainingEstimate =
+			context.remainingEstimate === null
+				? null
+				: Math.max(0, context.remainingEstimate - command.seconds);
+
+		const items: HistoryItem[] = [
+			{
+				field: "timespent",
+				fieldType: "jira",
+				fromValue:
+					context.timeSpent === null ? null : String(context.timeSpent),
+				fromText: context.timeSpent === null ? null : String(context.timeSpent),
+				toValue: String(timeSpent),
+				toText: String(timeSpent),
+			},
+		];
+		if (remainingEstimate !== context.remainingEstimate) {
+			items.push({
+				field: "timeestimate",
+				fieldType: "jira",
+				fromValue:
+					context.remainingEstimate === null
+						? null
+						: String(context.remainingEstimate),
+				fromText:
+					context.remainingEstimate === null
+						? null
+						: String(context.remainingEstimate),
+				toValue: remainingEstimate === null ? null : String(remainingEstimate),
+				toText: remainingEstimate === null ? null : String(remainingEstimate),
+			});
+		}
+
 		await tx.insert(worklogs).values({
 			sourceId: `local:${randomUUID()}`,
 			issueId: issue.id,

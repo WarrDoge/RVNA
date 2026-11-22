@@ -151,6 +151,59 @@ describe("smart commits", () => {
 		);
 	});
 
+	test("two concurrent worklogs keep both increments", async () => {
+		const fixture = await createGitlabFixture(`${tag}j`);
+		const repositoryId = await linkFixtureRepository(fixture);
+		await saveProjectGitlabSettings(
+			fixture.projectId,
+			settingsFor({
+				smartCommitsEnabled: true,
+				linkedRepositoryIds: [repositoryId],
+			}),
+		);
+
+		const client = await pool.connect();
+		try {
+			await client.query("begin");
+			await client.query("update issues set time_spent = 100 where id = $1", [
+				fixture.issueId,
+			]);
+			const delivery = deliverDirect(
+				"Push Hook",
+				pushPayload(fixture, `${fixture.issueKey}-race`, [
+					{
+						sha: "9".repeat(40),
+						title: `${fixture.issueKey} #time 1h`,
+					},
+				]),
+				`${tag}:race`,
+			);
+
+			const deadline = Date.now() + 10_000;
+			while (Date.now() < deadline) {
+				const { rows } = await pool.query(
+					"select 1 from pg_stat_activity where wait_event_type = 'Lock' and query ilike '%issues%' and pid <> pg_backend_pid() limit 1",
+				);
+				if (rows.length > 0) break;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			await client.query("commit");
+			const result = await delivery;
+			expect(result.status).toBe("processed");
+		} finally {
+			await client.query("rollback").catch(() => undefined);
+			client.release();
+		}
+
+		const [row] = await db
+			.select({ timeSpent: issues.timeSpent })
+			.from(issues)
+			.where(eq(issues.id, fixture.issueId));
+		expect(row?.timeSpent).toBe(3700);
+
+		await cleanupGitlabFixture(fixture);
+	});
+
 	test("records a reason when the author email matches no user", async () => {
 		const before = await issueState(smart.issueId);
 		await deliverDirect(
