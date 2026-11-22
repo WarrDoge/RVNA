@@ -1227,7 +1227,7 @@ describe("epic visibility", () => {
 		);
 		await db
 			.update(issues)
-			.set({ epicId: hiddenEpicId })
+			.set({ epicId: hiddenEpicId, parentId: hiddenEpicId })
 			.where(eq(issues.id, linkedIssue.id));
 	});
 
@@ -1297,6 +1297,29 @@ describe("epic visibility", () => {
 		expect(
 			(visible.json() as { issues: { epic: { key: string } | null }[] })
 				.issues[0]?.epic?.key,
+		).toBe(hiddenEpicKey);
+	});
+
+	test("the navigator hides a parent the viewer cannot browse", async () => {
+		const jql = encodeURIComponent(`key = ${linkedIssue.key}`);
+		const hidden = await inject(
+			"GET",
+			`/api/search/issues?jql=${jql}`,
+			otherSession,
+		);
+		expect(hidden.statusCode).toBe(200);
+		expect(
+			(hidden.json() as { issues: { parent: unknown }[] }).issues[0]?.parent,
+		).toBeNull();
+
+		const visible = await inject(
+			"GET",
+			`/api/search/issues?jql=${jql}`,
+			ownerSession,
+		);
+		expect(
+			(visible.json() as { issues: { parent: { key: string } | null }[] })
+				.issues[0]?.parent?.key,
 		).toBe(hiddenEpicKey);
 	});
 

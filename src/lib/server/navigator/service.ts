@@ -240,6 +240,7 @@ export async function loadNavigatorPage(
 			left join issues epic on epic.id = issues.epic_id
 				and epic.project_id = any(${sql.param(visible)}::uuid[])
 			left join issues parent on parent.id = issues.parent_id
+				and parent.project_id = any(${sql.param(visible)}::uuid[])
 			where ${where}
 			order by ${orderBy}
 			limit ${maxResults} offset ${startAt}
