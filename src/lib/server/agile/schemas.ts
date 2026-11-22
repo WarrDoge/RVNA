@@ -223,19 +223,35 @@ export const sprintMoveBody = z.object({
 	direction: z.enum(["up", "down"]),
 });
 
-export const columnsBody = z.object({
-	columns: z
-		.array(
-			z.object({
-				name: z.string().trim().min(1).max(200),
-				minIssues: z.number().int().min(0).nullable().optional(),
-				maxIssues: z.number().int().min(0).nullable().optional(),
-				statuses: z.array(z.uuid()).max(500),
-			}),
-		)
-		.min(1)
-		.max(20),
-});
+export const columnsBody = z
+	.object({
+		columns: z
+			.array(
+				z.object({
+					name: z.string().trim().min(1).max(200),
+					minIssues: z.number().int().min(0).nullable().optional(),
+					maxIssues: z.number().int().min(0).nullable().optional(),
+					statuses: z.array(z.uuid()).max(500),
+				}),
+			)
+			.min(1)
+			.max(20),
+	})
+	.superRefine((body, context) => {
+		body.columns.forEach((column, index) => {
+			if (
+				column.minIssues != null &&
+				column.maxIssues != null &&
+				column.minIssues > column.maxIssues
+			) {
+				context.addIssue({
+					code: "custom",
+					message: "The minimum cannot exceed the maximum",
+					path: ["columns", index, "maxIssues"],
+				});
+			}
+		});
+	});
 
 export const swimlanesBody = z.object({
 	swimlanes: z

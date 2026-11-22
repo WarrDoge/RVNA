@@ -399,6 +399,12 @@ test("an SSO admin group is matched without regard to case", async () => {
 		.insert(groups)
 		.values({ name: variant, local: false })
 		.onConflictDoNothing();
+	// A group that differs only by case is the same group, so an earlier test may
+	// have inserted the lower-case name already. Rename that row to the variant.
+	await db
+		.update(groups)
+		.set({ name: variant })
+		.where(sql`lower(${groups.name}) = lower(${variant})`);
 	const [group] = await db
 		.select()
 		.from(groups)

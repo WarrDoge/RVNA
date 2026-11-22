@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
@@ -32,12 +32,17 @@ let actor: CurrentUser;
 let actorId: string;
 let otherId: string;
 
+/** The table holds the hash; the test knows the code the user would type. */
+function storedCode(code: string) {
+	return createHash("sha256").update(code).digest("hex");
+}
+
 async function insertCode(userId: string, code: string) {
 	const [row] = await db
 		.insert(messengerLinkCodes)
 		.values({
 			userId,
-			code,
+			code: storedCode(code),
 			expiresAt: new Date(Date.now() + 60_000),
 		})
 		.returning();
@@ -93,10 +98,16 @@ test("a code collision is retried instead of failing the request", async () => {
 		.from(messengerLinkCodes)
 		.where(eq(messengerLinkCodes.id, previous.id));
 	expect(old.usedAt).not.toBeNull();
+	const [stored] = await db
+		.select()
+		.from(messengerLinkCodes)
+		.where(eq(messengerLinkCodes.code, storedCode(result.code)));
+	expect(stored).toBeDefined();
+	expect(stored.code).not.toBe(result.code);
 	const [other] = await db
 		.select()
 		.from(messengerLinkCodes)
-		.where(eq(messengerLinkCodes.code, "AAAAAAAA"));
+		.where(eq(messengerLinkCodes.code, storedCode("AAAAAAAA")));
 	expect(other.usedAt).toBeNull();
 });
 
