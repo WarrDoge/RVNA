@@ -376,6 +376,34 @@ describe("importAgileLocal", () => {
 		expect(kept).toHaveLength(1);
 	});
 
+	test("a cleared or malformed sprint field drops the old membership", async () => {
+		await importAgileLocal(db);
+		const [sprintRow] = await db
+			.select()
+			.from(sprints)
+			.where(eq(sprints.sourceId, "9001"));
+		const membershipCount = async () =>
+			(
+				await db
+					.select()
+					.from(issueSprints)
+					.where(
+						and(
+							eq(issueSprints.issueId, issueIds[0]),
+							eq(issueSprints.sprintId, sprintRow.id),
+						),
+					)
+			).length;
+		expect(await membershipCount()).toBe(1);
+
+		await db
+			.update(issues)
+			.set({ custom: { [fixtureFieldIds.sprint]: ["not a sprint"] } })
+			.where(eq(issues.id, issueIds[0]));
+		await importAgileLocal(db);
+		expect(await membershipCount()).toBe(0);
+	});
+
 	test("does not overwrite a board whose real configuration was imported", async () => {
 		const [board] = await db
 			.select()

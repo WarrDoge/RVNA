@@ -157,7 +157,7 @@ async function planBoards(
 	database: Database,
 	descriptors: Map<string, ParsedSprint>,
 	sprintSourceId: string,
-): Promise<Map<string, BoardPlan>> {
+): Promise<{ plans: Map<string, BoardPlan>; issueIds: Set<string> }> {
 	const result = await database.execute(sql`
 		select i.id as issue_id, i.project_id, p.key as project_key, p.name as project_name
 		from issues i
@@ -260,7 +260,7 @@ async function planBoards(
 		plan.statuses = await projectStatuses(database, projectIds);
 	}
 
-	return plans;
+	return { plans, issueIds: new Set(issueRows.map((row) => row.issue_id)) };
 }
 
 export async function importAgileLocal(
@@ -276,9 +276,9 @@ async function importAgileLocalTransaction(
 ): Promise<AgileImportCounts> {
 	const descriptors = new Map<string, ParsedSprint>();
 	const sprintSourceId = await sprintFieldSourceId(database);
-	const plans = sprintSourceId
+	const { plans, issueIds: sprintFieldIssueIds } = sprintSourceId
 		? await planBoards(database, descriptors, sprintSourceId)
-		: new Map<string, BoardPlan>();
+		: { plans: new Map<string, BoardPlan>(), issueIds: new Set<string>() };
 	const counts: AgileImportCounts = {
 		boards: plans.size,
 		sprints: { future: 0, active: 0, closed: 0 },
@@ -450,7 +450,7 @@ async function importAgileLocalTransaction(
 		});
 	}
 
-	const issueIds = [...importedIssueIds];
+	const issueIds = [...sprintFieldIssueIds];
 	if (issueIds.length > 0) {
 		await database.execute(sql`
 			delete from issue_sprints
