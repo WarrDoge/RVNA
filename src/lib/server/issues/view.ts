@@ -1,8 +1,6 @@
-import { eq } from "drizzle-orm";
 import type { IssueDetail, Me } from "../../api-types.ts";
 import type { CurrentUser } from "../auth.ts";
-import { db } from "../db.ts";
-import { issues, projects } from "../schema.ts";
+import { requireBrowseIssue } from "../permissions.ts";
 import { issueDetailWithCustomFieldsSchema } from "./schemas.ts";
 import { getIssue, listResolutions } from "./service.ts";
 import { loadIssueActivity } from "./view-activity.ts";
@@ -12,42 +10,28 @@ import { loadIssuePanels } from "./view-panels.ts";
 export type IssueView = Awaited<ReturnType<typeof loadIssueView>>;
 
 /**
- * `archived` for the already-authorized issue. The issue page must not depend on
- * project-level BROWSE_PROJECTS, which an issue-only reporter or assignee lacks.
- */
-async function projectArchived(key: string) {
-	const [row] = await db
-		.select({ archived: projects.archived })
-		.from(issues)
-		.innerJoin(projects, eq(projects.id, issues.projectId))
-		.where(eq(issues.key, key.toUpperCase()))
-		.limit(1);
-	return row?.archived ?? false;
-}
-
-/**
  * The issue view of one key: the issue, the viewer, the archived flag and the
- * three sibling loader bundles. `getIssue` checks BROWSE_PROJECTS itself; each
- * sibling loader checks its own permission the way its REST endpoints do.
+ * three sibling loader bundles. One BROWSE_PROJECTS check serves the issue and
+ * both sibling loaders.
  */
 export async function loadIssueView(actor: CurrentUser, key: string) {
+	const context = await requireBrowseIssue(actor, key);
 	// The endpoint serialises through this schema; the page data must match it.
-	const issuePromise = getIssue(actor, key).then(
-		(issue) =>
-			issueDetailWithCustomFieldsSchema.parse(issue) as unknown as IssueDetail,
-	);
-	const [issue, activity, panels, archived, resolutions] = await Promise.all([
+	const issuePromise = getIssue(actor, key, context).then((issue) => ({
+		issue: issueDetailWithCustomFieldsSchema.parse(issue) satisfies IssueDetail,
+		archived: issue.projectArchived,
+	}));
+	const [loaded, activity, panels, resolutions] = await Promise.all([
 		issuePromise,
-		loadIssueActivity(actor, key),
-		loadIssuePanels(actor, key),
-		projectArchived(key),
+		loadIssueActivity(actor, key, context),
+		loadIssuePanels(actor, key, context),
 		listResolutions(),
 	]);
 
 	return {
-		issue,
-		me: actor as Me,
-		project: { archived },
+		issue: loaded.issue,
+		me: actor satisfies Me,
+		project: { archived: loaded.archived },
 		activity,
 		panels,
 		resolutions,

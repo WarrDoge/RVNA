@@ -109,6 +109,20 @@ test("an issue-only reporter gets the issue view and page without project browse
 	expect(page.sidebar).toBeNull();
 });
 
+test("the archived flag comes from the loaded issue", async () => {
+	await client.query("update projects set archived = true where id = $1", [
+		fixture.projectId,
+	]);
+	try {
+		const view = await loadIssueView(actor, fixture.issueKeys[0] as string);
+		expect(view.project.archived).toBe(true);
+	} finally {
+		await client.query("update projects set archived = false where id = $1", [
+			fixture.projectId,
+		]);
+	}
+});
+
 test("a preload-style issue load does not record a view", async () => {
 	const issueId = fixture.issueIds[1] as string;
 	const before = await client.query<{ total: number }>(
