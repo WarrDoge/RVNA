@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { db } from "./db.ts";
 import { issueHistory, issueHistoryItems } from "./schema.ts";
 
-export type Executor = Pick<
-	typeof db,
-	"insert" | "select" | "update" | "delete"
->;
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Must be the caller's transaction: the header and its items are written together. */
+export type Executor = Transaction;
 
 export type HistoryItem = {
 	field: string;
