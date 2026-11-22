@@ -920,6 +920,20 @@ export async function cumulativeFlowReport(
 	query: z.infer<typeof cfdQuery>,
 ) {
 	const board = await requireReportBoard(actor, rapidViewId);
+	const to = query.to ?? new Date().toISOString().slice(0, 10);
+	const from =
+		query.from ??
+		new Date(Date.now() - 13 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+	const fromDate = new Date(`${from}T00:00:00.000Z`);
+	const toDate = new Date(`${to}T00:00:00.000Z`);
+	if (
+		Number.isNaN(fromDate.getTime()) ||
+		Number.isNaN(toDate.getTime()) ||
+		toDate < fromDate ||
+		toDate.getTime() - fromDate.getTime() > 90 * 24 * 60 * 60 * 1000
+	) {
+		throw new HttpError(400, "Invalid date range");
+	}
 	try {
 		const data = await loadBoardReportData(board, actor);
 		const columnRows = await db
@@ -953,22 +967,6 @@ export async function cumulativeFlowReport(
 		const statusIdByName = new Map(
 			[...data.statusByName.values()].map((row) => [row.name, row.id]),
 		);
-		const to = query.to ?? new Date().toISOString().slice(0, 10);
-		const from =
-			query.from ??
-			new Date(Date.now() - 13 * 24 * 60 * 60 * 1000)
-				.toISOString()
-				.slice(0, 10);
-		const fromDate = new Date(`${from}T00:00:00.000Z`);
-		const toDate = new Date(`${to}T00:00:00.000Z`);
-		if (
-			Number.isNaN(fromDate.getTime()) ||
-			Number.isNaN(toDate.getTime()) ||
-			toDate < fromDate ||
-			toDate.getTime() - fromDate.getTime() > 90 * 24 * 60 * 60 * 1000
-		) {
-			throw new HttpError(400, "Invalid date range");
-		}
 		const cfdIssues = data.issueRows
 			.filter((issue) => !query.assignee || issue.assignee === query.assignee)
 			.map((issue) => {
