@@ -18,7 +18,7 @@ import {
 	siteTitleKey,
 } from "../src/lib/server/site.ts";
 import { injectAs, makeUser, newRun, type TestUser } from "./admin-helpers.ts";
-import { buildServer, cleanupTestData } from "./helpers.ts";
+import { buildServer, cleanupTestData, swapTransaction } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = newRun();
@@ -40,6 +40,80 @@ const originalSettings = new Map<string, unknown>();
 
 function json<T = Record<string, unknown>>(response: { body: string }): T {
 	return JSON.parse(response.body) as T;
+}
+
+function swapSelect(next: typeof db.select) {
+	const target = db as unknown as { select: typeof db.select };
+	const previous = target.select;
+	target.select = next;
+	return () => {
+		target.select = previous;
+	};
+}
+
+type ThenableQuery = {
+	then: (
+		onFulfilled?: (value: unknown) => unknown,
+		onRejected?: (reason: unknown) => unknown,
+	) => unknown;
+};
+
+function isAuditSelect(args: unknown[]) {
+	const fields = args[0];
+	return (
+		typeof fields === "object" &&
+		fields !== null &&
+		"createdAt" in fields &&
+		"summary" in fields
+	);
+}
+
+function insertBetweenPages(
+	query: ThenableQuery,
+	state: { pages: number; inserted: boolean },
+	insert: () => Promise<void>,
+): ThenableQuery {
+	if (state.pages++ > 0) return query;
+	return wrapThenable(query, state, insert);
+}
+
+function wrapThenable(
+	query: ThenableQuery,
+	state: { pages: number; inserted: boolean },
+	insert: () => Promise<void>,
+): ThenableQuery {
+	return new Proxy(query, {
+		get(target, property, receiver) {
+			if (property === "then") {
+				const then = target.then.bind(target);
+				return (
+					onFulfilled?: (value: unknown) => unknown,
+					onRejected?: (reason: unknown) => unknown,
+				) =>
+					then(async (value) => {
+						if (!state.inserted) {
+							state.inserted = true;
+							await insert();
+						}
+						return onFulfilled?.(value);
+					}, onRejected);
+			}
+			const value = Reflect.get(target, property, receiver);
+			if (typeof value !== "function") return value;
+			return (...args: unknown[]) => {
+				const result = value.apply(target, args);
+				if (result === target) return receiver;
+				if (
+					typeof result === "object" &&
+					result !== null &&
+					typeof (result as ThenableQuery).then === "function"
+				) {
+					return wrapThenable(result as ThenableQuery, state, insert);
+				}
+				return result;
+			};
+		},
+	});
 }
 
 function actorOf(user: TestUser, label: string): CurrentUser {
@@ -905,6 +979,78 @@ describe("audit log", () => {
 		expect(response.statusCode).toBe(200);
 		const lines = response.body.split("\r\n").filter((line) => line !== "");
 		expect(lines).toHaveLength(10_002);
+	});
+
+	test("keeps one snapshot when a matching row is inserted between pages", async () => {
+		const action = `${tag}-export-snapshot`;
+		await pool.query(
+			`insert into audit_log (actor_name, action, entity_type, summary)
+			 select 'Snapshot writer', $1, $2, 'Snapshot row ' || g
+			 from generate_series(1, 10001) g`,
+			[action, `${tag}-snapshot`],
+		);
+
+		const state = { pages: 0, inserted: false };
+		const insert = async () => {
+			await pool.query(
+				`insert into audit_log (actor_name, action, entity_type, summary)
+				 values ('Late writer', $1, $2, 'Inserted between pages')`,
+				[action, `${tag}-snapshot`],
+			);
+		};
+		const originalTransaction = db.transaction.bind(db);
+		const originalSelect = db.select.bind(db);
+		const restoreTransaction = swapTransaction((callback, config) =>
+			originalTransaction(async (tx) => {
+				const proxy = new Proxy(tx, {
+					get(target, property, receiver) {
+						if (property === "select") {
+							return (...args: unknown[]) => {
+								let query = (target.select as (...args: unknown[]) => unknown)(
+									...args,
+								) as ThenableQuery;
+								if (isAuditSelect(args)) {
+									query = insertBetweenPages(query, state, insert);
+								}
+								return query;
+							};
+						}
+						const value = Reflect.get(target, property, receiver);
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				});
+				return callback(proxy as typeof tx);
+			}, config),
+		);
+		const restoreSelect = swapSelect(((
+			...args: Parameters<typeof db.select>
+		) => {
+			let query = originalSelect(...args) as unknown as ThenableQuery;
+			if (isAuditSelect(args)) {
+				query = insertBetweenPages(query, state, insert);
+			}
+			return query;
+		}) as unknown as typeof db.select);
+		try {
+			const response = await injectAs(
+				app,
+				admin.session,
+				"GET",
+				`/api/admin/audit.csv?action=${action}`,
+			);
+			expect(response.statusCode).toBe(200);
+			expect(state.inserted).toBe(true);
+			expect(state.pages).toBe(2);
+			const lines = response.body.split("\r\n").filter((line) => line !== "");
+			expect(lines).toHaveLength(10_002);
+			const summaries = lines.slice(1).map((line) => line.split(",")[5]);
+			expect(summaries).toHaveLength(10_001);
+			expect(new Set(summaries).size).toBe(10_001);
+			expect(summaries).not.toContain("Inserted between pages");
+		} finally {
+			restoreSelect();
+			restoreTransaction();
+		}
 	});
 
 	test("quotes a summary with a comma", async () => {

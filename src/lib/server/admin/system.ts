@@ -183,8 +183,9 @@ function auditWhere(filters: AuditFilters) {
 async function loadAuditRowsPage(
 	filters: AuditFilters,
 	page: { offset: number; limit: number },
+	executor: Pick<typeof db, "select"> = db,
 ) {
-	return db
+	return executor
 		.select(auditColumns)
 		.from(auditLog)
 		.where(auditWhere(filters))
@@ -381,29 +382,38 @@ export async function exportAuditCsv(
 			.map(csvCell)
 			.join(","),
 	];
-	for (let offset = 0; ; ) {
-		const rows = await loadAuditRowsPage(filters, {
-			offset,
-			limit: AUDIT_EXPORT_PAGE_SIZE,
-		});
-		for (const row of rows) {
-			lines.push(
-				[
-					row.createdAt.toISOString(),
-					row.actorName,
-					row.action,
-					row.entityType,
-					row.entityId ?? "",
-					row.summary,
-					row.changes ?? "",
-				]
-					.map(csvCell)
-					.join(","),
-			);
-		}
-		if (rows.length < AUDIT_EXPORT_PAGE_SIZE) break;
-		offset += rows.length;
-	}
+	await db.transaction(
+		async (tx) => {
+			for (let offset = 0; ; ) {
+				const rows = await loadAuditRowsPage(
+					filters,
+					{
+						offset,
+						limit: AUDIT_EXPORT_PAGE_SIZE,
+					},
+					tx,
+				);
+				for (const row of rows) {
+					lines.push(
+						[
+							row.createdAt.toISOString(),
+							row.actorName,
+							row.action,
+							row.entityType,
+							row.entityId ?? "",
+							row.summary,
+							row.changes ?? "",
+						]
+							.map(csvCell)
+							.join(","),
+					);
+				}
+				if (rows.length < AUDIT_EXPORT_PAGE_SIZE) break;
+				offset += rows.length;
+			}
+		},
+		{ isolationLevel: "repeatable read", accessMode: "read only" },
+	);
 
 	return `${lines.join("\r\n")}\r\n`;
 }
