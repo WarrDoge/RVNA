@@ -360,7 +360,7 @@ export async function listFilters(
 	input: z.output<typeof listQuery>,
 ) {
 	const { scope, query } = input;
-	const groups = actor.groups ?? [];
+	const actorGroups = actor.groups ?? [];
 	const visibleProjects = await visibleProjectIds(asPermissionUser(actor));
 	const visible = actor.isAdmin
 		? undefined
@@ -370,12 +370,12 @@ export async function listFilters(
 				visibleProjects.length > 0
 					? sql`exists (select 1 from filter_shares fs where fs.filter_id = ${filters.id} and fs.project_id = any(${sql.param(visibleProjects)}::uuid[]))`
 					: undefined,
-				groups.length > 0
+				actorGroups.length > 0
 					? sql`exists (
 						select 1 from filter_shares fs
 						join groups g on g.id = fs.group_id
 						where fs.filter_id = ${filters.id}
-							and lower(g.name) = any(${sql.param(groups.map((name) => name.toLowerCase()))}::text[])
+							and lower(g.name) = any(${sql.param(actorGroups.map((name) => name.toLowerCase()))}::text[])
 					)`
 					: undefined,
 			);
