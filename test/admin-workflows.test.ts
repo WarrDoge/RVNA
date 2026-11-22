@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, inArray, like } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	type Definition,
@@ -1534,6 +1534,89 @@ describe("workflow administration API", () => {
 
 		const issue = await createIssue(project.key);
 		expect(issue.status.id).toBe(statusId.review);
+	});
+
+	test("a status reached by a global transition is not an entry status", async () => {
+		const wf = await fixtureWorkflow(
+			"global-entry",
+			["open", "spare", "done"],
+			[
+				{ name: "Reopen", from: null, to: "open" },
+				{ name: "Finish", from: "spare", to: "done" },
+			],
+			null,
+		);
+		expect((await initialStatusFor(wf.id))?.id).toBe(statusId.spare);
+	});
+
+	test("the initial status follows the category, not a familiar status name", async () => {
+		const [backlog] = await db
+			.insert(statuses)
+			.values({
+				sourceId: `${tag}:exact:backlog`,
+				name: "Backlog",
+				category: "indeterminate",
+			})
+			.returning();
+		const [planning] = await db
+			.insert(statuses)
+			.values({
+				sourceId: `${tag}:exact:planning`,
+				name: "Planning",
+				category: "new",
+			})
+			.returning();
+		const [closed] = await db
+			.insert(statuses)
+			.values({
+				sourceId: `${tag}:exact:closed`,
+				name: "Closed",
+				category: "done",
+			})
+			.returning();
+		const [wf] = await db
+			.insert(workflows)
+			.values({
+				sourceId: null,
+				name: nameOf("exact names"),
+				initialStatusId: null,
+			})
+			.returning();
+		try {
+			await db.insert(workflowStatuses).values(
+				[backlog, planning, closed].map((status) => ({
+					sourceId: null,
+					workflowId: wf.id,
+					statusId: status.id,
+				})),
+			);
+			await db.insert(workflowTransitions).values([
+				{
+					sourceId: null,
+					workflowId: wf.id,
+					name: "Finish",
+					fromStatusId: backlog.id,
+					toStatusId: closed.id,
+					asksResolution: false,
+					sequence: 0,
+				},
+				{
+					sourceId: null,
+					workflowId: wf.id,
+					name: "Plan",
+					fromStatusId: planning.id,
+					toStatusId: closed.id,
+					asksResolution: false,
+					sequence: 1,
+				},
+			]);
+			expect((await initialStatusFor(wf.id))?.id).toBe(planning.id);
+		} finally {
+			await db.delete(workflows).where(eq(workflows.id, wf.id));
+			await db
+				.delete(statuses)
+				.where(inArray(statuses.id, [backlog.id, planning.id, closed.id]));
+		}
 	});
 
 	test("transitions that ask for a resolution require one, ordinary ones do not", async () => {

@@ -61,21 +61,7 @@ export async function statusesForWorkflow(
 		.orderBy(statuses.name);
 }
 
-const initialStatusNames = [
-	"To Do",
-	"Open",
-	"Backlog",
-	"Selected for Development",
-	"Peer review / change manager approval",
-	"Planning",
-	"Pending",
-];
-
 function chooseInitial(list: StatusRef[]): StatusRef | null {
-	for (const name of initialStatusNames) {
-		const match = list.find((status) => status.name === name);
-		if (match) return match;
-	}
 	return list.find((status) => status.category === "new") ?? list[0] ?? null;
 }
 
@@ -103,9 +89,7 @@ export async function initialStatusFor(
 		.where(eq(workflowTransitions.workflowId, workflowId));
 
 	const targets = new Set(
-		transitions
-			.filter((transition) => transition.fromStatusId !== null)
-			.map((transition) => transition.toStatusId),
+		transitions.map((transition) => transition.toStatusId),
 	);
 	const entry = list.filter((status) => !targets.has(status.id));
 	return chooseInitial(entry.length > 0 ? entry : list);
