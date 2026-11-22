@@ -859,7 +859,6 @@ async function importProject(
 				projectId,
 				projectKey: project.key,
 				issues: projectIssues,
-				fields: dataset.fields,
 				maps: {
 					issueTypeIds: maps.issueTypeIds,
 					calendarIds: maps.serviceDesk.calendarIds,

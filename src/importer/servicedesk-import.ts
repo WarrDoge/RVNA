@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
 	automationRules,
 	queues,
@@ -65,15 +65,23 @@ export function mapRequestChannel(value: string | null | undefined) {
 }
 
 function holidayDates(holiday: JiraWorkingHoliday): string[] {
+	if (holiday.recurring) {
+		throw new Error(
+			`Recurring SLA calendar holidays are not supported: ${JSON.stringify(holiday)}`,
+		);
+	}
 	if (holiday.date) return [holiday.date];
 	if (holiday.startDate) {
 		const end = holiday.endDate ?? holiday.startDate;
+		const startTime = Date.parse(`${holiday.startDate}T00:00:00Z`);
+		const endTime = Date.parse(`${end}T00:00:00Z`);
+		if (Number.isNaN(startTime) || Number.isNaN(endTime)) {
+			throw new Error(
+				`Invalid date in SLA calendar holiday: ${JSON.stringify(holiday)}`,
+			);
+		}
 		const dates: string[] = [];
-		for (
-			let cursor = Date.parse(`${holiday.startDate}T00:00:00Z`);
-			cursor <= Date.parse(`${end}T00:00:00Z`);
-			cursor += DAY_MS
-		) {
+		for (let cursor = startTime; cursor <= endTime; cursor += DAY_MS) {
 			dates.push(new Date(cursor).toISOString().slice(0, 10));
 		}
 		return dates;
@@ -96,8 +104,13 @@ export function mapWorkingHours(calendar: JiraWorkingCalendar) {
 		}
 		let start = time.start / MINUTE_MS;
 		let end = time.end / MINUTE_MS;
-		if (end <= start) continue;
 		let day = weekday;
+		while (start >= 1440) {
+			start -= 1440;
+			end -= 1440;
+			day = (day + 1) % 7;
+		}
+		if (end <= start) continue;
 		while (end > 1440) {
 			hours[day].push({ start, end: 1440 });
 			day = (day + 1) % 7;
@@ -159,12 +172,12 @@ export function mapConditions(conditions: JiraSlaCondition[] | undefined) {
 	return (conditions ?? []).map(mapCondition);
 }
 
-export function importSlaCalendars(
+export async function importSlaCalendars(
 	tx: Executor,
 	calendars: JiraWorkingCalendar[],
 	counts: ImportCounts,
 ): Promise<Map<string, string>> {
-	return upsertRows(
+	const result = await upsertRows(
 		tx,
 		slaCalendars,
 		calendars.map((calendar) => ({
@@ -175,17 +188,15 @@ export function importSlaCalendars(
 			holidays: (calendar.holidays ?? []).flatMap(holidayDates),
 		})),
 		(row) => String(row.sourceId),
-	).then((result) => {
-		mergeCounts(counts, "sla_calendars", result.counts);
-		return result.ids;
-	});
+	);
+	mergeCounts(counts, "sla_calendars", result.counts);
+	return result.ids;
 }
 
 interface ServiceDeskImportContext {
 	projectId: string;
 	projectKey: string;
 	issues: JiraIssueData[];
-	fields: { id: string; name: string }[];
 	maps: {
 		issueTypeIds: Map<string, string>;
 		calendarIds: Map<string, string>;
@@ -193,8 +204,14 @@ interface ServiceDeskImportContext {
 	serviceDeskMaps: ServiceDeskMaps;
 }
 
+interface RequestTypeIssueType {
+	issueTypeId: string;
+	created: number;
+	ambiguous: boolean;
+}
+
 function requestTypeIssueTypes(context: ServiceDeskImportContext) {
-	const byRequestType = new Map<string, Set<string>>();
+	const byRequestType = new Map<string, RequestTypeIssueType>();
 	const fieldId = context.serviceDeskMaps.customerRequestTypeFieldId;
 	if (!fieldId) return byRequestType;
 	for (const data of context.issues) {
@@ -207,19 +224,39 @@ function requestTypeIssueTypes(context: ServiceDeskImportContext) {
 			data.issue.fields.issuetype.id,
 		);
 		if (!issueTypeId) continue;
-		const types = byRequestType.get(requestTypeId) ?? new Set<string>();
-		types.add(issueTypeId);
-		byRequestType.set(requestTypeId, types);
+		const created = Date.parse(data.issue.fields.created ?? "") || 0;
+		const current = byRequestType.get(requestTypeId);
+		if (!current) {
+			byRequestType.set(requestTypeId, {
+				issueTypeId,
+				created,
+				ambiguous: false,
+			});
+			continue;
+		}
+		if (current.issueTypeId !== issueTypeId) current.ambiguous = true;
+		if (created > current.created) {
+			current.issueTypeId = issueTypeId;
+			current.created = created;
+		}
 	}
 	return byRequestType;
 }
 
+const INDENTED_QUEUE = "↳";
+
+function isIndented(name: string) {
+	return name.trimStart().startsWith(INDENTED_QUEUE);
+}
+
 function queueParents(queueRows: { id: string; name: string }[]) {
 	const parents = new Map<string, string>();
+	const firstTopLevel = queueRows.find((queue) => !isIndented(queue.name))?.id;
 	let parentId: string | null = null;
 	for (const queue of queueRows) {
-		if (queue.name.startsWith("↳")) {
-			if (parentId) parents.set(queue.id, parentId);
+		if (isIndented(queue.name)) {
+			const parent = parentId ?? firstTopLevel;
+			if (parent) parents.set(queue.id, parent);
 		} else {
 			parentId = queue.id;
 		}
@@ -233,11 +270,6 @@ export async function importServiceDesk(
 	context: ServiceDeskImportContext,
 	counts: ImportCounts,
 ) {
-	const [existingDesk] = await tx
-		.select({ id: serviceDesks.id })
-		.from(serviceDesks)
-		.where(eq(serviceDesks.sourceId, data.desk.id))
-		.limit(1);
 	const deskResult = await upsertRows(
 		tx,
 		serviceDesks,
@@ -247,7 +279,6 @@ export async function importServiceDesk(
 				projectId: context.projectId,
 				portalName: data.portal?.name ?? data.desk.projectName,
 				description: data.portal?.description ?? null,
-				announcement: null,
 			},
 		],
 		(row) => String(row.sourceId),
@@ -255,7 +286,11 @@ export async function importServiceDesk(
 	mergeCounts(counts, "service_desks", deskResult.counts);
 	const deskId = deskResult.ids.get(data.desk.id);
 	if (!deskId) throw new Error(`Service desk ${data.desk.id} was not imported`);
-	if (!existingDesk && data.openAccess !== null) {
+	// Access is locally owned after the first import; Jira's value only seeds a new desk.
+	if (
+		deskResult.counts.inserted === 1 &&
+		typeof data.openAccess === "boolean"
+	) {
 		await tx
 			.update(serviceDesks)
 			.set({ openAccess: data.openAccess })
@@ -278,16 +313,16 @@ export async function importServiceDesk(
 
 	const issueTypesByRequestType = requestTypeIssueTypes(context);
 	const requestTypeRows = data.requestTypes.map(({ requestType }, sequence) => {
-		const issueTypes = issueTypesByRequestType.get(requestType.id);
-		if (issueTypes && issueTypes.size > 1) {
-			throw new Error(
-				`Request type ${requestType.id} maps to several issue types: ${[...issueTypes].join(", ")}`,
+		const issueType = issueTypesByRequestType.get(requestType.id);
+		if (issueType?.ambiguous) {
+			console.warn(
+				`Request type ${requestType.id} maps to several issue types; using ${issueType.issueTypeId}`,
 			);
 		}
 		return {
 			sourceId: requestType.id,
 			deskId,
-			issueTypeId: issueTypes ? [...issueTypes][0] : null,
+			issueTypeId: issueType?.issueTypeId ?? null,
 			name: requestType.name,
 			description: requestType.description ?? null,
 			helpText: requestType.helpText ?? null,
@@ -372,8 +407,8 @@ export async function importServiceDesk(
 		sequence,
 		parentId: null as string | null,
 	}));
-	const topLevel = queueRows.filter((row) => !row.name.startsWith("↳"));
-	const indented = queueRows.filter((row) => row.name.startsWith("↳"));
+	const topLevel = queueRows.filter((row) => !isIndented(row.name));
+	const indented = queueRows.filter((row) => isIndented(row.name));
 	const topLevelResult = await upsertRows(
 		tx,
 		queues,
@@ -404,15 +439,21 @@ export async function importServiceDesk(
 	const currentParents = new Map(
 		existingQueues.map((queue) => [queue.id, queue.parentId]),
 	);
-	let parentUpdates = 0;
+	const changedParents = new Map<string | null, string[]>();
 	for (const queueId of queueIds.values()) {
 		const wanted = parentIds.get(queueId) ?? null;
-		if (currentParents.get(queueId) === wanted) continue;
+		if ((currentParents.get(queueId) ?? null) === wanted) continue;
+		const ids = changedParents.get(wanted) ?? [];
+		ids.push(queueId);
+		changedParents.set(wanted, ids);
+	}
+	let parentUpdates = 0;
+	for (const [parentId, ids] of changedParents) {
 		await tx
 			.update(queues)
-			.set({ parentId: wanted, updatedAt: new Date() })
-			.where(eq(queues.id, queueId));
-		parentUpdates++;
+			.set({ parentId, updatedAt: new Date() })
+			.where(inArray(queues.id, ids));
+		parentUpdates += ids.length;
 	}
 	if (parentUpdates > 0) {
 		const rowCounts = counts.queues ?? emptyCounts();
