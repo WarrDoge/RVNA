@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, type SQL } from "drizzle-orm";
+import { eq, inArray, type SQL } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
@@ -143,5 +143,61 @@ test("an unknown resolution is refused on a non-done transition that asks for on
 		expect(after.resolutionId).toBeNull();
 	} finally {
 		await db.delete(statuses).where(eq(statuses.id, target.id));
+	}
+});
+
+test("moving many issues uses one update and two history inserts", async () => {
+	const rows = await db
+		.insert(issues)
+		.values(
+			Array.from({ length: 12 }, (_, index) => ({
+				sourceId: `move-bulk-${run}-${index}`,
+				projectId,
+				number: index + 2,
+				key: `${key}-${index + 2}`,
+				typeId,
+				statusId: fromStatusId,
+				summary: `Bulk move ${index}`,
+			})),
+		)
+		.returning({ id: issues.id });
+	const ids = rows.map((row) => row.id);
+	const counts = { update: 0, insert: 0 };
+	try {
+		await db.transaction(async (tx) => {
+			const counted = new Proxy(tx, {
+				get(target, property) {
+					if (property === "update") {
+						return (...args: Parameters<typeof tx.update>) => {
+							counts.update += 1;
+							return target.update(...args);
+						};
+					}
+					if (property === "insert") {
+						return (...args: Parameters<typeof tx.insert>) => {
+							counts.insert += 1;
+							return target.insert(...args);
+						};
+					}
+					const value = Reflect.get(target, property);
+					return typeof value === "function" ? value.bind(target) : value;
+				},
+			});
+			await moveIssues(counted, authorId, inArray(issues.id, ids), {
+				id: toStatusId,
+				name: "Done",
+				category: "done",
+			});
+		});
+		expect(counts.update).toBeLessThanOrEqual(4);
+		expect(counts.insert).toBeLessThanOrEqual(2);
+
+		const moved = await db
+			.select({ statusId: issues.statusId })
+			.from(issues)
+			.where(inArray(issues.id, ids));
+		expect(moved.every((row) => row.statusId === toStatusId)).toBe(true);
+	} finally {
+		await db.delete(issues).where(inArray(issues.id, ids));
 	}
 });

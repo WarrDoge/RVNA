@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull, or, type SQL, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, type SQL, sql } from "drizzle-orm";
 import { db } from "./db.ts";
 import {
 	issueHistory,
@@ -188,52 +188,105 @@ export async function moveIssues(
 		.where(condition);
 
 	const now = new Date();
-	let moved = 0;
-	for (const row of rows) {
-		if (row.statusId === to.id) continue;
+	const pending = rows.filter((row) => row.statusId !== to.id);
+	if (pending.length === 0) return 0;
+
+	type Group = {
+		statusId: string;
+		resolutionId: string | null;
+		resolved: Date | null;
+		ids: string[];
+	};
+	const groups = new Map<string, Group>();
+	for (const row of pending) {
 		const leavesDone = row.statusCategory === "done" && to.category !== "done";
 		const entersDone = row.statusCategory !== "done" && to.category === "done";
-		await tx
+		const resolutionId = leavesDone ? null : row.resolutionId;
+		const resolved = leavesDone
+			? null
+			: entersDone
+				? (row.resolved ?? now)
+				: row.resolved;
+		const key = `${row.statusId}|${resolutionId ?? ""}|${resolved?.getTime() ?? ""}`;
+		const group = groups.get(key) ?? {
+			statusId: row.statusId,
+			resolutionId,
+			resolved,
+			ids: [],
+		};
+		group.ids.push(row.id);
+		groups.set(key, group);
+	}
+
+	const rowsById = new Map(rows.map((row) => [row.id, row]));
+	const historyItems = new Map<
+		string,
+		{
+			field: string;
+			fromValue: string | null;
+			fromText: string | null;
+			toValue: string | null;
+			toText: string | null;
+		}[]
+	>();
+	let moved = 0;
+	for (const group of groups.values()) {
+		const updated = await tx
 			.update(issues)
 			.set({
 				statusId: to.id,
 				updated: now,
-				...(leavesDone && { resolutionId: null, resolved: null }),
-				...(entersDone && { resolved: row.resolved ?? now }),
+				resolutionId: group.resolutionId,
+				resolved: group.resolved,
 			})
-			.where(eq(issues.id, row.id));
+			.where(
+				and(inArray(issues.id, group.ids), eq(issues.statusId, group.statusId)),
+			)
+			.returning({ id: issues.id });
+		for (const { id } of updated) {
+			const row = rowsById.get(id);
+			if (!row) continue;
+			moved += 1;
+			const leavesDone =
+				row.statusCategory === "done" && to.category !== "done";
+			const items = [
+				{
+					field: "status",
+					fromValue: row.statusId,
+					fromText: row.statusName,
+					toValue: to.id,
+					toText: to.name,
+				},
+				...(leavesDone && row.resolutionId
+					? [
+							{
+								field: "resolution",
+								fromValue: row.resolutionId,
+								fromText: row.resolutionName,
+								toValue: null,
+								toText: null,
+							},
+						]
+					: []),
+			];
+			historyItems.set(id, items);
+		}
+	}
 
-		const [entry] = await tx
+	if (historyItems.size > 0) {
+		const entries = await tx
 			.insert(issueHistory)
-			.values({
-				sourceId: `local:${randomUUID()}`,
-				issueId: row.id,
-				authorId,
-				created: now,
-			})
-			.returning({ id: issueHistory.id });
-		const items = [
-			{
-				field: "status",
-				fromValue: row.statusId,
-				fromText: row.statusName,
-				toValue: to.id,
-				toText: to.name,
-			},
-			...(leavesDone && row.resolutionId
-				? [
-						{
-							field: "resolution",
-							fromValue: row.resolutionId,
-							fromText: row.resolutionName,
-							toValue: null,
-							toText: null,
-						},
-					]
-				: []),
-		];
-		await tx.insert(issueHistoryItems).values(
-			items.map((item, sequence) => ({
+			.values(
+				[...historyItems.keys()].map((issueId) => ({
+					sourceId: `local:${randomUUID()}`,
+					issueId,
+					authorId,
+					created: now,
+				})),
+			)
+			.returning({ id: issueHistory.id, issueId: issueHistory.issueId });
+		const items = entries.flatMap((entry) =>
+			(historyItems.get(entry.issueId) ?? []).map((item, sequence) => ({
 				sourceId: null,
 				historyId: entry.id,
 				fieldType: "jira",
@@ -241,7 +294,9 @@ export async function moveIssues(
 				...item,
 			})),
 		);
-		moved++;
+		if (items.length > 0) {
+			await tx.insert(issueHistoryItems).values(items);
+		}
 	}
 	return moved;
 }
