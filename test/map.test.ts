@@ -156,7 +156,7 @@ describe("issue mapping", () => {
 		);
 	});
 
-	test("maps fields, parent, epic, labels, links and custom values", () => {
+	test("maps fields, parent, epic, labels and custom values", () => {
 		const mapping = mapIssue(fixtureIssue(), refs);
 
 		expect(mapping.row.key).toBe("FIXT-1");
@@ -172,8 +172,6 @@ describe("issue mapping", () => {
 		expect(mapping.row.assigneeId).toBe("user-2");
 		expect(mapping.row.parentId).toBe("issue-1");
 		expect(mapping.row.epicId).toBe("issue-2");
-		expect(mapping.parentKey).toBe("FIXT-1");
-		expect(mapping.epicKey).toBe("FIXT-2");
 		expect(mapping.row.storyPoints).toBe(3);
 		expect(mapping.row.originalEstimate).toBe(3600);
 		expect(mapping.row.remainingEstimate).toBe(1800);
@@ -192,20 +190,15 @@ describe("issue mapping", () => {
 			},
 			[fixtureFieldIds.sprint]: ["Fixture Sprint 1"],
 		});
-		expect(mapping.links).toEqual([
-			{
-				sourceId: "fixture-link-1",
-				typeSourceId: "fixture-link",
-				sourceKey: "FIXT-1",
-				targetKey: "FIXT-3",
-			},
-			{
-				sourceId: "fixture-link-2",
-				typeSourceId: "fixture-link",
-				sourceKey: "FIXT-3",
-				targetKey: "FIXT-1",
-			},
-		]);
+	});
+
+	test("rejects an issue key without a numeric suffix", () => {
+		for (const key of ["FIXT", "FIXT-", "FIXT-12a"]) {
+			const issue = { ...fixtureIssue(), key };
+			expect(() => mapIssue(issue, refs)).toThrow(
+				`${key}: issue key has no numeric suffix`,
+			);
+		}
 	});
 
 	test("maps an inward link to the outward direction", () => {

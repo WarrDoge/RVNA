@@ -54,13 +54,10 @@ export interface IssueMapping {
 		parentId: string | null;
 		epicId: string | null;
 	};
-	parentKey: string | null;
-	epicKey: string | null;
 	labels: string[];
 	componentSourceIds: string[];
 	fixVersionSourceIds: string[];
 	affectsVersionSourceIds: string[];
-	links: IssueLinkMapping[];
 }
 
 function userKey(user: JiraUser) {
@@ -145,7 +142,14 @@ export function mapIssue(issue: JiraIssue, refs: IssueMapRefs): IssueMapping {
 			(id): id is string => id !== null,
 		),
 	);
-	const number = Number(issue.key.slice(issue.key.lastIndexOf("-") + 1));
+	const keyMatch = /^.+?-(\d+)$/.exec(issue.key);
+	if (!keyMatch) {
+		throw new Error(`${issue.key}: issue key has no numeric suffix`);
+	}
+	const number = Number(keyMatch[1]);
+	if (!Number.isSafeInteger(number)) {
+		throw new Error(`${issue.key}: issue number is out of range`);
+	}
 	const requestTypeSourceId = refs.customerRequestTypeFieldId
 		? (
 				fields[refs.customerRequestTypeFieldId as `customfield_${string}`] as
@@ -200,17 +204,12 @@ export function mapIssue(issue: JiraIssue, refs: IssueMapRefs): IssueMapping {
 			rank: stringOrNull(customValue(fields, rankId)),
 			custom: customValues(fields, mappedSourceIds),
 		},
-		parentKey,
-		epicKey,
 		labels: fields.labels ?? [],
 		componentSourceIds:
 			fields.components?.map((component) => component.id) ?? [],
 		fixVersionSourceIds: fields.fixVersions?.map((version) => version.id) ?? [],
 		affectsVersionSourceIds:
 			fields.versions?.map((version) => version.id) ?? [],
-		links: (fields.issuelinks ?? []).map((link) =>
-			mapIssueLink(issue.key, link),
-		),
 	};
 }
 
