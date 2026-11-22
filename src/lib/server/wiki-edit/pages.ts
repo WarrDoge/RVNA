@@ -152,6 +152,7 @@ export async function updatePage(
 	const updated = await titleClash(title, () =>
 		db.transaction(async (tx) => {
 			const fresh = await lockPage(tx, page.id);
+			await assertNotLockedByOthers(tx, page.id, actor.id);
 			if (
 				body.baseVersion !== undefined &&
 				body.baseVersion !== fresh.versionNumber
@@ -196,6 +197,7 @@ export async function restoreVersion(
 
 	const updated = await db.transaction(async (tx) => {
 		const fresh = await lockPage(tx, page.id);
+		await assertNotLockedByOthers(tx, page.id, actor.id);
 		const rendered = await renderBody(tx, doc, space.key, page.id);
 		return writeVersion(
 			tx,
@@ -226,6 +228,7 @@ export async function renamePage(
 	const updated = await titleClash(title, () =>
 		db.transaction(async (tx) => {
 			const fresh = await lockPage(tx, page.id);
+			await assertNotLockedByOthers(tx, page.id, actor.id);
 			return writeVersion(
 				tx,
 				fresh,
