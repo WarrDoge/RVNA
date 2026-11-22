@@ -22,12 +22,13 @@ import {
 	workflows,
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
+import { workflowDrafts } from "../src/lib/server/schema-admin.ts";
 import {
 	initialStatusFor,
 	transitionsFrom,
 } from "../src/lib/server/workflows.ts";
 import { injectAs, makeUser, newRun, type TestUser } from "./admin-helpers.ts";
-import { buildServer, cleanupTestData } from "./helpers.ts";
+import { buildServer, cleanupTestData, swapTransaction } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
 
 const run = newRun();
@@ -916,6 +917,89 @@ describe("workflow administration API", () => {
 			"Review",
 			"Approve",
 		]);
+	});
+
+	test("publishing does not delete a draft saved while it runs", async () => {
+		const wf = await fixtureWorkflow(
+			"publish-race",
+			["open", "work"],
+			[{ name: "Go", from: "open", to: "work" }],
+			"open",
+		);
+		const first = definitionOf(
+			"open",
+			["open", "work"],
+			[{ name: "Go", from: "open", to: "work" }],
+		);
+		const second = definitionOf(
+			"open",
+			["open", "work"],
+			[
+				{ name: "Go", from: "open", to: "work" },
+				{ name: "Back", from: "work", to: "open" },
+			],
+		);
+		await putDraft(wf.id, first);
+
+		const original = db.transaction.bind(db);
+		let releaseDelete = () => {};
+		let entered = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseDelete = resolve;
+		});
+		const deleting = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const restore = swapTransaction(async (callback) => {
+			return original(async (tx) => {
+				const proxy = new Proxy(tx, {
+					get(target, property, receiver) {
+						if (property === "delete") {
+							return (table: unknown) => {
+								if (table === workflowDrafts) {
+									entered();
+									const query = target.delete(table as never) as {
+										where: (...args: unknown[]) => unknown;
+									};
+									return {
+										where: (...args: unknown[]) =>
+											gate.then(() => query.where(...args)),
+									};
+								}
+								return target.delete(table as never);
+							};
+						}
+						const value = Reflect.get(target, property, receiver);
+						return typeof value === "function" ? value.bind(target) : value;
+					},
+				});
+				return callback(proxy as typeof tx);
+			});
+		});
+
+		try {
+			const publishing = adminCall(
+				"POST",
+				`/api/admin/workflows/${wf.id}/publish`,
+				{},
+			);
+			await deleting;
+			restore();
+			const saving = putDraft(wf.id, second);
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			releaseDelete();
+			const [published, saved] = await Promise.all([publishing, saving]);
+			expect(published.statusCode, published.body).toBe(200);
+			expect(saved.statusCode, saved.body).toBe(200);
+			const [draft] = await db
+				.select({ definition: workflowDrafts.definition })
+				.from(workflowDrafts)
+				.where(eq(workflowDrafts.workflowId, wf.id));
+			expect(draft?.definition).toMatchObject(second);
+		} finally {
+			restore();
+			releaseDelete();
+		}
 	});
 
 	test("a removed status holding issues needs a mapping; mapped issues are moved with history", async () => {

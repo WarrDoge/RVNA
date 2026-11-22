@@ -47,8 +47,9 @@ export async function workflowForIssueType(
 
 export async function statusesForWorkflow(
 	workflowId: string,
+	executor: Pick<typeof db, "select"> = db,
 ): Promise<StatusRef[]> {
-	return db
+	return executor
 		.select({
 			id: statuses.id,
 			name: statuses.name,
@@ -80,9 +81,10 @@ function chooseInitial(list: StatusRef[]): StatusRef | null {
 
 export async function initialStatusFor(
 	workflowId: string,
+	executor: Pick<typeof db, "select"> = db,
 ): Promise<StatusRef | null> {
-	const list = await statusesForWorkflow(workflowId);
-	const [workflow] = await db
+	const list = await statusesForWorkflow(workflowId, executor);
+	const [workflow] = await executor
 		.select({ initialStatusId: workflows.initialStatusId })
 		.from(workflows)
 		.where(eq(workflows.id, workflowId))
@@ -92,7 +94,7 @@ export async function initialStatusFor(
 	);
 	if (configured) return configured;
 
-	const transitions = await db
+	const transitions = await executor
 		.select({
 			fromStatusId: workflowTransitions.fromStatusId,
 			toStatusId: workflowTransitions.toStatusId,

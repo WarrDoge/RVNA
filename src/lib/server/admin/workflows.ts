@@ -36,6 +36,8 @@ import {
 
 const localSource = () => `local:${randomUUID()}`;
 
+type Executor = Pick<typeof db, "select">;
+
 const idParams = z.object({ id: z.uuid() });
 const categorySchema = z.enum(["new", "indeterminate", "done"]);
 const statusSchema = z.object({
@@ -136,12 +138,15 @@ async function nameTaken(name: string, exceptId?: string): Promise<boolean> {
 	return rows.length > 0;
 }
 
-async function liveDefinition(workflowId: string): Promise<Definition> {
-	const statusRows = await db
+async function liveDefinition(
+	workflowId: string,
+	executor: Executor = db,
+): Promise<Definition> {
+	const statusRows = await executor
 		.select({ statusId: workflowStatuses.statusId })
 		.from(workflowStatuses)
 		.where(eq(workflowStatuses.workflowId, workflowId));
-	const transitions = await db
+	const transitions = await executor
 		.select({
 			id: workflowTransitions.id,
 			name: workflowTransitions.name,
@@ -152,7 +157,7 @@ async function liveDefinition(workflowId: string): Promise<Definition> {
 		.from(workflowTransitions)
 		.where(eq(workflowTransitions.workflowId, workflowId))
 		.orderBy(workflowTransitions.sequence, workflowTransitions.name);
-	const initial = await initialStatusFor(workflowId);
+	const initial = await initialStatusFor(workflowId, executor);
 	return {
 		initialStatusId: initial?.id ?? null,
 		statuses: statusRows.map((row) => row.statusId),
@@ -160,20 +165,28 @@ async function liveDefinition(workflowId: string): Promise<Definition> {
 	};
 }
 
-async function loadDraft(workflowId: string): Promise<Definition | null> {
-	const [row] = await db
+async function loadDraft(
+	workflowId: string,
+	executor: Executor = db,
+	lock = false,
+): Promise<Definition | null> {
+	const query = executor
 		.select({ definition: workflowDrafts.definition })
 		.from(workflowDrafts)
 		.where(eq(workflowDrafts.workflowId, workflowId))
 		.limit(1);
+	const [row] = lock ? await query.for("update") : await query;
 	if (!row) return null;
 	const parsed = definitionSchema.safeParse(row.definition);
 	return parsed.success ? parsed.data : null;
 }
 
-async function statusMap(ids: string[]): Promise<Map<string, StatusRef>> {
+async function statusMap(
+	ids: string[],
+	executor: Executor = db,
+): Promise<Map<string, StatusRef>> {
 	if (ids.length === 0) return new Map();
-	const rows = await db
+	const rows = await executor
 		.select({
 			id: statuses.id,
 			name: statuses.name,
@@ -184,8 +197,11 @@ async function statusMap(ids: string[]): Promise<Map<string, StatusRef>> {
 	return new Map(rows.map((row) => [row.id, row]));
 }
 
-async function issueCounts(workflowId: string): Promise<Map<string, number>> {
-	const rows = await db
+async function issueCounts(
+	workflowId: string,
+	executor: Executor = db,
+): Promise<Map<string, number>> {
+	const rows = await executor
 		.select({
 			statusId: issues.statusId,
 			count: sql<number>`count(*)::int`,
@@ -329,10 +345,11 @@ async function loadDetail(
 async function foreignTransitionIds(
 	workflowId: string,
 	definition: Definition,
+	executor: Executor = db,
 ) {
 	const ids = definition.transitions.map((item) => item.id);
 	if (ids.length === 0) return [];
-	const rows = await db
+	const rows = await executor
 		.select({ id: workflowTransitions.id })
 		.from(workflowTransitions)
 		.where(
@@ -774,9 +791,9 @@ export async function publishWorkflow(
 			.for("update");
 		if (!workflow) return { kind: "missing" };
 
-		const draft = await loadDraft(id);
+		const draft = await loadDraft(id, tx, true);
 		if (!draft) return { kind: "no-draft" };
-		const live = await liveDefinition(id);
+		const live = await liveDefinition(id, tx);
 
 		const involved = [
 			...new Set([
@@ -785,7 +802,7 @@ export async function publishWorkflow(
 				...Object.values(statusMapping ?? {}),
 			]),
 		];
-		const known = await statusMap(involved);
+		const known = await statusMap(involved, tx);
 		const names = new Map(
 			[...known].map(([statusId, status]) => [statusId, status.name]),
 		);
@@ -793,10 +810,10 @@ export async function publishWorkflow(
 			definition: draft,
 			names,
 			liveStatusIds: new Set(live.statuses),
-			issueCounts: await issueCounts(id),
+			issueCounts: await issueCounts(id, tx),
 			statusMapping,
 		});
-		if ((await foreignTransitionIds(id, draft)).length > 0) {
+		if ((await foreignTransitionIds(id, draft, tx)).length > 0) {
 			problems.push({
 				code: "unknown_status",
 				message: "A transition of the draft belongs to another workflow",
