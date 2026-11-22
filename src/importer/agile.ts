@@ -43,6 +43,9 @@ const STATE_BY_JIRA: Record<string, SprintState> = {
 	CLOSED: "closed",
 };
 
+// A sprint row binds nine values; PostgreSQL rejects a statement over 65,535.
+const SPRINT_INSERT_CHUNK = Math.floor(65_535 / 9);
+
 function fieldValue(descriptor: string, name: string): string | null {
 	const pattern = new RegExp(
 		`(?:^|[\\[,])${name}=(.*?)(?=,[A-Za-z][A-Za-z0-9]*=|\\]$)`,
@@ -460,10 +463,10 @@ async function importAgileLocalTransaction(
 		sequence: sprint.sequence,
 	});
 	const owned = writes.filter((sprint) => sprint.ownsConfig);
-	if (owned.length > 0) {
+	for (let start = 0; start < owned.length; start += SPRINT_INSERT_CHUNK) {
 		const rows = await database
 			.insert(sprints)
-			.values(owned.map(sprintValues))
+			.values(owned.slice(start, start + SPRINT_INSERT_CHUNK).map(sprintValues))
 			.onConflictDoUpdate({
 				target: sprints.sourceId,
 				set: {
@@ -484,19 +487,21 @@ async function importAgileLocalTransaction(
 		}
 	}
 	const notOwned = writes.filter((sprint) => !sprint.ownsConfig);
-	if (notOwned.length > 0) {
+	for (let start = 0; start < notOwned.length; start += SPRINT_INSERT_CHUNK) {
 		const inserted = await database
 			.insert(sprints)
-			.values(notOwned.map(sprintValues))
+			.values(
+				notOwned.slice(start, start + SPRINT_INSERT_CHUNK).map(sprintValues),
+			)
 			.onConflictDoNothing({ target: sprints.sourceId })
 			.returning({ id: sprints.id, sourceId: sprints.sourceId });
 		for (const row of inserted) {
 			if (row.sourceId) sprintIds.set(row.sourceId, row.id);
 		}
-		for (const sprint of notOwned) {
-			const existingId = existingSprintBySource.get(sprint.sourceId);
-			if (existingId) sprintIds.set(sprint.sourceId, existingId);
-		}
+	}
+	for (const sprint of notOwned) {
+		const existingId = existingSprintBySource.get(sprint.sourceId);
+		if (existingId) sprintIds.set(sprint.sourceId, existingId);
 	}
 	for (const sprint of writes) counts.sprints[sprint.state] += 1;
 

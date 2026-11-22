@@ -513,4 +513,64 @@ describe("importAgileLocal", () => {
 		expect(after.name).toBe("Real sprint name");
 		expect(after.state).toBe("closed");
 	});
+
+	test("writes a sprint set larger than one statement's parameter limit", async () => {
+		await importAgileLocal(db);
+		const [board] = await db
+			.select()
+			.from(boards)
+			.where(eq(boards.sourceId, String(rapidViewId)));
+		if (!board) throw new Error("the board was not created");
+
+		const count = 7_282;
+		const firstId = 20_000;
+		const descriptors = Array.from({ length: count }, (_, index) =>
+			closedSprint
+				.replace("id=9002", `id=${firstId + index}`)
+				.replace("name=Fixture Sprint Zero", `name=Bulk sprint ${index}`),
+		);
+		await db
+			.update(issues)
+			.set({ custom: { [fixtureFieldIds.sprint]: descriptors } })
+			.where(eq(issues.id, issueIds[2]));
+		try {
+			await db
+				.update(boards)
+				.set({ configImported: false })
+				.where(eq(boards.id, board.id));
+			await importAgileLocal(db);
+
+			await db
+				.update(boards)
+				.set({ configImported: true })
+				.where(eq(boards.id, board.id));
+			await importAgileLocal(db);
+
+			const [last] = await db
+				.select()
+				.from(sprints)
+				.where(eq(sprints.sourceId, String(firstId + count - 1)));
+			if (!last) throw new Error("the last sprint was not inserted");
+			const memberships = await db
+				.select()
+				.from(issueSprints)
+				.where(
+					and(
+						eq(issueSprints.issueId, issueIds[2]),
+						eq(issueSprints.sprintId, last.id),
+					),
+				);
+			expect(memberships).toHaveLength(1);
+			expect(memberships[0]?.isOpen).toBe(false);
+		} finally {
+			await db
+				.update(issues)
+				.set({ custom: {} })
+				.where(eq(issues.id, issueIds[2]));
+			await db
+				.update(boards)
+				.set({ configImported: true })
+				.where(eq(boards.id, board.id));
+		}
+	});
 });
