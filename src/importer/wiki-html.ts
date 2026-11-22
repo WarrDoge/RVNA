@@ -130,9 +130,7 @@ const sessionTokenPattern = /([?&])(?:searchToken|atl_token)=[^&]*&?/g;
 function withoutSessionTokens(value: string): string {
 	if (!value.includes("Token=") && !value.includes("atl_token=")) return value;
 	return value
-		.replace(sessionTokenPattern, (_match, separator: string) =>
-			separator === "?" ? "?" : "",
-		)
+		.replace(sessionTokenPattern, (_match, separator: string) => separator)
 		.replace(/\?&/, "?")
 		.replace(/[?&]$/, "");
 }

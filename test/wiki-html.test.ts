@@ -60,8 +60,12 @@ describe("sanitizeWikiHtml", () => {
 		);
 		expect(clean).not.toContain("atl_token");
 		expect(clean).not.toContain("searchToken");
-		expect(clean).toContain("title=New");
-		expect(clean).toContain("spaceKeys=FIX");
+		expect(clean).toContain(
+			'href="/pages/createpage.action?spaceKey=FIX&amp;title=New"',
+		);
+		expect(clean).toContain(
+			'href="/plugins/recently-updated/changes.action?theme=social&amp;spaceKeys=FIX"',
+		);
 	});
 
 	test("keeps unknown page links untouched", () => {
