@@ -291,8 +291,8 @@ export function jiraChecks(
 		}
 		for (const [issueTypeId, statuses] of liveStatusesByType) {
 			const row =
-				defaultRow ??
-				rows.find((item) => item.issueTypeSourceId === issueTypeId);
+				rows.find((item) => item.issueTypeSourceId === issueTypeId) ??
+				defaultRow;
 			if (!row || symmetricDifference(statuses, row.statuses).length > 0) {
 				details.push(`${key}:${issueTypeId}`);
 			} else {

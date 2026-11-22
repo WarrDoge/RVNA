@@ -474,6 +474,49 @@ describe("parity checks", () => {
 		expect(result.changedSinceImport).toContain(`${projectKey}-1`);
 	});
 
+	test("an issue type workflow wins over the project default", async () => {
+		const tables = await loadTableSet(pool);
+		const database = await loadJiraSnapshot(pool, tables, {
+			projectKeys: [projectKey],
+		});
+		const live = liveJiraFromDatabase(database);
+		const statuses = ["parity-specific-a", "parity-specific-b"];
+		const withSpecific = {
+			...database,
+			projectWorkflows: [
+				{
+					projectKey,
+					issueTypeSourceId: null,
+					statuses: [metadata.status],
+				},
+				{
+					projectKey,
+					issueTypeSourceId: metadata.issueType,
+					statuses,
+				},
+			],
+		};
+		const liveWithSpecific = {
+			...live,
+			projects: live.projects.map((project) =>
+				project.key === projectKey
+					? {
+							...project,
+							statusesByIssueType: new Map([
+								[metadata.issueType, statuses],
+								["other-type", [metadata.status]],
+							]),
+						}
+					: project,
+			),
+		};
+		const check = jiraChecks(liveWithSpecific, withSpecific).checks.find(
+			(item) => item.name === `jira.project.${projectKey}.workflows`,
+		);
+		expect(check?.status).toBe("OK");
+		expect(check?.live).toBe(2);
+	});
+
 	test("workflow resolution screens are compared per workflow", async () => {
 		const tables = await loadTableSet(pool);
 		const database = await loadJiraSnapshot(pool, tables, {
