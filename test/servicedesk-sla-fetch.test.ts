@@ -42,18 +42,44 @@ describe("request SLA pagination", () => {
 		]);
 	});
 
-	test("stops when the reported total is reached", async () => {
+	test("reads the next page when the reported size equals the page size", async () => {
 		let calls = 0;
 		const client = {
 			getJson: async () => {
 				calls++;
-				if (calls > 3) throw new Error("paging did not stop");
+				if (calls > 2) throw new Error("paging did not stop");
+				return calls === 1
+					? {
+							values: [{ id: "1", name: "First" }],
+							size: 1,
+							start: 0,
+							limit: 1,
+							isLastPage: false,
+						}
+					: {
+							values: [{ id: "2", name: "Second" }],
+							size: 1,
+							start: 1,
+							limit: 1,
+							isLastPage: true,
+						};
+			},
+		} as unknown as JiraClient;
+
+		const result = await fetchRequestSla(client, "ABC-1");
+
+		expect(result.values?.map((value) => value.id)).toEqual(["1", "2"]);
+		expect(calls).toBe(2);
+	});
+
+	test("stops after a last page", async () => {
+		let calls = 0;
+		const client = {
+			getJson: async () => {
+				calls++;
 				return {
 					values: [{ id: "1", name: "First" }],
-					size: 1,
-					start: 0,
-					limit: 1,
-					isLastPage: false,
+					isLastPage: true,
 				};
 			},
 		} as unknown as JiraClient;

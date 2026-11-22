@@ -49,7 +49,6 @@ export function defaultWorkingCalendar(): JiraWorkingCalendar {
 
 interface Paged<T> {
 	values?: T[];
-	size?: number;
 	isLastPage?: boolean;
 }
 
@@ -71,9 +70,6 @@ async function fetchPaged<T>(
 		const pageValues = page.values ?? [];
 		values.push(...pageValues);
 		if (page.isLastPage || pageValues.length === 0) break;
-		if (page.size !== undefined && start + pageValues.length >= page.size) {
-			break;
-		}
 		start += pageValues.length;
 	}
 	return values;
