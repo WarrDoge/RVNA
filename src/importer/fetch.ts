@@ -41,6 +41,18 @@ import type {
 } from "./types.ts";
 
 const pageSize = 100;
+const issuePageSize = 50;
+
+function lastPage(
+	collected: number,
+	total: number | undefined,
+	received: number,
+	size: number,
+) {
+	if (received === 0) return true;
+	if (total !== undefined) return collected >= total;
+	return received < size;
+}
 
 export interface ExistingAttachment {
 	storagePath: string;
@@ -311,7 +323,7 @@ async function fetchComments(client: JiraClient, key: string) {
 		});
 		const values = page.comments ?? [];
 		comments.push(...values);
-		if (values.length === 0 || comments.length >= (page.total ?? 0)) break;
+		if (lastPage(comments.length, page.total, values.length, pageSize)) break;
 		startAt += values.length;
 	}
 	return comments;
@@ -330,7 +342,7 @@ async function fetchWorklogs(client: JiraClient, key: string) {
 		});
 		const values = page.worklogs ?? [];
 		worklogs.push(...values);
-		if (values.length === 0 || worklogs.length >= (page.total ?? 0)) break;
+		if (lastPage(worklogs.length, page.total, values.length, pageSize)) break;
 		startAt += values.length;
 	}
 	return worklogs;
@@ -356,7 +368,7 @@ async function fetchChangelog(client: JiraClient, key: string) {
 		});
 		const values = page.histories ?? [];
 		histories.push(...values);
-		if (values.length === 0 || histories.length >= (page.total ?? 0)) break;
+		if (lastPage(histories.length, page.total, values.length, pageSize)) break;
 		startAt += values.length;
 	}
 	return histories;
@@ -473,7 +485,7 @@ async function fetchProjectIssues(
 		}>("/rest/api/2/search", {
 			jql: `project="${projectKey.replaceAll('"', '\\"')}" ORDER BY key`,
 			startAt,
-			maxResults: 50,
+			maxResults: issuePageSize,
 			fields: "*all",
 			expand: "changelog,renderedFields",
 		});
@@ -482,7 +494,9 @@ async function fetchProjectIssues(
 			values.map((issue) => enrichIssue(client, issue, options, serviceDesk)),
 		);
 		issues.push(...enriched);
-		if (values.length === 0 || issues.length >= (page.total ?? 0)) break;
+		if (lastPage(issues.length, page.total, values.length, issuePageSize)) {
+			break;
+		}
 		startAt += values.length;
 	}
 	return issues;
