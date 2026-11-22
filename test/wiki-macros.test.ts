@@ -804,6 +804,26 @@ test("page property lookup fills its limit from pages that have property rows", 
 	expect(rows[0]?.values.get("Owner")).toBe("Team");
 });
 
+test("a rich link body renders as text, not as escaped markup", async () => {
+	const page = await createPage(
+		"Rich link",
+		'<p><ac:link><ri:url ri:value="https://example.test/page" /><ac:link-body>go <strong>home</strong></ac:link-body></ac:link></p>',
+	);
+	const html = await render(page);
+	expect(html).toContain('href="https://example.test/page"');
+	expect(html).toContain("go home");
+	expect(html).not.toContain("&lt;strong&gt;");
+});
+
+test("a self-closing image does not swallow the content after it", async () => {
+	const page = await createPage(
+		"Self-closing image",
+		'<p><ac:image ac:alt="self" /><strong>kept text</strong><ac:image ac:alt="later"><ri:attachment ri:filename="later.png" /></ac:image></p>',
+	);
+	const html = await render(page);
+	expect(html).toContain("kept text");
+});
+
 test("draft and trashed pages are not listed in the tree", async () => {
 	const parent = await createPage("Tree parent", "<p>parent</p>");
 	await createPage("Tree child", "<p>child</p>", { parentId: parent.id });

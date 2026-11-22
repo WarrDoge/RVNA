@@ -1,6 +1,11 @@
 import sanitizeHtml from "sanitize-html";
 import { classicEmoticons } from "../../shared/wiki/emoticons.ts";
-import { withSafeRel } from "../html.ts";
+import { escapeHtml, withSafeRel } from "../html.ts";
+
+export { escapeHtml };
+
+/** The one search form a stored page body may keep. */
+export const searchFormAction = "/dosearchsite.action";
 
 export interface ParsedMacro {
 	name: string;
@@ -58,14 +63,6 @@ export function anchorId(name: string): string {
 	return `wiki-anchor-${slug || "anchor"}`;
 }
 
-export function escapeHtml(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-}
-
 function codePoint(value: number): string | null {
 	if (
 		!Number.isInteger(value) ||
@@ -88,7 +85,9 @@ export function decodeEntities(value: string): string {
 			const decoded = codePoint(Number.parseInt(code, 16));
 			return decoded ?? match;
 		})
-		.replace(/&([a-z]+);/gi, (match, name: string) => ENTITIES[name] ?? match);
+		.replace(/&([a-z]+);/gi, (match, name: string) =>
+			Object.hasOwn(ENTITIES, name) ? ENTITIES[name] : match,
+		);
 }
 
 export function stripTags(value: string): string {
@@ -194,14 +193,20 @@ function parameterValue(raw: string): string {
 export function parseParameters(inner: string): Record<string, string> {
 	const params: Record<string, string> = {};
 	const pattern =
-		/<ac:parameter\b([^>]*)>([\s\S]*?)<\/ac:parameter>|<ac:parameter\b([^>]*)\/>/g;
+		/<ac:parameter\b([^>]*)\/>|<ac:parameter\b([^>]*)>([\s\S]*?)<\/ac:parameter>/g;
 	for (const match of inner.matchAll(pattern)) {
-		const tag = match[1] ?? match[3] ?? "";
+		const tag = match[1] ?? match[2] ?? "";
 		const name = attribute(tag, "ac:name");
 		if (name === null) continue;
-		params[name] = match[2] === undefined ? "" : parameterValue(match[2]);
+		params[name] = match[3] === undefined ? "" : parameterValue(match[3]);
 	}
 	return params;
+}
+
+/** CDATA is literal source text, so only a body without it is entity-decoded. */
+function plainTextBody(raw: string): string {
+	const text = raw.replace(/<!\[CDATA\[|\]\]>/g, "");
+	return raw.trimStart().startsWith("<![CDATA[") ? text : decodeEntities(text);
 }
 
 /** Every top-level macro (structured or legacy `ac:macro`) in document order. */
@@ -240,9 +245,7 @@ export function findMacros(source: string): ParsedMacro[] {
 			name,
 			params: parseParameters(inner),
 			body: rich ? rich[1] : null,
-			plain: plain
-				? decodeEntities(plain[1].replace(/<!\[CDATA\[|\]\]>/g, ""))
-				: null,
+			plain: plain ? plainTextBody(plain[1]) : null,
 			raw,
 			start: range.start,
 			end: range.end,
@@ -315,7 +318,7 @@ function linkBody(inner: string, fallback: string) {
 	);
 	if (plain) return decodeEntities(plain[1]).trim();
 	const rich = inner.match(/<ac:link-body[^>]*>([\s\S]*?)<\/ac:link-body>/);
-	if (rich) return rich[1];
+	if (rich) return stripTags(rich[1]);
 	return fallback;
 }
 
@@ -421,7 +424,9 @@ export function convertStorageElements(
 		/<ac:layout-section\b([^>]*)>([\s\S]*?)<\/ac:layout-section>/g,
 		(_match, attributes: string, inner: string) => {
 			const type = attribute(attributes, "ac:type") ?? "single";
-			const layout = layoutClasses[type] ?? "wiki-layout-single";
+			const layout = Object.hasOwn(layoutClasses, type)
+				? layoutClasses[type]
+				: "wiki-layout-single";
 			const cells = [
 				...inner.matchAll(/<ac:layout-cell>([\s\S]*?)<\/ac:layout-cell>/g),
 			]
@@ -437,12 +442,12 @@ export function convertStorageElements(
 	);
 
 	html = html.replace(
-		/<ac:image\b([^>]*)>([\s\S]*?)<\/ac:image>|<ac:image\b([^>]*)\/>/g,
+		/<ac:image\b([^>]*)\/>|<ac:image\b([^>]*)>([\s\S]*?)<\/ac:image>/g,
 		(
 			_match,
+			self: string | undefined,
 			open: string | undefined,
 			inner: string | undefined,
-			self: string | undefined,
 		) => renderImage(open ?? self ?? "", inner ?? "", ctx),
 	);
 
@@ -462,7 +467,10 @@ export function convertStorageElements(
 		/<ac:emoticon\b([^>]*)\/>/g,
 		(_match, attributes: string) => {
 			const name = attribute(attributes, "ac:name") ?? "";
-			return `<span class="wiki-emoticon">${emoticons[name] ?? "\u{1f642}"}</span>`;
+			const emoticon = Object.hasOwn(emoticons, name)
+				? emoticons[name]
+				: "\u{1f642}";
+			return `<span class="wiki-emoticon">${emoticon}</span>`;
 		},
 	);
 
@@ -590,7 +598,6 @@ export function sanitizeWikiBody(html: string): string {
 				"height",
 				"title",
 				"frameborder",
-				"allow",
 				"allowfullscreen",
 				"loading",
 			],
@@ -606,12 +613,12 @@ export function sanitizeWikiBody(html: string): string {
 			p: ["style"],
 			div: ["style"],
 			span: ["style"],
-			h1: ["style"],
-			h2: ["style"],
-			h3: ["style"],
-			h4: ["style"],
-			h5: ["style"],
-			h6: ["style"],
+			h1: ["style", "id"],
+			h2: ["style", "id"],
+			h3: ["style", "id"],
+			h4: ["style", "id"],
+			h5: ["style", "id"],
+			h6: ["style", "id"],
 			li: ["style"],
 			ol: ["style"],
 			ul: ["style"],
@@ -626,7 +633,6 @@ export function sanitizeWikiBody(html: string): string {
 			figcaption: ["style"],
 			"*": [
 				"class",
-				"id",
 				"data-marker",
 				"data-known",
 				"data-user-id",
@@ -656,13 +662,13 @@ export function sanitizeWikiBody(html: string): string {
 			// Page authors control the storage body: the only form that may reach a
 			// reader is the search form the livesearch macro renders.
 			form: (tagName, attributes) =>
-				attributes.action === "/dosearchsite.action"
+				attributes.action === searchFormAction
 					? { tagName, attribs: { ...attributes, method: "get" } }
 					: { tagName: "div", attribs: {} },
 			iframe: (tagName, attributes) => {
 				const src = attributes.src;
 				if (!src) return { tagName: "span", attribs: {} };
-				if (src.startsWith("/") || src.startsWith("#")) {
+				if (src.startsWith("/download/attachments/")) {
 					return { tagName, attribs: attributes };
 				}
 				try {

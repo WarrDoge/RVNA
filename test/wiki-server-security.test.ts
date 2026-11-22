@@ -551,6 +551,33 @@ describe("page bodies go through the one sanitiser", () => {
 		expect(html).toContain("/download/attachments/1/file.pdf");
 	});
 
+	test("iframes cannot grant device permissions", () => {
+		const html = sanitizeWikiBody(
+			'<iframe src="https://www.youtube.com/embed/x" allow="camera *; microphone *" allowfullscreen></iframe>',
+		);
+		expect(html).toContain("<iframe");
+		expect(html).toContain("allowfullscreen");
+		expect(html).not.toContain("allow=");
+	});
+
+	test("relative iframes only reach attachment downloads", () => {
+		const html = sanitizeWikiBody(
+			'<iframe src="/admin"></iframe><iframe src="/download/attachments/1/a.pdf"></iframe>',
+		);
+		expect(html).not.toMatch(/<iframe[^>]*\/admin/);
+		expect(html).toContain('src="/download/attachments/1/a.pdf"');
+	});
+
+	test("only anchors and headings keep an author-supplied id", () => {
+		const html = sanitizeWikiBody(
+			'<p id="clobber">p</p><div id="box">d</div><h2 id="keep">h</h2><a id="anchor" href="/x">a</a>',
+		);
+		expect(html).not.toContain('id="clobber"');
+		expect(html).not.toContain('id="box"');
+		expect(html).toContain('id="keep"');
+		expect(html).toContain('id="anchor"');
+	});
+
 	test("a link that opens a new window cannot reach its opener", () => {
 		const html = sanitizeWikiBody(
 			'<p><a href="https://example.test/" target="_blank" rel="opener">x</a></p>',
