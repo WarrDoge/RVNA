@@ -37,6 +37,25 @@ function withoutLocal<T>(
 	return new Map([...map].filter(([sourceId]) => !localPages.has(sourceId)));
 }
 
+function socialCheck(
+	name: string,
+	live: Map<string, number>,
+	database: Map<string, number>,
+): CheckResult {
+	const keys = unionKeys(live.keys(), database.keys());
+	let liveTotal = 0;
+	let dbTotal = 0;
+	const details: string[] = [];
+	for (const key of keys) {
+		const liveCount = live.get(key) ?? 0;
+		const dbCount = database.get(key) ?? 0;
+		liveTotal += liveCount;
+		dbTotal += dbCount;
+		if (liveCount !== dbCount) details.push(key);
+	}
+	return check(name, liveTotal, dbTotal, details);
+}
+
 export function wikiChecks(
 	live: WikiLiveSnapshot,
 	database: WikiDatabaseSnapshot,
@@ -91,17 +110,15 @@ export function wikiChecks(
 	}
 
 	if (tables.has("page_versions")) {
-		const pages = unionKeys(
-			withoutLocal(live.versions, localPages).keys(),
-			withoutLocal(database.versions, localPages).keys(),
-		);
+		const liveVersions = withoutLocal(live.versions, localPages);
+		const dbVersions = withoutLocal(database.versions, localPages);
+		const pages = unionKeys(liveVersions.keys(), dbVersions.keys());
 		let liveTotal = 0;
 		let dbTotal = 0;
 		const details: string[] = [];
 		for (const page of pages) {
-			const liveCount = withoutLocal(live.versions, localPages).get(page) ?? 0;
-			const dbCount =
-				withoutLocal(database.versions, localPages).get(page) ?? 0;
+			const liveCount = liveVersions.get(page) ?? 0;
+			const dbCount = dbVersions.get(page) ?? 0;
 			liveTotal += liveCount;
 			dbTotal += dbCount;
 			if (liveCount !== dbCount) details.push(page);
@@ -114,19 +131,16 @@ export function wikiChecks(
 	}
 
 	if (tables.has("page_comments")) {
+		const liveComments = withoutLocal(live.comments, localPages);
+		const dbComments = withoutLocal(database.comments, localPages);
+		const pages = unionKeys(liveComments.keys(), dbComments.keys());
 		for (const kind of ["page", "inline"] as const) {
-			const pages = unionKeys(
-				withoutLocal(live.comments, localPages).keys(),
-				withoutLocal(database.comments, localPages).keys(),
-			);
 			let liveTotal = 0;
 			let dbTotal = 0;
 			const details: string[] = [];
 			for (const page of pages) {
-				const liveCount =
-					withoutLocal(live.comments, localPages).get(page)?.[kind] ?? 0;
-				const dbCount =
-					withoutLocal(database.comments, localPages).get(page)?.[kind] ?? 0;
+				const liveCount = liveComments.get(page)?.[kind] ?? 0;
+				const dbCount = dbComments.get(page)?.[kind] ?? 0;
 				liveTotal += liveCount;
 				dbTotal += dbCount;
 				if (liveCount !== dbCount) details.push(page);
@@ -142,23 +156,18 @@ export function wikiChecks(
 	}
 
 	if (tables.has("page_attachments")) {
-		const pages = unionKeys(
-			withoutLocal(live.attachments, localPages).keys(),
-			withoutLocal(database.attachments, localPages).keys(),
-		);
+		const liveAttachments = withoutLocal(live.attachments, localPages);
+		const dbAttachments = withoutLocal(database.attachments, localPages);
+		const pages = unionKeys(liveAttachments.keys(), dbAttachments.keys());
 		let liveTotal = 0;
 		let dbTotal = 0;
 		const details: string[] = [];
 		for (const page of pages) {
 			const liveIds = new Set(
-				(withoutLocal(live.attachments, localPages).get(page) ?? []).map(
-					(item) => item.sourceId,
-				),
+				(liveAttachments.get(page) ?? []).map((item) => item.sourceId),
 			);
 			const dbIds = new Set(
-				(withoutLocal(database.attachments, localPages).get(page) ?? []).map(
-					(item) => item.sourceId,
-				),
+				(dbAttachments.get(page) ?? []).map((item) => item.sourceId),
 			);
 			liveTotal += liveIds.size;
 			dbTotal += dbIds.size;
@@ -167,10 +176,7 @@ export function wikiChecks(
 		checks.push(check("confluence.attachments", liveTotal, dbTotal, details));
 
 		const dbSample = new Map<string, { size: number; sha256: string }>();
-		for (const items of withoutLocal(
-			database.attachments,
-			localPages,
-		).values()) {
+		for (const items of dbAttachments.values()) {
 			for (const item of items) {
 				dbSample.set(item.sourceId, {
 					size: item.size,
@@ -238,18 +244,14 @@ export function wikiChecks(
 		const liveLabels = new Map(
 			[...livePages.entries()].map(([key, page]) => [key, page.labels]),
 		);
-		const pages = unionKeys(
-			liveLabels.keys(),
-			withoutLocal(database.labels, localPages).keys(),
-		);
+		const dbLabels = withoutLocal(database.labels, localPages);
+		const pages = unionKeys(liveLabels.keys(), dbLabels.keys());
 		const details: string[] = [];
 		let liveTotal = 0;
 		let dbTotal = 0;
 		for (const page of pages) {
 			const liveValues = new Set(liveLabels.get(page) ?? []);
-			const dbValues = new Set(
-				withoutLocal(database.labels, localPages).get(page) ?? [],
-			);
+			const dbValues = new Set(dbLabels.get(page) ?? []);
 			liveTotal += liveValues.size;
 			dbTotal += dbValues.size;
 			if (symmetricDifference(liveValues, dbValues).length > 0) {
@@ -267,18 +269,14 @@ export function wikiChecks(
 		const liveRestrictions = new Map(
 			[...livePages.entries()].map(([key, page]) => [key, page.restrictions]),
 		);
-		const pages = unionKeys(
-			liveRestrictions.keys(),
-			database.restrictions.keys(),
-		);
+		const dbRestrictions = withoutLocal(database.restrictions, localPages);
+		const pages = unionKeys(liveRestrictions.keys(), dbRestrictions.keys());
 		const details: string[] = [];
 		let liveTotal = 0;
 		let dbTotal = 0;
 		for (const page of pages) {
 			const liveValues = new Set(liveRestrictions.get(page) ?? []);
-			const dbValues = new Set(
-				withoutLocal(database.restrictions, localPages).get(page) ?? [],
-			);
+			const dbValues = new Set(dbRestrictions.get(page) ?? []);
 			liveTotal += liveValues.size;
 			dbTotal += dbValues.size;
 			if (symmetricDifference(liveValues, dbValues).length > 0) {
@@ -319,25 +317,6 @@ export function wikiChecks(
 				"space_permissions table is not present",
 			),
 		);
-	}
-
-	function socialCheck(
-		name: string,
-		live: Map<string, number>,
-		database: Map<string, number>,
-	): CheckResult {
-		const keys = unionKeys(live.keys(), database.keys());
-		let liveTotal = 0;
-		let dbTotal = 0;
-		const details: string[] = [];
-		for (const key of keys) {
-			const liveCount = live.get(key) ?? 0;
-			const dbCount = database.get(key) ?? 0;
-			liveTotal += liveCount;
-			dbTotal += dbCount;
-			if (liveCount !== dbCount) details.push(key);
-		}
-		return check(name, liveTotal, dbTotal, details);
 	}
 
 	if (
@@ -404,27 +383,26 @@ export function wikiChecks(
 	}
 
 	if (tables.has("pages")) {
-		const pages = unionKeys(
-			withoutLocal(live.tree, localPages).keys(),
-			withoutLocal(database.tree, localPages).keys(),
-		);
+		const liveTree = withoutLocal(live.tree, localPages);
+		const dbTree = withoutLocal(database.tree, localPages);
+		const pages = unionKeys(liveTree.keys(), dbTree.keys());
 		let matched = 0;
 		const details: string[] = [];
 		for (const page of pages) {
-			const liveTree = withoutLocal(live.tree, localPages).get(page);
-			const dbTree = withoutLocal(database.tree, localPages).get(page);
+			const liveEntry = liveTree.get(page);
+			const dbEntry = dbTree.get(page);
 			if (
-				liveTree &&
-				dbTree &&
-				liveTree.parentSourceId === dbTree.parentSourceId &&
-				liveTree.position === dbTree.position
+				liveEntry &&
+				dbEntry &&
+				liveEntry.parentSourceId === dbEntry.parentSourceId &&
+				liveEntry.position === dbEntry.position
 			) {
 				matched++;
 			} else {
 				details.push(page);
 			}
 		}
-		checks.push(check("confluence.page_tree", pages.length, matched, details));
+		checks.push(check("confluence.page_tree", liveTree.size, matched, details));
 	} else {
 		checks.push(skipped("confluence.page_tree", "pages table is not present"));
 	}

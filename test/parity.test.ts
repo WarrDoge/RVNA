@@ -343,6 +343,15 @@ function allTables(): TableSet {
 	};
 }
 
+class CountingMap<K, V> extends Map<K, V> {
+	reads = 0;
+
+	override [Symbol.iterator]() {
+		this.reads++;
+		return super[Symbol.iterator]();
+	}
+}
+
 function wikiSnapshots(localPages: Set<string>) {
 	const pages = new Map(
 		["page-1", "local-page"].map((sourceId) => [
@@ -871,6 +880,147 @@ describe("parity checks", () => {
 		expect(check?.status).toBe("OK");
 		expect(check?.live).toBe(1);
 		expect(check?.database).toBe(1);
+	});
+
+	test("wiki checks read each page map once, not once per page", () => {
+		const pageIds = Array.from({ length: 30 }, (_, index) => `page-${index}`);
+		const pages = new Map(
+			pageIds.map((sourceId) => [
+				sourceId,
+				{
+					sourceId,
+					spaceKey,
+					status: "current" as const,
+					type: "page" as const,
+					parentSourceId: null,
+					position: 0,
+					title: sourceId,
+				},
+			]),
+		);
+		const livePages = new Map(
+			[...pages].map(([key, page]) => [
+				key,
+				{
+					...page,
+					created: null,
+					labels: ["parity"],
+					restrictions: ["read:group:parity"],
+				},
+			]),
+		);
+		const versions = new CountingMap(
+			pageIds.map((page) => [page, 1] as [string, number]),
+		);
+		const comments = new CountingMap(
+			pageIds.map((page) => [page, { page: 1, inline: 0 }]),
+		);
+		const attachments = new CountingMap(
+			pageIds.map((page) => [
+				page,
+				[{ sourceId: `${page}-attachment`, size: 1, sha256: "hash" }],
+			]),
+		);
+		const labels = new CountingMap(pageIds.map((page) => [page, ["parity"]]));
+		const restrictions = new CountingMap(
+			pageIds.map((page) => [page, ["read:group:parity"]]),
+		);
+		const tree = new CountingMap(
+			pageIds.map((page) => [page, { parentSourceId: null, position: 0 }]),
+		);
+		const live: WikiLiveSnapshot = {
+			spaces: [{ key: spaceKey, sourceId: "1", status: "current" }],
+			pages: livePages,
+			versions,
+			comments,
+			attachments,
+			attachmentSample: pageIds.map((page) => ({
+				sourceId: `${page}-attachment`,
+				pageSourceId: page,
+				size: 1,
+				sha256: "hash",
+			})),
+			permissions: new Map(),
+			tree,
+			pageWatchers: new Map(),
+			spaceWatchers: new Map(),
+			pageLikes: new Map(),
+		};
+		const database: WikiDatabaseSnapshot = {
+			spaces: [{ key: spaceKey, sourceId: "1", status: "current" }],
+			pages,
+			versions,
+			comments,
+			attachments,
+			labels,
+			restrictions,
+			permissions: new Map(),
+			tree,
+			pageWatchers: new Map(),
+			spaceWatchers: new Map(),
+			pageLikes: new Map(),
+		};
+		const checks = wikiChecks(live, database, allTables());
+		for (const check of checks) {
+			if (check.status === "MISMATCH") {
+				expect.fail(`${check.name} was not OK: ${check.details.join(",")}`);
+			}
+		}
+		for (const [name, map] of Object.entries({
+			versions,
+			comments,
+			attachments,
+			labels,
+			restrictions,
+			tree,
+		})) {
+			expect(map.reads, `${name} map reads`).toBeLessThanOrEqual(2);
+		}
+	});
+
+	test("page tree reports the live page count, not the union", () => {
+		const liveTree = new Map([
+			["page-1", { parentSourceId: null, position: 0 }],
+			["page-2", { parentSourceId: "page-1", position: 0 }],
+		]);
+		const databaseTree = new Map([
+			...liveTree,
+			["page-3", { parentSourceId: null, position: 1 }],
+		]);
+		const live: WikiLiveSnapshot = {
+			spaces: [],
+			pages: new Map(),
+			versions: new Map(),
+			comments: new Map(),
+			attachments: new Map(),
+			attachmentSample: [],
+			permissions: new Map(),
+			tree: liveTree,
+			pageWatchers: new Map(),
+			spaceWatchers: new Map(),
+			pageLikes: new Map(),
+		};
+		const database: WikiDatabaseSnapshot = {
+			spaces: [],
+			pages: new Map(),
+			versions: new Map(),
+			comments: new Map(),
+			attachments: new Map(),
+			labels: new Map(),
+			restrictions: new Map(),
+			permissions: new Map(),
+			tree: databaseTree,
+			pageWatchers: new Map(),
+			spaceWatchers: new Map(),
+			pageLikes: new Map(),
+		};
+		const check = wikiChecks(live, database, allTables()).find(
+			(item) => item.name === "confluence.page_tree",
+		);
+		expect(check?.live).toBe(2);
+		expect(check?.database).toBe(2);
+		expect(check?.status).toBe("MISMATCH");
+		expect(check?.details).toContain("page-3");
 	});
 
 	test("watcher and like parity counts imported rows only", async () => {
