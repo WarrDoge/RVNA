@@ -68,6 +68,8 @@ export interface SlaCycle {
 	startedAt: Date;
 	stoppedAt: Date | null;
 	pausedIntervals: SlaPause[];
+	/** Set while the cycle is paused, independent of the last interval's end. */
+	pausedAt: Date | null;
 	goalMinutes: number | null;
 	elapsedMinutes: number;
 	remainingMinutes: number | null;

@@ -159,6 +159,10 @@ function finishCycle(
 			from: new Date(pause.from),
 			to: new Date(pause.to),
 		})),
+		pausedAt:
+			stoppedAt === null && open.pausedAt !== null
+				? new Date(open.pausedAt)
+				: null,
 		goalMinutes: goal.minutes,
 		elapsedMinutes: Math.round(elapsedMs / MINUTE_MS),
 		remainingMinutes:

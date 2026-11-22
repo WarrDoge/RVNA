@@ -384,7 +384,9 @@ async function slaCells(
 		if (!column) continue;
 		const goals = goalRows.filter((goal) => goal.metricId === cycle.metricId);
 		const goal =
-			goals.find((item) => item.goalMinutes === cycle.goalMinutes) ?? goals[0];
+			goals.find((item) => item.id === cycle.goalId) ??
+			goals.find((item) => item.goalMinutes === cycle.goalMinutes) ??
+			goals[0];
 		const calendar = goal ? calendars.get(goal.calendarId) : undefined;
 		const display = displayCycle(
 			cycle as StoredCycle,

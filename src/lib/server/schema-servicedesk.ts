@@ -224,6 +224,10 @@ export const slaCycles = pgTable(
 		pausedIntervals: jsonb("paused_intervals")
 			.$type<{ from: string; to: string }[]>()
 			.notNull(),
+		pausedAt: timestamp("paused_at", { withTimezone: true }),
+		goalId: uuid("goal_id").references(() => slaGoals.id, {
+			onDelete: "set null",
+		}),
 		goalMinutes: integer("goal_minutes"),
 		elapsedMinutes: integer("elapsed_minutes").notNull(),
 		breached: boolean("breached").notNull().default(false),

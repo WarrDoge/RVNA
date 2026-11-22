@@ -320,6 +320,8 @@ export async function rebuildSlaCycles(
 						from: pause.from.toISOString(),
 						to: pause.to.toISOString(),
 					})),
+					pausedAt: cycle.pausedAt,
+					goalId: goal.id,
 					goalMinutes: cycle.goalMinutes,
 					elapsedMinutes: cycle.elapsedMinutes,
 					breached: cycle.breached,

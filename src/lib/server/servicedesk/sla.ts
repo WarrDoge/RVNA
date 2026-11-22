@@ -41,27 +41,13 @@ export interface StoredCycle {
 	startedAt: Date;
 	stoppedAt: Date | null;
 	pausedIntervals: { from: string; to: string }[];
+	pausedAt: Date | null;
+	goalId: string | null;
 	goalMinutes: number | null;
 	elapsedMinutes: number;
 	breached: boolean;
 	breachTime: Date | null;
 	computedAt: Date;
-}
-
-const PAUSE_TOLERANCE_MS = 1000;
-
-/** The pause that was still running when the cycle was last computed. */
-function pausedSince(cycle: StoredCycle): number | null {
-	if (cycle.stoppedAt) return null;
-	const last = cycle.pausedIntervals[cycle.pausedIntervals.length - 1];
-	if (!last) return null;
-	const to = Date.parse(last.to);
-	if (Number.isNaN(to)) return null;
-	if (Math.abs(to - cycle.computedAt.getTime()) > PAUSE_TOLERANCE_MS) {
-		return null;
-	}
-	const from = Date.parse(last.from);
-	return Number.isNaN(from) ? null : from;
 }
 
 function pausedMinutes(
@@ -94,7 +80,7 @@ export function displayCycle(
 	const goal = cycle.goalMinutes;
 	let elapsed = cycle.elapsedMinutes;
 	let remaining = goal === null ? null : goal - elapsed;
-	const pausedAt = pausedSince(cycle);
+	const pausedAt = cycle.stoppedAt ? null : cycle.pausedAt;
 
 	if (!cycle.stoppedAt && calendar) {
 		const pauses = cycle.pausedIntervals
@@ -103,7 +89,7 @@ export function displayCycle(
 				to: Date.parse(pause.to),
 			}))
 			.filter((pause) => !Number.isNaN(pause.from) && !Number.isNaN(pause.to));
-		const end = pausedAt ?? now.getTime();
+		const end = pausedAt?.getTime() ?? now.getTime();
 		elapsed =
 			workingMinutesBetween(calendar, cycle.startedAt, new Date(end)) -
 			pausedMinutes(calendar, cycle.startedAt.getTime(), pauses, end);
@@ -145,15 +131,18 @@ function calendarOf(row: typeof slaCalendars.$inferSelect): SlaCalendar {
 }
 
 /**
- * The goal a cycle was measured against. A cycle stores its goal duration but
- * not the goal row, so the goal is matched by that duration; the metric's first
- * goal stands in when two goals share one.
+ * The goal a cycle was measured against. Newer cycles store the goal row; the
+ * duration match keeps cycles written before that column readable.
  */
 function goalForCycle(
 	goals: (typeof slaGoals.$inferSelect)[],
-	goalMinutes: number | null,
+	cycle: { goalId: string | null; goalMinutes: number | null },
 ) {
-	return goals.find((goal) => goal.goalMinutes === goalMinutes) ?? goals[0];
+	return (
+		goals.find((goal) => goal.id === cycle.goalId) ??
+		goals.find((goal) => goal.goalMinutes === cycle.goalMinutes) ??
+		goals[0]
+	);
 }
 
 export async function issueSla(
@@ -220,7 +209,7 @@ export async function issueSla(
 			const cycles = cycleRows
 				.filter((cycle) => cycle.metricId === metric.id)
 				.map((cycle) => {
-					const goal = goalForCycle(goals, cycle.goalMinutes);
+					const goal = goalForCycle(goals, cycle);
 					const calendarRow = goal ? calendars.get(goal.calendarId) : undefined;
 					return displayCycle(
 						cycle,
@@ -232,7 +221,16 @@ export async function issueSla(
 				(cycle) => cycle.state === "ongoing" || cycle.state === "paused",
 			);
 			const latest = active ?? cycles[cycles.length - 1];
-			const goal = goalForCycle(goals, latest?.goalMinutes ?? null);
+			const latestRow = latest
+				? cycleRows.find(
+						(cycle) =>
+							cycle.metricId === metric.id &&
+							cycle.cycleNumber === latest.cycle,
+					)
+				: undefined;
+			const goal = latestRow
+				? goalForCycle(goals, latestRow)
+				: goalForCycle(goals, { goalId: null, goalMinutes: null });
 			const calendarRow = goal ? calendars.get(goal.calendarId) : undefined;
 			return {
 				id: metric.id,
