@@ -36,43 +36,49 @@ export async function userProfile(
 			messengerMatrixId: users.messengerMatrixId,
 		})
 		.from(users)
-		.where(eq(users.username, username))
+		.where(and(eq(users.username, username), eq(users.active, true)))
 		.limit(1);
 	if (!user) throw new HttpError(404, "User not found");
 
+	const self = viewer.id === user.id;
 	const memberships =
-		viewer.isAdmin || viewer.id === user.id
-			? await effectiveGroups(user.id)
-			: [];
-
-	const [preferences] = await db
+		viewer.isAdmin || self ? effectiveGroups(user.id) : Promise.resolve([]);
+	const preferences = db
 		.select({ timeZone: userPreferences.timeZone })
 		.from(userPreferences)
 		.where(eq(userPreferences.userId, user.id))
 		.limit(1);
+	const assigned = (async () => {
+		const [row] = await db
+			.select({ count: sql<number>`count(*)::int` })
+			.from(issues)
+			.where(
+				and(
+					eq(issues.assigneeId, user.id),
+					isNull(issues.resolutionId),
+					inArray(issues.projectId, await viewerProjectIds(viewer)),
+				),
+			);
+		return row;
+	})();
 
-	const [assigned] = await db
-		.select({ count: sql<number>`count(*)::int` })
-		.from(issues)
-		.where(
-			and(
-				eq(issues.assigneeId, user.id),
-				isNull(issues.resolutionId),
-				inArray(issues.projectId, await viewerProjectIds(viewer)),
-			),
-		);
+	const [groups, [preference], openIssues] = await Promise.all([
+		memberships,
+		preferences,
+		assigned,
+	]);
 
 	return {
 		id: user.id,
 		username: user.username,
 		displayName: user.displayName,
-		email: viewer.isAdmin || viewer.id === user.id ? user.email : null,
+		email: viewer.isAdmin || self ? user.email : null,
 		avatarUrl: userAvatarUrl(user.id),
-		groups: memberships,
-		timeZone: preferences?.timeZone ?? null,
-		assignedOpenIssues: assigned?.count ?? 0,
-		isSelf: viewer.id === user.id,
-		canEditAvatar: viewer.id === user.id || viewer.isAdmin,
-		messengerMatrixId: viewer.id === user.id ? user.messengerMatrixId : null,
+		groups,
+		timeZone: preference?.timeZone ?? null,
+		assignedOpenIssues: openIssues?.count ?? 0,
+		isSelf: self,
+		canEditAvatar: self || viewer.isAdmin,
+		messengerMatrixId: self ? user.messengerMatrixId : null,
 	};
 }
