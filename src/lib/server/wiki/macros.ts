@@ -26,6 +26,7 @@ import {
 	iframeHosts,
 	type ParsedMacro,
 	type StorageContext,
+	searchFormAction,
 	stripTags,
 } from "./storage.ts";
 
@@ -408,7 +409,7 @@ const contentByLabel: MacroRenderer = async (macro, ctx) => {
 const livesearch: MacroRenderer = (macro, ctx) => {
 	const spaceKey = macro.params.spaceKey?.trim() || ctx.space.key;
 	const placeholder = macro.params.placeholder?.trim() || "Search this space";
-	return `<div class="wiki-livesearch" data-macro="livesearch"><form method="GET" action="/dosearchsite.action" role="search"><input type="hidden" name="space" value="${escapeHtml(spaceKey)}" /><input type="search" name="queryString" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)}" /><button type="submit">Search</button></form></div>`;
+	return `<div class="wiki-livesearch" data-macro="livesearch"><form method="GET" action="${searchFormAction}" role="search"><input type="hidden" name="space" value="${escapeHtml(spaceKey)}" /><input type="search" name="queryString" placeholder="${escapeHtml(placeholder)}" aria-label="${escapeHtml(placeholder)}" /><button type="submit">Search</button></form></div>`;
 };
 
 const popularLabelsMacro: MacroRenderer = async (macro, ctx) => {
