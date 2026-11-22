@@ -19,24 +19,11 @@ export function canonicalTimeZone(value: string | null | undefined) {
 	}
 }
 
-let fallbackZone: { raw: string; zone: string } | undefined;
-
-function configuredTimeZone() {
-	const raw = env.APP_TIME_ZONE;
-	if (fallbackZone?.raw !== raw) {
-		fallbackZone = {
-			raw,
-			zone: canonicalTimeZone(raw) ?? FALLBACK_TIME_ZONE,
-		};
-	}
-	return fallbackZone.zone;
-}
-
 /** The date context of the request being served, if any. */
 export function dateContext(): DateContext {
 	return (
 		storage.getStore() ?? {
-			timeZone: configuredTimeZone(),
+			timeZone: env.APP_TIME_ZONE,
 			locale: FALLBACK_LOCALE,
 			now: Date.now(),
 		}
