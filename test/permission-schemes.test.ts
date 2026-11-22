@@ -549,6 +549,111 @@ test("global ADMINISTER holders can be added and removed", async () => {
 	);
 });
 
+test("only user and group global holders can be removed", async () => {
+	await db
+		.insert(permissionSchemes)
+		.values({
+			sourceId: "global",
+			name: "Global permissions",
+			description: "Global permission holders imported from Jira",
+			projectIds: [],
+			raw: {},
+		})
+		.onConflictDoNothing();
+	const [scheme] = await db
+		.select({ id: permissionSchemes.id })
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.sourceId, "global"));
+	const [grant] = await db
+		.insert(permissionGrants)
+		.values({
+			sourceId: `test:${run}:global-project-role`,
+			schemeId: scheme.id,
+			permissionKey: "ADMINISTER",
+			holderType: "projectRole",
+			holderParameter: "member",
+			raw: {},
+		})
+		.returning({ id: permissionGrants.id });
+	try {
+		const removed = await injectAs(
+			app,
+			admin.session,
+			"DELETE",
+			`/api/admin/global-permissions/${grant.id}`,
+		);
+		expect(removed.statusCode).toBe(404);
+		const rows = await db
+			.select({ id: permissionGrants.id })
+			.from(permissionGrants)
+			.where(eq(permissionGrants.id, grant.id));
+		expect(rows).toHaveLength(1);
+	} finally {
+		await db.delete(permissionGrants).where(eq(permissionGrants.id, grant.id));
+	}
+});
+
+test("concurrent global permission removals audit once", async () => {
+	const dave = await makeUser(run, "dave");
+	const added = await injectAs(
+		app,
+		admin.session,
+		"POST",
+		"/api/admin/global-permissions",
+		{ holderType: "user", holderParameter: dave.username },
+	);
+	expect(added.statusCode).toBe(201);
+	const holderId = added.json().holder.id;
+
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const request = () =>
+			injectAs(
+				app,
+				admin.session,
+				"DELETE",
+				`/api/admin/global-permissions/${holderId}`,
+			);
+		const first = request();
+		const second = request();
+		await both;
+		restore();
+		release();
+		const responses = await Promise.all([first, second]);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			204, 404,
+		]);
+		const audits = await db
+			.select({ id: auditLog.id })
+			.from(auditLog)
+			.where(
+				and(
+					eq(auditLog.action, "global.permission.remove"),
+					sql`${auditLog.summary} like ${`%${dave.username}%`}`,
+				),
+			);
+		expect(audits).toHaveLength(1);
+	} finally {
+		restore();
+		release();
+	}
+});
+
 test("concurrent identical global grants create one holder", async () => {
 	const carol = await makeUser(run, "carol");
 	const original = db.transaction.bind(db);

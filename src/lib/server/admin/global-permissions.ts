@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
@@ -223,6 +223,8 @@ export async function removeGlobalPermission(actor: CurrentUser, id: string) {
 				eq(permissionGrants.id, id),
 				eq(permissionGrants.permissionKey, "ADMINISTER"),
 				eq(permissionSchemes.sourceId, "global"),
+				inArray(permissionGrants.holderType, ["user", "group"]),
+				isNotNull(permissionGrants.holderParameter),
 			),
 		)
 		.limit(1);
@@ -231,7 +233,13 @@ export async function removeGlobalPermission(actor: CurrentUser, id: string) {
 	}
 
 	await db.transaction(async (tx) => {
-		await tx.delete(permissionGrants).where(eq(permissionGrants.id, row.id));
+		const [deleted] = await tx
+			.delete(permissionGrants)
+			.where(eq(permissionGrants.id, row.id))
+			.returning({ id: permissionGrants.id });
+		if (!deleted) {
+			throw new HttpError(404, "Global permission holder not found");
+		}
 		if (!isLocal(row.sourceId)) {
 			await tx
 				.insert(permissionLocalRemovals)
