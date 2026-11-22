@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { PageRef, WikiUserRef } from "../../shared/wiki/index.ts";
 import { userAvatarSql } from "../avatars.ts";
@@ -7,8 +7,6 @@ import type { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { users } from "../schema.ts";
 import { pages, spaces } from "../schema-wiki.ts";
-
-export { HttpError };
 
 export type Executor = Pick<
 	typeof db,
@@ -31,10 +29,14 @@ export function allow(ok: boolean, message = "Forbidden"): asserts ok {
 
 export const newSourceId = () => `fat:${randomUUID()}`;
 
+const MAX_CAUSE_DEPTH = 10;
+
 export function pgCode(error: unknown): string | undefined {
 	for (
-		let cause = error as { code?: string; cause?: unknown } | undefined;
-		cause;
+		let cause = error as { code?: string; cause?: unknown } | undefined,
+			depth = 0;
+		cause && depth < MAX_CAUSE_DEPTH;
+		depth += 1
 	) {
 		if (typeof cause.code === "string") return cause.code;
 		cause = cause.cause as typeof cause;
@@ -44,8 +46,10 @@ export function pgCode(error: unknown): string | undefined {
 
 export function pgConstraint(error: unknown): string | undefined {
 	for (
-		let cause = error as { constraint?: string; cause?: unknown } | undefined;
-		cause;
+		let cause = error as { constraint?: string; cause?: unknown } | undefined,
+			depth = 0;
+		cause && depth < MAX_CAUSE_DEPTH;
+		depth += 1
 	) {
 		if (typeof cause.constraint === "string") return cause.constraint;
 		cause = cause.cause as typeof cause;
@@ -118,15 +122,12 @@ export async function loadPage(
 }
 
 export async function loadSpace(ex: Executor, key: string): Promise<SpaceRow> {
-	for (const candidate of new Set([key, key.toUpperCase()])) {
-		const [space] = await ex
-			.select()
-			.from(spaces)
-			.where(eq(spaces.key, candidate))
-			.limit(1);
-		if (space) return space;
-	}
-	return fail(404, "Space not found");
+	const [space] = await ex
+		.select()
+		.from(spaces)
+		.where(sql`lower(${spaces.key}) = lower(${key})`)
+		.limit(1);
+	return space ?? fail(404, "Space not found");
 }
 
 export async function loadUserRefs(
