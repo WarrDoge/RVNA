@@ -1511,3 +1511,80 @@ test("EDIT_SPRINT_NAME_AND_GOAL and START_STOP_SPRINTS gate sprint fields", asyn
 		await pool.query("delete from projects where id = $1", [project.id]);
 	}
 });
+
+describe("sprint ordering and archived projects", () => {
+	test("concurrent sprint reorders keep sequences unique", async () => {
+		const first = await createSprint("Race order first");
+		const second = await createSprint("Race order second");
+		const third = await createSprint("Race order third");
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select id from boards where id = $1 for update", [
+				scrumBoard.id,
+			]);
+			await locker.query(
+				"select id from sprints where id = any($1::uuid[]) for update",
+				[[first.id, second.id, third.id]],
+			);
+			const down = inject(
+				"POST",
+				`/api/sprints/${first.id}/move`,
+				ownerSession,
+				{ direction: "down" },
+			);
+			const up = inject("POST", `/api/sprints/${third.id}/move`, ownerSession, {
+				direction: "up",
+			});
+			await waitForLockWaiters(2);
+			await locker.query("commit");
+			const responses = await Promise.all([down, up]);
+			expect(responses.map((response) => response.statusCode)).toEqual([
+				200, 200,
+			]);
+			const rows = await pool.query<{ sequence: number }>(
+				`select sequence from sprints
+				 where board_id = $1 and state in ('active', 'future')
+				 order by sequence, name`,
+				[scrumBoard.id],
+			);
+			const sequences = rows.rows.map((row) => row.sequence);
+			expect(new Set(sequences).size).toBe(sequences.length);
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	});
+
+	test("an archived project rejects issue and sprint moves", async () => {
+		const sprint = await createSprint("Archived project sprint");
+		const issue = await createIssue(
+			ownerSession,
+			"Archived move issue",
+			"0|arch",
+		);
+		await db
+			.update(projects)
+			.set({ archived: true })
+			.where(eq(projects.id, projectId));
+		try {
+			const moved = await move(ownerSession, {
+				issues: [issue.key],
+				sprintId: null,
+			});
+			expect(moved.statusCode).toBe(403);
+			const reordered = await inject(
+				"POST",
+				`/api/sprints/${sprint.id}/move`,
+				ownerSession,
+				{ direction: "up" },
+			);
+			expect(reordered.statusCode).toBe(403);
+		} finally {
+			await db
+				.update(projects)
+				.set({ archived: false })
+				.where(eq(projects.id, projectId));
+		}
+	});
+});

@@ -1774,6 +1774,7 @@ export async function moveIssues(
 	const config = await loadBoardConfig(rapidViewId);
 	if (!config) throw new HttpError(404, "Board not found");
 	const board = config.board;
+	await requireWritableBoard(board);
 	const keys = [...new Set(body.issues.map((key) => key.toUpperCase()))];
 
 	const filter = await conditionsFor(
@@ -2072,13 +2073,13 @@ export async function moveIssues(
 						eq(issueSprints.isOpen, true),
 					),
 				);
-				if (body.sprintId) {
+				if (targetPlan.sprintId) {
 					await tx
 						.insert(issueSprints)
 						.values(
 							rows.map((row) => ({
 								issueId: row.id,
-								sprintId: body.sprintId as string,
+								sprintId: targetPlan.sprintId as string,
 								isOpen: true,
 							})),
 						)
@@ -2471,36 +2472,47 @@ export async function moveSprint(
 		.limit(1);
 	if (!sprint) throw new HttpError(404, "Sprint not found");
 	const board = await requireSprintBoard(actor, sprint.boardId);
+	await requireWritableBoard(board);
 	if (!(await canManageBoard(board, actor, "MANAGE_SPRINTS_PERMISSION"))) {
 		throw new HttpError(403, "Only board administrators can manage sprints");
 	}
 	if (sprint.state === "closed") {
 		throw new HttpError(400, "A closed sprint cannot be moved");
 	}
-	const list = await db
-		.select()
-		.from(sprints)
-		.where(
-			and(
-				eq(sprints.boardId, sprint.boardId),
-				inArray(sprints.state, ["active", "future"]),
-			),
-		)
-		.orderBy(asc(sprints.sequence), asc(sprints.name));
-	const index = list.findIndex((item) => item.id === sprint.id);
-	const swapIndex = body.direction === "up" ? index - 1 : index + 1;
-	if (swapIndex < 0 || swapIndex >= list.length) {
-		throw new HttpError(400, "The sprint is already at the end of the list");
-	}
-	const other = list[swapIndex];
 	await db.transaction(async (tx) => {
+		await lockBoard(tx, board.id);
+		const [current] = await tx
+			.select()
+			.from(sprints)
+			.where(eq(sprints.id, id))
+			.limit(1);
+		if (!current) throw new HttpError(404, "Sprint not found");
+		if (current.state === "closed") {
+			throw new HttpError(400, "A closed sprint cannot be moved");
+		}
+		const list = await tx
+			.select()
+			.from(sprints)
+			.where(
+				and(
+					eq(sprints.boardId, current.boardId),
+					inArray(sprints.state, ["active", "future"]),
+				),
+			)
+			.orderBy(asc(sprints.sequence), asc(sprints.name));
+		const index = list.findIndex((item) => item.id === current.id);
+		const swapIndex = body.direction === "up" ? index - 1 : index + 1;
+		if (swapIndex < 0 || swapIndex >= list.length) {
+			throw new HttpError(400, "The sprint is already at the end of the list");
+		}
+		const other = list[swapIndex];
 		await tx
 			.update(sprints)
 			.set({ sequence: other.sequence, updatedAt: new Date() })
-			.where(eq(sprints.id, sprint.id));
+			.where(eq(sprints.id, current.id));
 		await tx
 			.update(sprints)
-			.set({ sequence: sprint.sequence, updatedAt: new Date() })
+			.set({ sequence: current.sequence, updatedAt: new Date() })
 			.where(eq(sprints.id, other.id));
 	});
 	const updated = await db
