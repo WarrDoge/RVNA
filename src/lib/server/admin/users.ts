@@ -206,6 +206,12 @@ function normalizeEmail(value: string | null | undefined) {
 	return { email: trimmed, error: null };
 }
 
+async function lockEmail(executor: Pick<typeof db, "execute">, email: string) {
+	await executor.execute(
+		sql`select pg_advisory_xact_lock(hashtextextended(lower(${email}), 0))`,
+	);
+}
+
 async function emailTaken(
 	executor: Executor,
 	email: string,
@@ -238,7 +244,12 @@ async function inAdminGroup(executor: Executor, userId: string) {
 		.select({ id: userGroups.groupId })
 		.from(userGroups)
 		.innerJoin(groups, eq(groups.id, userGroups.groupId))
-		.where(and(eq(userGroups.userId, userId), eq(groups.name, env.ADMIN_GROUP)))
+		.where(
+			and(
+				eq(userGroups.userId, userId),
+				sql`lower(${groups.name}) = lower(${env.ADMIN_GROUP})`,
+			),
+		)
 		.limit(1);
 	return Boolean(row);
 }
@@ -374,10 +385,12 @@ export async function createUser(
 
 	const isAdmin = body.isAdmin ?? false;
 	const mustChangePassword = body.mustChangePassword ?? generate;
+	const passwordHash = password ? await hashPassword(password) : null;
 
 	try {
 		const created: { id: string | null; conflict: string | null } =
 			await db.transaction(async (tx) => {
+				if (email) await lockEmail(tx, email);
 				if (await usernameTaken(tx, username)) {
 					return {
 						id: null,
@@ -391,7 +404,6 @@ export async function createUser(
 					};
 				}
 
-				const passwordHash = password ? await hashPassword(password) : null;
 				const [row] = await tx
 					.insert(users)
 					.values({
@@ -461,12 +473,6 @@ export async function updateUser(
 	const nextEmail = body.email === undefined ? current.email : normalized.email;
 	const nextAdminLocal = body.isAdmin ?? current.adminLocal;
 
-	if (nextEmail && nextEmail !== current.email) {
-		if (await emailTaken(db, nextEmail, current.id)) {
-			throw new HttpError(409, "A user with this email address already exists");
-		}
-	}
-
 	const from: Record<string, unknown> = {};
 	const to: Record<string, unknown> = {};
 	if (nextDisplayName !== current.displayName) {
@@ -483,6 +489,15 @@ export async function updateUser(
 	}
 
 	await db.transaction(async (tx) => {
+		if (nextEmail && nextEmail !== current.email) {
+			await lockEmail(tx, nextEmail);
+			if (await emailTaken(tx, nextEmail, current.id)) {
+				throw new HttpError(
+					409,
+					"A user with this email address already exists",
+				);
+			}
+		}
 		if (body.isAdmin === false) {
 			await tx.execute(
 				sql`select pg_advisory_xact_lock(${adminGuardLockKey}::bigint)`,
@@ -655,12 +670,30 @@ export async function deactivateUser(actor: CurrentUser, id: string) {
 	if (current.id === actor.id) {
 		throw new HttpError(409, "You cannot deactivate your own account");
 	}
-	if (current.isAdmin && (await otherActiveAdmins(db, current.id)) === 0) {
-		throw new HttpError(409, "You cannot deactivate the last administrator");
-	}
 
 	if (current.active) {
 		await db.transaction(async (tx) => {
+			await tx.execute(
+				sql`select pg_advisory_xact_lock(${adminGuardLockKey}::bigint)`,
+			);
+			const [fresh] = await tx
+				.select({ active: users.active, isAdmin: users.isAdmin })
+				.from(users)
+				.where(eq(users.id, current.id))
+				.for("update");
+			if (!fresh) throw new HttpError(404, "User not found");
+			if (
+				fresh.active &&
+				fresh.isAdmin &&
+				(await otherActiveAdmins(tx, current.id)) === 0
+			) {
+				throw new HttpError(
+					409,
+					"You cannot deactivate the last administrator",
+				);
+			}
+			if (!fresh.active) return;
+
 			await tx
 				.update(users)
 				.set({ active: false, updatedAt: new Date() })

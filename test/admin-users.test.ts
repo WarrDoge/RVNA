@@ -392,6 +392,41 @@ async function withOnlyAdmins<T>(keep: string[], run: () => Promise<T>) {
 	}
 }
 
+test("an SSO admin group is matched without regard to case", async () => {
+	const { env } = await import("../src/lib/server/env.ts");
+	const variant = env.ADMIN_GROUP.toUpperCase();
+	await db
+		.insert(groups)
+		.values({ name: variant, local: false })
+		.onConflictDoNothing();
+	const [group] = await db
+		.select()
+		.from(groups)
+		.where(eq(groups.name, variant));
+
+	const member = await makeUser(run, "casedadmin");
+	await db
+		.update(users)
+		.set({ adminLocal: true, isAdmin: true })
+		.where(eq(users.id, member.id));
+	await db
+		.insert(userGroups)
+		.values({ userId: member.id, groupId: group.id })
+		.onConflictDoNothing();
+
+	try {
+		const patched = await patchUser(member.id, { isAdmin: false });
+		expect(patched.statusCode, patched.body).toBe(200);
+		expect(patched.json().user).toMatchObject({
+			adminLocal: false,
+			isAdmin: true,
+		});
+	} finally {
+		await db.delete(userGroups).where(eq(userGroups.userId, member.id));
+		await db.delete(groups).where(eq(groups.id, group.id));
+	}
+});
+
 test("a group administrator can be demoted locally", async () => {
 	const { env } = await import("../src/lib/server/env.ts");
 	await db
@@ -467,6 +502,113 @@ test("concurrent demotions keep one administrator", async () => {
 				"PATCH",
 				`/api/admin/users/${second.id}`,
 				{ isAdmin: false },
+			);
+			await both;
+			restore();
+			release();
+			const responses = await Promise.all([left, right]);
+			expect(responses.map((response) => response.statusCode).sort()).toEqual([
+				200, 409,
+			]);
+			const [remaining] = await db
+				.select({ total: sql<number>`count(*)::int` })
+				.from(users)
+				.where(and(eq(users.active, true), eq(users.isAdmin, true)));
+			expect(remaining.total).toBe(1);
+		} finally {
+			restore();
+		}
+	});
+});
+
+test("concurrent updates cannot take the same email address", async () => {
+	const first = await createUser({
+		username: name("email-first"),
+		displayName: display("email-first"),
+		email: `${name("email-first")}@example.test`,
+	});
+	const second = await createUser({
+		username: name("email-second"),
+		displayName: display("email-second"),
+		email: `${name("email-second")}@example.test`,
+	});
+	const firstId = first.json().user.id;
+	const secondId = second.json().user.id;
+	const shared = `${name("email-shared")}@example.test`;
+
+	const original = db.transaction.bind(db);
+	let entered = 0;
+	let release = () => {};
+	let bothEntered = () => {};
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const both = new Promise<void>((resolve) => {
+		bothEntered = resolve;
+	});
+	const restore = swapTransaction(async (callback) => {
+		entered += 1;
+		if (entered === 2) bothEntered();
+		await gate;
+		return original(callback);
+	});
+	try {
+		const left = patchUser(firstId, { email: shared });
+		const right = patchUser(secondId, { email: shared });
+		await both;
+		restore();
+		release();
+		const responses = await Promise.all([left, right]);
+		expect(responses.map((response) => response.statusCode).sort()).toEqual([
+			200, 409,
+		]);
+		const rows = await db
+			.select({ id: users.id })
+			.from(users)
+			.where(sql`lower(${users.email}) = lower(${shared})`);
+		expect(rows).toHaveLength(1);
+	} finally {
+		restore();
+	}
+});
+
+test("concurrent deactivations keep one administrator", async () => {
+	const first = await makeUser(run, "deactivate-first", { admin: true });
+	const second = await makeUser(run, "deactivate-second", { admin: true });
+	await db
+		.update(users)
+		.set({ adminLocal: true, isAdmin: true })
+		.where(inArray(users.id, [first.id, second.id]));
+
+	await withOnlyAdmins([first.id, second.id], async () => {
+		const original = db.transaction.bind(db);
+		let entered = 0;
+		let release = () => {};
+		let bothEntered = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const both = new Promise<void>((resolve) => {
+			bothEntered = resolve;
+		});
+		const restore = swapTransaction(async (callback) => {
+			entered += 1;
+			if (entered === 2) bothEntered();
+			await gate;
+			return original(callback);
+		});
+		try {
+			const left = injectAs(
+				app,
+				first.session,
+				"POST",
+				`/api/admin/users/${second.id}/deactivate`,
+			);
+			const right = injectAs(
+				app,
+				second.session,
+				"POST",
+				`/api/admin/users/${first.id}/deactivate`,
 			);
 			await both;
 			restore();
