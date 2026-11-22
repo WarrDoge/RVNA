@@ -80,6 +80,19 @@ test("more than the file cap is a 413 and removes every temp file", async () => 
 	expect(await readdir(directory)).toEqual([]);
 });
 
+test("the default size text never says 0 MB for a sub-megabyte limit", async () => {
+	await expect(
+		readMultipart(
+			request([{ name: "big.bin", bytes: Buffer.alloc(600 * 1024, 1) }]),
+			limits({ maxFileBytes: 512 * 1024, maxTotalBytes: 2 * 1024 * 1024 }),
+		),
+	).rejects.toMatchObject({
+		status: 413,
+		message: "File is larger than 1 MB",
+	});
+	expect(await readdir(directory)).toEqual([]);
+});
+
 test("a file over the per-file limit is cut short and removes temp files", async () => {
 	let cancelled = false;
 	const payload = multipart([

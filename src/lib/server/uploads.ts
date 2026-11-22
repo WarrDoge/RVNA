@@ -33,7 +33,7 @@ export type UploadLimits = {
 };
 
 function megabytes(bytes: number) {
-	return Math.floor(bytes / (1024 * 1024));
+	return Math.max(1, Math.ceil(bytes / (1024 * 1024)));
 }
 
 function invalidContentType() {
