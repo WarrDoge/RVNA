@@ -254,6 +254,49 @@ describe("edit locks", () => {
 		expect(expired.body).toEqual({ status: "expired", lock: null });
 	});
 
+	test("another user cannot change the labels while the lock is held", async () => {
+		const page = await wiki.page(alice, space.key, "Lock labels");
+		await alice.post(`/api/wiki/pages/${page.id}/lock`);
+		const put = await bob.put(`/api/wiki/pages/${page.id}/labels`, {
+			labels: ["bobs"],
+		});
+		expect(put.status).toBe(423);
+		expect(put.body.lock.holder.id).toBe(alice.id);
+		const added = await bob.post(`/api/wiki/pages/${page.id}/labels`, {
+			label: "bobs",
+		});
+		expect(added.status).toBe(423);
+		expect(
+			await rows("select 1 from page_labels where page_id = $1", [page.id]),
+		).toHaveLength(0);
+
+		const own = await alice.put(`/api/wiki/pages/${page.id}/labels`, {
+			labels: ["alices"],
+		});
+		expect(own.status).toBe(200);
+		const [label] = await rows(
+			"select id from page_labels where page_id = $1",
+			[page.id],
+		);
+		expect((await bob.del(`/api/wiki/labels/${label.id}`)).status).toBe(423);
+		await alice.del(`/api/wiki/pages/${page.id}/lock`);
+		expect((await bob.del(`/api/wiki/labels/${label.id}`)).status).toBe(204);
+	});
+
+	test("a draft is saved even while someone else holds the lock", async () => {
+		const page = await wiki.page(alice, space.key, "Lock drafts");
+		await alice.post(`/api/wiki/pages/${page.id}/lock`);
+		const saved = await bob.put(`/api/wiki/pages/${page.id}/draft`, {
+			title: "Lock drafts",
+			bodyDoc: doc("bob's unpublished text"),
+		});
+		expect(saved.status).toBe(200);
+		expect(
+			(await bob.put(`/api/wiki/pages/${page.id}`, { bodyDoc: doc("bob") }))
+				.status,
+		).toBe(423);
+	});
+
 	test("release removes only the caller's lock", async () => {
 		const page = await wiki.page(alice, space.key, "Lock release");
 		await alice.post(`/api/wiki/pages/${page.id}/lock`);

@@ -33,6 +33,7 @@ import {
 import { tooManyFiles, type UploadedForm } from "../uploads.ts";
 import { pageAccess } from "../wiki-edit/access.ts";
 import { removeOrphanFiles } from "../wiki-edit/files.ts";
+import { assertNotLockedByOthers } from "../wiki-edit/locks.ts";
 import { pageAttachmentVersions, recentPageLinks } from "./data.ts";
 import { diffHtml } from "./diff.ts";
 import {
@@ -946,6 +947,7 @@ export async function ensurePageLabel(
 	const { page } = await readablePage(actor, id);
 	const permissions = await pageAccess(actor, page);
 	if (!permissions.edit) throw new HttpError(403, "Forbidden");
+	await assertNotLockedByOthers(db, page.id, actor.id);
 	return insertPageLabel(page.id, label);
 }
 
@@ -961,6 +963,7 @@ export async function deleteLabel(actor: CurrentUser, id: string) {
 	if (!loaded) throw new HttpError(404, "Label not found");
 	const permissions = await pageAccess(actor, loaded.page);
 	if (!permissions.edit) throw new HttpError(403, "Forbidden");
+	await assertNotLockedByOthers(db, loaded.page.id, actor.id);
 	await db.delete(pageLabels).where(eq(pageLabels.id, label.id));
 }
 

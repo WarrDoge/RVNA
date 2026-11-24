@@ -274,6 +274,7 @@ export async function setPageLabels(
 		const fresh = await lockPage(tx, page.id);
 		assertCurrent(fresh);
 		await requireAccess(actor, fresh, "edit", undefined, tx);
+		await assertNotLockedByOthers(tx, page.id, actor.id);
 		await setLabels(tx, page.id, labels);
 	});
 	const rows = await db
