@@ -232,6 +232,43 @@ describe("storage reference escaping", () => {
 		expect(rewritten).toContain("missing.png");
 	});
 
+	test("reads a plain link body, with or without CDATA, and ignores an unclosed one", () => {
+		const link = (body: string) =>
+			rewriteStorageReferences(
+				`<ac:link><ri:page ri:content-title="Page" />${body}</ac:link>`,
+				ctx,
+				"100",
+			);
+
+		expect(
+			link("<ac:plain-text-link-body> Plain </ac:plain-text-link-body>"),
+		).toContain("<span>Plain</span>");
+		expect(
+			link(
+				"<ac:plain-text-link-body> <![CDATA[Cdata text]]> </ac:plain-text-link-body>",
+			),
+		).toContain("<span>Cdata text</span>");
+		expect(link("<ac:plain-text-link-body>Open")).toContain(
+			"<span>Page</span>",
+		);
+	});
+
+	test("handles a long run of spaces in a link body in linear time", () => {
+		const started = performance.now();
+		for (const body of [
+			`<ac:plain-text-link-body>A${" ".repeat(100_000)}`,
+			`<ac:plain-text-link-body><![CDATA[A${" ".repeat(100_000)}]]`,
+			`<ac:plain-text-link-body>${" ]]>".repeat(25_000)}`,
+		]) {
+			rewriteStorageReferences(
+				`<ac:link><ri:page ri:content-title="Page" />${body}</ac:link>`,
+				ctx,
+				"100",
+			);
+		}
+		expect(performance.now() - started).toBeLessThan(1000);
+	});
+
 	test("does not let an image attribute break out of its value", () => {
 		const rewritten = rewriteStorageReferences(
 			'<ac:image ac:alt="x&quot; onerror=&quot;alert(1)"><ri:attachment ri:filename="diagram.png" /></ac:image>',

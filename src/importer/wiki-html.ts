@@ -246,10 +246,15 @@ function escapeHtml(value: string): string {
 }
 
 function plainLinkBody(inner: string): string | null {
-	const plain = inner.match(
-		/<ac:plain-text-link-body>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/ac:plain-text-link-body>/,
-	);
-	return plain ? plain[1].trim() : null;
+	const open = "<ac:plain-text-link-body>";
+	const start = inner.indexOf(open);
+	if (start === -1) return null;
+	const end = inner.indexOf("</ac:plain-text-link-body>", start + open.length);
+	if (end === -1) return null;
+	let body = inner.slice(start + open.length, end).trim();
+	if (body.startsWith("<![CDATA[")) body = body.slice("<![CDATA[".length);
+	if (body.endsWith("]]>")) body = body.slice(0, -"]]>".length);
+	return body.trim();
 }
 
 function richLinkBody(inner: string): string | null {
