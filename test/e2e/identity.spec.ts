@@ -24,7 +24,7 @@ test("shell, personal access tokens and logout", async ({ page }) => {
 	await page.getByRole("button", { name: "Create token" }).click();
 	const createDialog = page.getByRole("dialog");
 	await createDialog.getByLabel("Name").fill("e2e token");
-	await createDialog.getByLabel("Expires in days").fill("7");
+	await createDialog.getByLabel("Expires").selectOption("30");
 	await createDialog.getByRole("button", { name: "Create" }).click();
 
 	await expect(page.getByText(/^rvna_[A-Za-z0-9_-]+$/)).toBeVisible();

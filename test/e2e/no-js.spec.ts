@@ -52,7 +52,8 @@ test("forms show action results and a token is created without JavaScript", asyn
 	await page.getByRole("button", { name: "Create token" }).click();
 	await expect(page.getByRole("dialog")).toBeVisible();
 	await page.getByLabel("Name").fill(`No JS token ${run}`);
-	await page.getByLabel("Expires in days").fill("7");
+	await page.getByLabel("Expires").selectOption("30");
+	await page.getByLabel("Current password").fill(password);
 	await page
 		.getByRole("dialog")
 		.getByRole("button", { name: "Create", exact: true })

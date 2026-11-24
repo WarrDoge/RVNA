@@ -1069,6 +1069,22 @@ an IdP user whose username matches an account with a local password is refused (
 administrator to link it) unless that account was imported from Jira and the IdP vouches for the same
 email (`email_verified`). Accounts without a password attach by username or verified email as before.
 
+### Sessions and API tokens
+
+A sign-in sets the `sid` cookie (HttpOnly, SameSite=Lax, valid for `SESSION_TTL_DAYS`, 14 by default).
+A password change ends every session and answers with a new cookie.
+
+A user makes an API token on the profile page (`?selectedTab=tokens`) or with `POST /api/me/tokens`.
+A token expires after 90 days unless the request says otherwise: the form offers 30, 90 and 365 days
+and "Never", and the API takes `expiresInDays` (a whole number up to 3650) or an explicit `null` for a
+token that never expires. An account with a local password must send its current password
+(`currentPassword`); an account that only signs in with SSO does not. A bearer token cannot make,
+list or revoke tokens.
+
+Tokens are independent of browser sessions by design: a script keeps working after its owner signs
+out. Signing out does not revoke a token. The owner revokes it on the profile page, and a password
+change or removal ends all of a user's tokens.
+
 ### The first administrator
 
 Either create one on the command line (runs the migrations first, reads the password from stdin or

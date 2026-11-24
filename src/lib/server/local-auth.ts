@@ -288,11 +288,16 @@ export type ChangePasswordInput = {
 	sessionId?: string;
 };
 
-/** Ends every session and API token of the user. Returns a new session when the request had one. */
-export async function changePassword(
+/**
+ * Checks the signed-in user's own password. A wrong one counts against the login
+ * throttle, like a wrong password at sign-in. Returns the stored hash.
+ */
+export async function confirmPassword(
 	actor: CurrentUser,
-	input: ChangePasswordInput,
-): Promise<string | null> {
+	password: string,
+	ip: string,
+	purpose: string,
+): Promise<string> {
 	const [row] = await db
 		.select({ passwordHash: users.passwordHash })
 		.from(users)
@@ -302,14 +307,14 @@ export async function changePassword(
 		throw new HttpError(409, "This account signs in with SSO");
 	}
 
-	const key = `${actor.username.toLowerCase()}|${input.ip}`;
+	const key = `${actor.username.toLowerCase()}|${ip}`;
 	const wait = await reserveAttempt("user", key);
 	if (wait > 0) {
-		await auditThrottled(actor.username, input.ip, wait);
+		await auditThrottled(actor.username, ip, wait);
 		throw tooManyAttempts(wait);
 	}
 
-	const current = await verifyPassword(input.currentPassword, row.passwordHash);
+	const current = await verifyPassword(password, row.passwordHash);
 	if (!current.ok) {
 		await recordAudit(db, {
 			actorId: actor.id,
@@ -317,11 +322,25 @@ export async function changePassword(
 			action: "login.failure",
 			entityType: "user",
 			entityId: actor.id,
-			summary: `Wrong current password when changing the password, from ${input.ip}`,
+			summary: `Wrong current password when ${purpose}, from ${ip}`,
 		});
 		throw new HttpError(400, "The current password is incorrect");
 	}
 	await clearAttempts("user", key);
+	return row.passwordHash;
+}
+
+/** Ends every session and API token of the user. Returns a new session when the request had one. */
+export async function changePassword(
+	actor: CurrentUser,
+	input: ChangePasswordInput,
+): Promise<string | null> {
+	const currentHash = await confirmPassword(
+		actor,
+		input.currentPassword,
+		input.ip,
+		"changing the password",
+	);
 
 	const problem = validatePassword(input.newPassword, actor.username);
 	if (problem) throw new HttpError(400, problem);
@@ -344,12 +363,7 @@ export async function changePassword(
 				mustChangePassword: false,
 				updatedAt: now,
 			})
-			.where(
-				and(
-					eq(users.id, actor.id),
-					eq(users.passwordHash, row.passwordHash as string),
-				),
-			)
+			.where(and(eq(users.id, actor.id), eq(users.passwordHash, currentHash)))
 			.returning({ id: users.id });
 		if (updated.length === 0) return null;
 

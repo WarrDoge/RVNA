@@ -3,18 +3,28 @@ import { z } from "zod";
 import { type CurrentUser, randomValue, sha256 } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
-import { recordAudit } from "../local-auth.ts";
+import { confirmPassword, recordAudit } from "../local-auth.ts";
 import { apiTokens } from "../schema.ts";
 
+const DEFAULT_EXPIRY_DAYS = 90;
+
+/**
+ * No `expiresInDays` gives the default of 90 days; an explicit `null` is a token that never expires.
+ * An account with a local password must send that password.
+ */
 export const tokenCreateSchema = z.object({
 	name: z.string().trim().min(1).max(200),
-	expiresInDays: z.number().int().positive().max(3650).optional(),
+	expiresInDays: z.number().int().positive().max(3650).nullable().optional(),
+	currentPassword: z.string().max(1024).optional(),
 });
 
-function tokenExpiresAt(expiresInDays: number | undefined) {
-	return expiresInDays === undefined
+function tokenExpiresAt(expiresInDays: number | null | undefined) {
+	return expiresInDays === null
 		? null
-		: new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000);
+		: new Date(
+				Date.now() +
+					(expiresInDays ?? DEFAULT_EXPIRY_DAYS) * 24 * 60 * 60 * 1000,
+			);
 }
 
 export type TokenView = {
@@ -49,7 +59,19 @@ export async function listTokens(actor: CurrentUser): Promise<TokenView[]> {
 export async function createToken(
 	actor: CurrentUser,
 	input: z.infer<typeof tokenCreateSchema>,
+	ip: string,
 ): Promise<CreatedToken> {
+	if (actor.hasPassword) {
+		if (!input.currentPassword) {
+			throw new HttpError(400, "Enter your current password");
+		}
+		await confirmPassword(
+			actor,
+			input.currentPassword,
+			ip,
+			"creating an API token",
+		);
+	}
 	const value = `rvna_${randomValue()}`;
 	const expiresAt = tokenExpiresAt(input.expiresInDays);
 

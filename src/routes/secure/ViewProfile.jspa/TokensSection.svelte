@@ -5,6 +5,7 @@
 	import Button from "#lib/components/Button.svelte";
 	import Modal from "#lib/components/Modal.svelte";
 	import Textfield from "#lib/components/Textfield.svelte";
+	import { inputStyle } from "#lib/admin/styles.ts";
 	import { calendarDate } from "#lib/dates.ts";
 
 	type FormData = {
@@ -17,15 +18,17 @@
 	interface Props {
 		tokens: ApiToken[];
 		create?: boolean;
+		hasPassword?: boolean;
 		form?: FormData;
 	}
 
-	let { tokens, create = false, form }: Props = $props();
+	let { tokens, create = false, hasPassword = false, form }: Props = $props();
 
 	let creating = $derived(create);
 	let created = $state<CreatedApiToken | null>(null);
 	let name = $state("");
 	let expiresInDays = $state("90");
+	let currentPassword = $state("");
 	let createError = $state<string | null>(null);
 	let createBusy = $state(false);
 	let copied = $state(false);
@@ -173,7 +176,8 @@
 
 	<p class="intro">
 		Tokens authenticate scripts against the RVNA API. Each token is shown
-		once, when you create it.
+		once, when you create it. A token keeps working after you sign out; revoke
+		it here to end its access.
 	</p>
 
 	<table>
@@ -240,6 +244,7 @@
 						createError = null;
 						return async ({ result, update }) => {
 							createBusy = false;
+							currentPassword = "";
 							if (result.type === "failure") {
 								const failure = result.data as { error?: unknown } | null;
 								createError =
@@ -274,16 +279,31 @@
 						/>
 					</div>
 					<div class="field">
-						<label for="token-expiry">Expires in days</label>
-						<Textfield
+						<label for="token-expiry">Expires</label>
+						<select
 							id="token-expiry"
 							name="expiresInDays"
-							type="number"
-							min={1}
 							bind:value={expiresInDays}
-							placeholder="Never"
-						/>
+							style={inputStyle}
+						>
+							<option value="30">In 30 days</option>
+							<option value="90">In 90 days</option>
+							<option value="365">In 365 days</option>
+							<option value="never">Never</option>
+						</select>
 					</div>
+					{#if hasPassword}
+						<div class="field">
+							<label for="token-password">Current password</label>
+							<Textfield
+								id="token-password"
+								name="currentPassword"
+								type="password"
+								autocomplete="current-password"
+								bind:value={currentPassword}
+							/>
+						</div>
+					{/if}
 					{#if shownCreateError}
 						<p role="alert" class="error">{shownCreateError}</p>
 					{/if}

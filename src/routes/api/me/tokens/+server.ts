@@ -34,6 +34,9 @@ export const POST = endpoint(
 	{ body: tokenCreateSchema, response: createdTokenSchema },
 	async ({ actor, body, event }) => {
 		tokenManager(event.request);
-		return { status: 201, body: await createToken(actor, body) };
+		return {
+			status: 201,
+			body: await createToken(actor, body, event.getClientAddress()),
+		};
 	},
 );

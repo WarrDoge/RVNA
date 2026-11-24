@@ -179,6 +179,7 @@
 						<TokensSection
 							tokens={data.tokens}
 							create={data.create}
+							hasPassword={data.me.hasPassword}
 							{form}
 						/>
 					{/key}

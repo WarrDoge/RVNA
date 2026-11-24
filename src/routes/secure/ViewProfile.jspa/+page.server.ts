@@ -127,7 +127,13 @@ export const actions = {
 			const rawDays = String(form.get("expiresInDays") ?? "").trim();
 			const parsed = tokenCreateSchema.safeParse({
 				name: form.get("name"),
-				expiresInDays: rawDays === "" ? undefined : Number(rawDays),
+				expiresInDays:
+					rawDays === ""
+						? undefined
+						: rawDays === "never"
+							? null
+							: Number(rawDays),
+				currentPassword: String(form.get("currentPassword") ?? ""),
 			});
 			if (!parsed.success) {
 				return fail(400, {
@@ -137,7 +143,11 @@ export const actions = {
 			}
 			return {
 				intent: "createToken",
-				created: await createApiToken(actor, parsed.data),
+				created: await createApiToken(
+					actor,
+					parsed.data,
+					event.getClientAddress(),
+				),
 			};
 		}
 

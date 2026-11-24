@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, test } from "vitest";
-import { type CurrentUser, sha256 } from "../src/lib/server/auth.ts";
+import {
+	type CurrentUser,
+	createSession,
+	sha256,
+} from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
+import { hashPassword } from "../src/lib/server/passwords.ts";
 import { apiTokens, users } from "../src/lib/server/schema.ts";
 import { auditLog } from "../src/lib/server/schema-admin.ts";
 import { createToken as createTokenDirect } from "../src/lib/server/tokens/service.ts";
@@ -37,11 +42,18 @@ afterAll(async () => {
 	await pool.end();
 });
 
-function createToken(payload: { name: string; expiresInDays?: number }) {
+function createToken(
+	payload: {
+		name: string;
+		expiresInDays?: number | null;
+		currentPassword?: string;
+	},
+	sid = sessionId,
+) {
 	return app.inject({
 		method: "POST",
 		url: "/api/me/tokens",
-		cookies: { sid: sessionId },
+		cookies: { sid },
 		headers: { "x-requested-with": "rvna" },
 		payload,
 	});
@@ -297,7 +309,7 @@ async function tokenActor(): Promise<CurrentUser> {
 		groups: [],
 		isAdmin: false,
 		mustChangePassword: false,
-		hasPassword: true,
+		hasPassword: false,
 	};
 }
 
@@ -315,10 +327,11 @@ function failAuditInsert() {
 
 test("a token asked to expire in zero days does not become permanent", async () => {
 	const actor = await tokenActor();
-	const created = await createTokenDirect(actor, {
-		name: "Zero days",
-		expiresInDays: 0,
-	});
+	const created = await createTokenDirect(
+		actor,
+		{ name: "Zero days", expiresInDays: 0 },
+		"127.0.0.1",
+	);
 	try {
 		expect(created.expiresAt).not.toBeNull();
 		expect(Date.parse(created.expiresAt as string)).toBeLessThanOrEqual(
@@ -353,7 +366,7 @@ test("a failed audit write does not leave an orphaned token", async () => {
 		})) as typeof db.transaction);
 	try {
 		await expect(
-			createTokenDirect(actor, { name: "Orphan check" }),
+			createTokenDirect(actor, { name: "Orphan check" }, "127.0.0.1"),
 		).rejects.toThrow("audit unavailable");
 	} finally {
 		undoTransaction();
@@ -372,4 +385,86 @@ test("a failed audit write does not leave an orphaned token", async () => {
 			and(eq(apiTokens.userId, actor.id), eq(apiTokens.name, "Orphan check")),
 		);
 	expect(orphaned).toEqual([]);
+});
+
+const day = 24 * 60 * 60 * 1000;
+
+test("a token without an expiry in the request expires in 90 days, and null means never", async () => {
+	const dayAfter = (value: string) => (Date.parse(value) - Date.now()) / day;
+
+	const byDefault = (await createToken({ name: "Default expiry" })).json();
+	expect(dayAfter(byDefault.expiresAt)).toBeGreaterThan(89.9);
+	expect(dayAfter(byDefault.expiresAt)).toBeLessThanOrEqual(90);
+
+	const named = (
+		await createToken({ name: "Thirty days", expiresInDays: 30 })
+	).json();
+	expect(dayAfter(named.expiresAt)).toBeGreaterThan(29.9);
+	expect(dayAfter(named.expiresAt)).toBeLessThanOrEqual(30);
+
+	const never = await createToken({ name: "No expiry", expiresInDays: null });
+	expect(never.statusCode).toBe(201);
+	expect(never.json().expiresAt).toBeNull();
+});
+
+test("an account with a local password must send it to create a token", async () => {
+	const name = username("withpw");
+	const [row] = await db
+		.insert(users)
+		.values({
+			username: name,
+			displayName: "Password Holder",
+			passwordHash: await hashPassword("first long passphrase"),
+		})
+		.returning({ id: users.id });
+	const sid = await createSession(row.id, null);
+	const tokensOf = () =>
+		db.select().from(apiTokens).where(eq(apiTokens.userId, row.id));
+
+	const missing = await createToken({ name: "No password" }, sid);
+	expect(missing.statusCode).toBe(400);
+	const wrong = await createToken(
+		{ name: "Wrong password", currentPassword: "not the password" },
+		sid,
+	);
+	expect(wrong.statusCode).toBe(400);
+	expect(wrong.json()).toEqual({ error: "The current password is incorrect" });
+	expect(await tokensOf()).toEqual([]);
+
+	const right = await createToken(
+		{ name: "Right password", currentPassword: "first long passphrase" },
+		sid,
+	);
+	expect(right.statusCode).toBe(201);
+	expect(await tokensOf()).toHaveLength(1);
+	expect(JSON.stringify(right.json())).not.toContain("first long passphrase");
+});
+
+test("a token keeps working after the user signs out", async () => {
+	const other = await login(app, {
+		sub: `sub-${run}-signout`,
+		username: username("signout"),
+		name: "Sign Out",
+		groups: [],
+	});
+	const created = await createToken(
+		{ name: "Script token" },
+		other.sessionId as string,
+	);
+	const { token } = created.json();
+
+	const logout = await app.inject({
+		method: "POST",
+		url: "/auth/logout",
+		cookies: { sid: other.sessionId as string },
+		headers: { "x-requested-with": "rvna" },
+	});
+	expect(logout.statusCode).toBe(200);
+
+	const me = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		headers: { authorization: `Bearer ${token}` },
+	});
+	expect(me.statusCode).toBe(200);
 });

@@ -87,6 +87,47 @@ test("an invalid token expiry is rejected instead of creating a token that never
 	expect(created).toBeUndefined();
 });
 
+test("the token form asks for the password and honours the expiry choices", async () => {
+	const user = await makePasswordUser("form-token");
+	const create = (fields: Record<string, string>) =>
+		formPost(user.session, "/secure/ViewProfile.jspa?selectedTab=tokens", {
+			intent: "createToken",
+			name: `Form token ${randomUUID()}`,
+			...fields,
+		});
+	const tokens = () =>
+		db.select().from(apiTokens).where(eq(apiTokens.userId, user.id));
+
+	const noPassword = await create({ expiresInDays: "30" });
+	expect(noPassword.statusCode).toBe(400);
+	const wrong = await create({
+		expiresInDays: "30",
+		currentPassword: "not the password",
+	});
+	expect(wrong.statusCode).toBe(400);
+	expect(await tokens()).toEqual([]);
+
+	const password = "first long passphrase";
+	expect((await create({ currentPassword: password })).statusCode).toBe(200);
+	expect(
+		(await create({ expiresInDays: "365", currentPassword: password }))
+			.statusCode,
+	).toBe(200);
+	expect(
+		(await create({ expiresInDays: "never", currentPassword: password }))
+			.statusCode,
+	).toBe(200);
+
+	const days = (await tokens())
+		.map((token) =>
+			token.expiresAt
+				? Math.round((token.expiresAt.getTime() - Date.now()) / 86_400_000)
+				: null,
+		)
+		.sort((a, b) => (a ?? Infinity) - (b ?? Infinity));
+	expect(days).toEqual([90, 365, null]);
+});
+
 test("a forced password change allows only the password action", async () => {
 	const user = await makePasswordUser("must-token", true);
 	const [token] = await db
