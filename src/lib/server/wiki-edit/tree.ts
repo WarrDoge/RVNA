@@ -39,6 +39,7 @@ import {
 	setPositions,
 	siblingIds,
 	titleClash,
+	titleTaken,
 } from "./helpers.ts";
 import { listed } from "./restrictions.ts";
 
@@ -258,12 +259,7 @@ export async function movePage(
 						),
 					)
 					.limit(1);
-				if (clash) {
-					fail(
-						409,
-						`A page titled "${clash.title}" already exists in the target space`,
-					);
-				}
+				if (clash) titleTaken(clash.title);
 			}
 			if (crossSpace) {
 				await tx

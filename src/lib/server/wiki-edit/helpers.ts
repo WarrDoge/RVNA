@@ -14,7 +14,7 @@ import {
 } from "./common.ts";
 
 /** The same answer whether the page that holds the title is one the caller may read or not. */
-const titleTaken = (title: string): never =>
+export const titleTaken = (title: string): never =>
 	fail(
 		409,
 		`The title "${title}" is not available in this space. Choose another title.`,

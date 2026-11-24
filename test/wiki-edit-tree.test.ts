@@ -138,7 +138,7 @@ describe("move", () => {
 		expect(leafRow.parent_id).toBe(mid.id);
 	});
 
-	test("a title clash in the target space is a 409 that names the title", async () => {
+	test("a title clash in the target space is a 409 with the generic title text", async () => {
 		await mk("Clash me", null, target.key);
 		const top = await mk("Clash top");
 		await mk("Clash me", top.id);
@@ -146,7 +146,9 @@ describe("move", () => {
 			spaceKey: target.key,
 		});
 		expect(refused.status).toBe(409);
-		expect(refused.body.error).toContain('"Clash me"');
+		expect(refused.body).toEqual({
+			error: `The title "Clash me" is not available in this space. Choose another title.`,
+		});
 		const [row] = await rows("select space_id from pages where id = $1", [
 			top.id,
 		]);
