@@ -2950,14 +2950,23 @@ describe("review follow-ups", () => {
 		});
 		try {
 			const querySpy = vi.spyOn(Pool.prototype, "query");
+			// Background work of the requests above may still query the pool.
+			const participationQueries = () =>
+				querySpy.mock.calls.filter(([query]) =>
+					/from "(watchers|comments)"/.test(
+						typeof query === "string"
+							? query
+							: (query as { text: string }).text,
+					),
+				).length;
 			const commenter = await isParticipant(customerId, commentedIssue.id);
-			const commenterQueries = querySpy.mock.calls.length;
+			const commenterQueries = participationQueries();
 			querySpy.mockClear();
 			const ids = await participatingIssueIds(customerId);
-			const listQueries = querySpy.mock.calls.length;
+			const listQueries = participationQueries();
 			querySpy.mockClear();
 			const watcher = await isParticipant(customerId, watchedIssue.id);
-			const watcherQueries = querySpy.mock.calls.length;
+			const watcherQueries = participationQueries();
 			querySpy.mockRestore();
 
 			expect(commenter).toBe(true);
