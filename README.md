@@ -568,6 +568,8 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
   this rule when it is saved. JQL that is already stored (a board's or a gadget's) runs against the
   whole catalog, and the viewer's project filter still applies: a viewer who cannot see one project
   a board names still sees the rest.
+- A page offset (`offset`, `startAt`) is at most `MAX_OFFSET` in `src/lib/server/paging.ts`; a larger
+  one is a 400. Use `offsetQuery` in a schema and `offsetParam` in a page load.
 
 SvelteKit's built-in CSRF check stays disabled with `csrf.trustedOrigins: ['*']`. It runs after
 `handle` and cannot distinguish a page action from a token-authenticated multipart upload with no

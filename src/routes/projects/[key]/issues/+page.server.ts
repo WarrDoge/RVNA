@@ -1,4 +1,5 @@
 import { pageLoad } from "#lib/server/http-svelte.ts";
+import { offsetParam } from "#lib/server/paging.ts";
 import { listProjectIssues } from "#lib/server/projects/service.ts";
 import { loadProjectSidebar } from "#lib/server/projects/sidebar.ts";
 import type { PageServerLoad } from "./$types";
@@ -43,8 +44,7 @@ function pageIssues(result: Awaited<ReturnType<typeof listProjectIssues>>) {
 }
 
 export const load = pageLoad(async (event, actor) => {
-	const raw = Number(event.url.searchParams.get("offset") ?? "0");
-	const offset = Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+	const offset = offsetParam(event.url.searchParams.get("offset"));
 
 	const [sidebar, initial] = await Promise.all([
 		loadProjectSidebar(actor, event.params.key),

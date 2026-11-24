@@ -8,10 +8,11 @@ import {
 	navigatorPage,
 	navigatorPageSchema,
 } from "#lib/server/navigator/service.ts";
+import { offsetQuery } from "#lib/server/paging.ts";
 
 const searchQuery = z.object({
 	jql: z.string().min(1).max(100_000),
-	startAt: z.coerce.number().int().min(0).default(0),
+	startAt: offsetQuery,
 	maxResults: z.coerce
 		.number()
 		.int()

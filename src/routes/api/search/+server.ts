@@ -1,6 +1,7 @@
 import type { RequestHandler } from "@sveltejs/kit";
 import { z } from "zod";
 import { endpoint, isHttpError, jsonResponse } from "#lib/server/http.ts";
+import { MAX_OFFSET, offsetQuery } from "#lib/server/paging.ts";
 import {
 	DEFAULT_MAX_RESULTS,
 	MAX_RESULTS_LIMIT,
@@ -39,13 +40,13 @@ const resultSchema = z.object({
 
 const searchBody = z.object({
 	jql: z.string().min(1).max(100_000),
-	startAt: z.number().int().min(0).optional(),
+	startAt: z.number().int().min(0).max(MAX_OFFSET).optional(),
 	maxResults: z.number().int().min(1).max(MAX_RESULTS_LIMIT).optional(),
 });
 
 const searchQuery = z.object({
 	jql: z.string().min(1).max(100_000),
-	startAt: z.coerce.number().int().min(0).default(0),
+	startAt: offsetQuery,
 	maxResults: z.coerce
 		.number()
 		.int()

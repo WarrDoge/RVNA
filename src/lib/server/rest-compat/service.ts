@@ -6,6 +6,7 @@ import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
 import { compileJql } from "../jql/compile.ts";
 import { withStatementTimeout } from "../jql/timeout.ts";
+import { offsetQuery } from "../paging.ts";
 import { viewerProjectIds } from "../permissions.ts";
 
 export const MAX_RESULTS = 100;
@@ -16,7 +17,7 @@ export const issueParams = z.object({
 
 export const searchQuery = z.object({
 	jql: z.string().max(100_000).optional(),
-	startAt: z.coerce.number().int().min(0).default(0),
+	startAt: offsetQuery,
 	maxResults: z.coerce.number().int().min(1).max(MAX_RESULTS).default(50),
 	fields: z.string().max(10_000).optional(),
 });

@@ -4,9 +4,10 @@ import {
 	listNotifications,
 	notificationListSchema,
 } from "#lib/server/notifications.ts";
+import { offsetQuery } from "#lib/server/paging.ts";
 
 const query = z.object({
-	offset: z.coerce.number().int().min(0).default(0),
+	offset: offsetQuery,
 	limit: z.coerce.number().int().min(1).max(50).default(20),
 	tab: z.enum(["all", "direct", "watching"]).default("all"),
 });

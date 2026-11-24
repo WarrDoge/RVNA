@@ -21,6 +21,7 @@ import {
 	navigatorPage,
 	recentIssues,
 } from "#lib/server/navigator/service.ts";
+import { offsetParam } from "#lib/server/paging.ts";
 import { listProjects } from "#lib/server/projects/service.ts";
 import type { Actions, PageServerLoad } from "./$types";
 import {
@@ -29,11 +30,6 @@ import {
 	PAGE_SIZE,
 	recentJql,
 } from "./navigator.ts";
-
-function startAtOf(value: string | null) {
-	if (value === null || !/^\d+$/.test(value)) return 0;
-	return Number(value);
-}
 
 function columnsOf(value: string | null) {
 	return (value ?? "").split(",").filter((column) => column !== "");
@@ -93,7 +89,7 @@ export const load = pageLoad(async (event, actor) => {
 				(await recentIssues(actor, 50)).issues.map((issue) => issue.key),
 			)
 		: params.get("jql") || params.get("jqlQuery") || filter?.jql || DEFAULT_JQL;
-	const startAt = startAtOf(params.get("startAt"));
+	const startAt = offsetParam(params.get("startAt"));
 	let page: Awaited<ReturnType<typeof navigatorPage>>;
 	let searchError: string | null = null;
 	try {

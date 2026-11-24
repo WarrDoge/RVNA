@@ -11,6 +11,7 @@ import {
 } from "../avatars.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
+import { offsetQuery } from "../paging.ts";
 import { can, projectPermissions, visibleProjectIds } from "../permissions.ts";
 import { ARCHIVED_PROJECT_MESSAGE } from "../project-keys.ts";
 import {
@@ -73,7 +74,7 @@ export const updateVersionBody = z.object({
 });
 
 export const projectIssuesQuery = z.object({
-	offset: z.coerce.number().int().min(0).default(0),
+	offset: offsetQuery,
 	limit: z.coerce.number().int().min(1).max(1000).default(50),
 });
 

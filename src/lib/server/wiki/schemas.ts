@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { userRefSchema } from "../api-schemas.ts";
+import { offsetQuery } from "../paging.ts";
 
 export const pageParams = z.object({ id: z.string().min(1) });
 export const spaceParams = z.object({ key: z.string().min(1) });
@@ -300,7 +301,7 @@ export const searchQuery = z.object({
 	contributor: z.string().trim().max(200).optional(),
 	from: dateValue,
 	to: dateValue,
-	offset: z.coerce.number().int().min(0).default(0),
+	offset: offsetQuery,
 	limit: z.coerce.number().int().min(1).max(100).default(25),
 });
 

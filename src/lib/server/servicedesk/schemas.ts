@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { offsetQuery } from "../paging.ts";
 
 export const portalParams = z.object({ id: z.uuid() });
 export const requestParams = z.object({
@@ -186,7 +187,7 @@ export const cellSchema = z.object({
 });
 
 export const queueQuerySchema = z.object({
-	startAt: z.coerce.number().int().min(0).default(0),
+	startAt: offsetQuery,
 	maxResults: z.coerce.number().int().min(1).max(100).default(50),
 });
 

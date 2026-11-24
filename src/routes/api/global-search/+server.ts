@@ -5,10 +5,11 @@ import {
 	globalSearchResponseSchema,
 } from "#lib/server/global-search.ts";
 import { endpoint } from "#lib/server/http.ts";
+import { offsetQuery } from "#lib/server/paging.ts";
 
 const query = z.object({
 	q: z.string().trim().max(200).default(""),
-	startAt: z.coerce.number().int().min(0).default(0),
+	startAt: offsetQuery,
 	maxResults: z.coerce.number().int().min(1).max(50).default(25),
 });
 

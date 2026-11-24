@@ -5,6 +5,7 @@ import { userAvatarSql } from "../avatars.ts";
 import { db } from "../db.ts";
 import { env } from "../env.ts";
 import { HttpError } from "../http.ts";
+import { offsetQuery } from "../paging.ts";
 import {
 	generatePassword,
 	hashPassword,
@@ -61,7 +62,7 @@ export const userListQuery = z.object({
 	active: z.enum(["all", "true", "false"]).default("all"),
 	group: z.string().trim().max(255).optional(),
 	username: z.string().trim().max(100).optional(),
-	offset: z.coerce.number().int().min(0).default(0),
+	offset: offsetQuery,
 	limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 

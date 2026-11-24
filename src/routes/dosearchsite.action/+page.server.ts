@@ -1,5 +1,6 @@
 import { endOfDay, startOfDay } from "#lib/dates.ts";
 import { pageLoad } from "#lib/server/http-svelte.ts";
+import { offsetParam } from "#lib/server/paging.ts";
 import { listSpaces, searchPages } from "#lib/server/wiki/service.ts";
 import type { PageServerLoad } from "./$types";
 
@@ -14,8 +15,7 @@ export const load = pageLoad(async (event, actor) => {
 	const contributor = event.url.searchParams.get("contributor") ?? "";
 	const from = event.url.searchParams.get("from") ?? "";
 	const to = event.url.searchParams.get("to") ?? "";
-	const rawOffset = Number(event.url.searchParams.get("offset") ?? "0");
-	const offset = Number.isInteger(rawOffset) && rawOffset >= 0 ? rawOffset : 0;
+	const offset = offsetParam(event.url.searchParams.get("offset"));
 	const limit = 25;
 
 	const [results, spaces] = await Promise.all([

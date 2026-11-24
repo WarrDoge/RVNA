@@ -17,6 +17,7 @@ import type { CurrentUser } from "../auth.ts";
 import { db, pool } from "../db.ts";
 import { env } from "../env.ts";
 import { HttpError } from "../http.ts";
+import { offsetQuery } from "../paging.ts";
 import { requireAdminActor } from "../permissions.ts";
 import { dateContext } from "../request-context.ts";
 import { issueTypes, priorities } from "../schema.ts";
@@ -65,7 +66,7 @@ export const auditFilterSchema = z.object(auditFilterShape);
 
 export const auditListQuery = z.object({
 	...auditFilterShape,
-	offset: z.coerce.number().int().min(0).default(0),
+	offset: offsetQuery,
 	limit: z.coerce.number().int().min(1).default(50),
 });
 
