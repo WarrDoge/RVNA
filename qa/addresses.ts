@@ -35,12 +35,14 @@ export type ResolvedAddresses = {
 
 type Row = QueryResultRow & Record<string, unknown>;
 
-function databaseUrl() {
-	return (
-		process.env.QA_DATABASE_URL ??
-		process.env.DATABASE_URL ??
-		"postgres://rvna:rvna@127.0.0.1:55440/rvna_qa_new"
-	);
+export function databaseUrl() {
+	const url = process.env.QA_DATABASE_URL ?? process.env.DATABASE_URL;
+	if (!url) {
+		throw new Error(
+			"set QA_DATABASE_URL (or DATABASE_URL) to the database of the instance under test",
+		);
+	}
+	return url;
 }
 
 function databaseName(connectionString: string) {

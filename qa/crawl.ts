@@ -12,6 +12,7 @@ import {
 } from "@playwright/test";
 import pg from "pg";
 import {
+	databaseUrl,
 	type ResolvedAddresses,
 	resolveAddresses,
 	type Screen,
@@ -3269,11 +3270,7 @@ async function main() {
 	}
 	if (screens.length === 0) throw new Error("no screens selected");
 	const loadOnly = options.viewport.width < VIEWPORT.width;
-	const databaseUrl =
-		process.env.QA_DATABASE_URL ??
-		process.env.DATABASE_URL ??
-		"postgres://rvna:rvna@127.0.0.1:55440/rvna_crawl";
-	const tokens = await loadDataTokens(databaseUrl);
+	const tokens = await loadDataTokens(databaseUrl());
 	const sanitizer = new Sanitizer(tokens);
 	const password = process.env.QA_USER_PASSWORD ?? null;
 	if (options.user && !password) {

@@ -1643,7 +1643,8 @@ slow first starts (30 attempts 10s apart, 600s rollout deadline by default).
 
 The scripts in `qa/` drive a running app with Playwright. They are not part of `npm test`. They
 write to `qa/out/`, which Git ignores. `qa/addresses.ts` lists the screens (106 of them) and
-resolves their addresses against the database.
+resolves their addresses against the database of the instance under test. Both tools read its
+connection string from `QA_DATABASE_URL` or `DATABASE_URL` and stop with a message when neither is set.
 
 `qa/compare.ts` opens the screens of two instances (`QA_OLD_URL`, `QA_NEW_URL`) and
 compares them. `--only`, `--user` and `--label` select screens, account and output name; an
