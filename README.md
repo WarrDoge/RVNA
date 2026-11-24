@@ -561,7 +561,9 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
 
 SvelteKit's built-in CSRF check stays disabled with `csrf.trustedOrigins: ['*']`. It runs after
 `handle` and cannot distinguish a page action from a token-authenticated multipart upload with no
-`Origin`; the `handle` rule above is the exact replacement.
+`Origin`; the `handle` rule above is the exact replacement. The built-in check also skips JSON posts,
+which the `handle` rule covers. `test/csrf-guard.test.ts` pins the rule for form, multipart, plain text
+and JSON bodies, for a foreign `Origin`, `Origin: null` and no `Origin`.
 
 ### Unknown and old addresses
 
