@@ -1101,13 +1101,20 @@ describe("comments", () => {
 		).toBe(204);
 	});
 
-	test("an administrator can delete any comment", async () => {
+	test("an administrator can delete any comment, and the deletion is in the audit log", async () => {
 		const removed = await send(
 			"DELETE",
 			`/api/wiki/comments/${rootComment}`,
 			admin,
 		);
 		expect(removed.statusCode).toBe(204);
+		const { rows } = await pool.query<{ actor_name: string; summary: string }>(
+			"select actor_name, summary from audit_log where action = 'wiki.comment.delete' and entity_id = $1",
+			[rootComment],
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.actor_name).toBe(`Admin ${run}`);
+		expect(rows[0]?.summary).toContain(duplicateInOpenSpace.title);
 	});
 });
 
@@ -1311,6 +1318,12 @@ describe("attachments", () => {
 			admin,
 		);
 		expect(response.statusCode).toBe(204);
+		const { rows: audited } = await pool.query<{ summary: string }>(
+			"select summary from audit_log where action = 'wiki.attachment.delete' and entity_id = $1",
+			[attachmentId],
+		);
+		expect(audited).toHaveLength(1);
+		expect(audited[0]?.summary).toContain("notes.txt");
 		const remaining = await get(
 			`/download/attachments/${home.sourceId}/notes.txt`,
 			alice,

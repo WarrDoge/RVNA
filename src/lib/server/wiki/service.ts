@@ -3,6 +3,7 @@ import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import { audit } from "../admin/audit.ts";
 import {
 	attachmentUploadLimits,
 	contentDisposition,
@@ -720,14 +721,22 @@ export async function updateComment(
 }
 
 export async function deleteComment(actor: CurrentUser, id: string) {
-	const { comment } = await manageableComment(actor, id);
+	const { comment, page, space } = await manageableComment(actor, id);
 	if (!canManageComment(actor, comment)) {
 		throw new HttpError(
 			403,
 			"Only the author or an administrator can delete this",
 		);
 	}
-	await db.delete(pageComments).where(eq(pageComments.id, comment.id));
+	await db.transaction(async (tx) => {
+		await audit(tx, actor, {
+			action: "wiki.comment.delete",
+			entityType: "page_comment",
+			entityId: comment.id,
+			summary: `Deleted a comment on page "${page.title}" in space ${space.key}`,
+		});
+		await tx.delete(pageComments).where(eq(pageComments.id, comment.id));
+	});
 }
 
 export async function resolveComment(
@@ -876,7 +885,15 @@ export async function deleteAttachment(actor: CurrentUser, id: string) {
 			"Only the author or an administrator can delete this",
 		);
 	}
-	await db.delete(pageAttachments).where(eq(pageAttachments.id, row.id));
+	await db.transaction(async (tx) => {
+		await audit(tx, actor, {
+			action: "wiki.attachment.delete",
+			entityType: "page_attachment",
+			entityId: row.id,
+			summary: `Deleted version ${row.version} of attachment "${row.fileName}" from page "${loaded.page.title}" in space ${loaded.space.key}`,
+		});
+		await tx.delete(pageAttachments).where(eq(pageAttachments.id, row.id));
+	});
 	await removeOrphanFiles([row.storagePath]);
 }
 
