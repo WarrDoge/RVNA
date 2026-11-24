@@ -450,10 +450,14 @@ async function syncFilterShares(
 		projectRows.map((row) => [row.key.toLowerCase(), row.id]),
 	);
 	const groupRows = await tx
-		.select({ id: groups.id, name: groups.name })
+		.select({ id: groups.id, name: groups.name, local: groups.local })
 		.from(groups);
 	const groupIdByName = new Map(
 		groupRows.map((row) => [row.name.toLowerCase(), row.id]),
+	);
+	// An administrator owns a local group; a Jira share must not bind to it.
+	const localGroupNames = new Set(
+		groupRows.filter((row) => row.local).map((row) => row.name.toLowerCase()),
 	);
 
 	const desired = new Map<
@@ -475,6 +479,12 @@ async function syncFilterShares(
 			}
 		}
 		for (const name of shares.groupNames) {
+			if (localGroupNames.has(name.toLowerCase())) {
+				console.warn(
+					`filter share skipped: filter ${filter.id} is shared with the Jira group ${name}, which is a local group`,
+				);
+				continue;
+			}
 			let groupId = groupIdByName.get(name.toLowerCase());
 			if (!groupId) {
 				const [created] = await tx

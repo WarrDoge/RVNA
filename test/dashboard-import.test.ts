@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "vitest";
+import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import {
 	type DashboardDataset,
 	fetchDashboardDataset,
@@ -682,6 +682,48 @@ describe("shares of imported filters and dashboards", () => {
 		const again = await importDashboardDataset(dataset(jiraShares));
 		expect(again.dashboards).toEqual({ inserted: 0, updated: 0, unchanged: 1 });
 		expect(await dashboardsOf(outsider)).toEqual([`Share dashboard ${run}`]);
+	});
+
+	test("a share naming a Jira group never binds to a local group of the same name", async () => {
+		const localName = `t-${run}-Local-Team`;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const [local] = (
+			await pool.query<{ id: string }>(
+				"insert into groups (name, local) values ($1, true) returning id",
+				[localName],
+			)
+		).rows;
+		const filterId = `share-filter-local-${run}`;
+		try {
+			const input = dataset(jiraShares);
+			const result = await importDashboardDataset({
+				...input,
+				filters: [
+					{
+						id: filterId,
+						name: `Share local ${run}`,
+						jql: `project = ${projectKey}`,
+						owner: { name: owner },
+						sharePermissions: [
+							{ type: "group", group: { name: localName.toLowerCase() } },
+						],
+					},
+				],
+			});
+
+			expect(result.filter_shares?.inserted ?? 0).toBe(0);
+			const shares = await pool.query(
+				"select 1 from filter_shares s join filters f on f.id = s.filter_id where f.source_id = $1",
+				[filterId],
+			);
+			expect(shares.rowCount).toBe(0);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("which is a local group"),
+			);
+		} finally {
+			warn.mockRestore();
+			await pool.query("delete from groups where id = $1", [local?.id]);
+		}
 	});
 });
 
