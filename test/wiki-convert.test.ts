@@ -481,6 +481,23 @@ describe("storageToDoc", () => {
 		expect(JSON.stringify(result)).toContain("y");
 	});
 
+	test("survives elements nested tens of thousands deep", () => {
+		for (const [open, close] of [
+			["<div>", "</div>"],
+			["<ul><li>", "</li></ul>"],
+			[
+				'<ac:structured-macro ac:name="expand"><ac:rich-text-body>',
+				"</ac:rich-text-body></ac:structured-macro>",
+			],
+		]) {
+			const result = storageToDoc(
+				`${open.repeat(50_000)}deep${close.repeat(50_000)}`,
+			);
+			expect(validateDoc(result)).toBeNull();
+			expect(JSON.stringify(result)).toContain("deep");
+		}
+	});
+
 	test("survives malformed input", () => {
 		for (const broken of [
 			"<p>unclosed",

@@ -93,6 +93,9 @@ function parseAttributes(source: string): Record<string, string> {
 	return attrs;
 }
 
+/** Elements nested deeper than this stay as siblings, so the tree is shallow enough for every recursive walk. */
+const maxNesting = 50;
+
 /** Tolerant parser for Confluence storage format (XHTML with ac:/ri: elements). Linear time. */
 export function parseXml(source: string): XNode[] {
 	const root: XElement = { tag: "#root", attrs: {}, children: [] };
@@ -184,7 +187,9 @@ export function parseXml(source: string): XNode[] {
 			children: [],
 		};
 		top().children.push(element);
-		if (!selfClosing && !voidTags.has(tag)) stack.push(element);
+		if (!selfClosing && !voidTags.has(tag) && stack.length <= maxNesting) {
+			stack.push(element);
+		}
 		index = end + 1;
 	}
 	return root.children;
