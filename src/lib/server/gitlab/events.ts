@@ -65,6 +65,8 @@ const pushPayload = z
 		ref: z.string(),
 		project_id: z.number().int().nullish(),
 		checkout_sha: z.string().nullish(),
+		user_username: z.string().nullish(),
+		user_email: z.string().nullish(),
 		project,
 		commits: z.array(commit).default([]),
 	})
@@ -226,7 +228,7 @@ async function handlePush(
 			deliveryId: context.deliveryId,
 			repositoryId: repository.id,
 			message,
-			authorEmail: value.author?.email ?? null,
+			pusher: { email: payload.user_email, username: payload.user_username },
 			committedAt: date(value.timestamp),
 			projectKeys: context.projectKeys,
 			issues: pending,
@@ -344,7 +346,7 @@ async function handleMergeRequest(
 	);
 	await linkMergeRequest(row.id, linked);
 
-	const actorEmail = payload.user?.email ?? authorEmail;
+	const actor = payload.user ?? attributes.author ?? null;
 	const state = normalizeMergeRequestState(attributes.state);
 	if (attributes.action === "open") {
 		await applyMergeRequestTrigger({
@@ -352,7 +354,7 @@ async function handleMergeRequest(
 			repositoryId: repository.id,
 			mergeRequestId: row.id,
 			kind: "merge_request_opened",
-			actorEmail,
+			actor,
 			issues: linked,
 		});
 	}
@@ -365,7 +367,7 @@ async function handleMergeRequest(
 			repositoryId: repository.id,
 			mergeRequestId: row.id,
 			kind: "merge_request_merged",
-			actorEmail,
+			actor,
 			issues: linked,
 		});
 	}

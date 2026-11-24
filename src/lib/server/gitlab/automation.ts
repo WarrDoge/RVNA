@@ -71,21 +71,41 @@ function stringList(value: unknown): string[] {
 		: [];
 }
 
-export async function userByEmail(
-	email: string | null | undefined,
+/** The account GitLab names as the one that pushed or acted, never a commit author. */
+export interface GitlabAccount {
+	email?: string | null;
+	username?: string | null;
+}
+
+async function onlyActiveUser(
+	column: typeof users.email | typeof users.username,
+	value: string | null | undefined,
 ): Promise<CurrentUser | null> {
-	if (!email) return null;
-	const [row] = await db
+	const wanted = value?.trim();
+	if (!wanted) return null;
+	const rows = await db
 		.select({ id: users.id })
 		.from(users)
 		.where(
-			and(
-				eq(users.active, true),
-				sql`lower(${users.email}) = lower(${email.trim()})`,
-			),
+			and(eq(users.active, true), sql`lower(${column}) = lower(${wanted})`),
 		)
-		.limit(1);
-	return row ? loadUser(row.id) : null;
+		.limit(2);
+	return rows.length === 1 ? loadUser(rows[0].id) : null;
+}
+
+/** The one active user a GitLab account stands for: its email first, then its user name. */
+export async function userForGitlabAccount(
+	account: GitlabAccount | null,
+): Promise<CurrentUser | null> {
+	if (!account) return null;
+	return (
+		(await onlyActiveUser(users.email, account.email)) ??
+		(await onlyActiveUser(users.username, account.username))
+	);
+}
+
+function accountLabel(account: GitlabAccount | null) {
+	return account?.username || account?.email || "(none)";
 }
 
 type AutomationPermission =
@@ -435,7 +455,7 @@ export async function applySmartCommits(input: {
 	deliveryId: string;
 	repositoryId: string;
 	message: string;
-	authorEmail: string | null;
+	pusher: GitlabAccount | null;
 	committedAt: Date | null;
 	projectKeys: string[];
 	issues: IssueRef[];
@@ -457,7 +477,7 @@ export async function applySmartCommits(input: {
 	if (enabled.length === 0) return;
 
 	const [author, linkedProjects] = await Promise.all([
-		userByEmail(input.authorEmail),
+		userForGitlabAccount(input.pusher),
 		linkedProjectIds(input.repositoryId),
 	]);
 	const commandNames = new Set<string>();
@@ -492,7 +512,7 @@ export async function applySmartCommits(input: {
 						issueId: issue.id,
 						kind,
 						status: "ignored",
-						reason: `author email ${input.authorEmail ?? "(none)"} matches no active user`,
+						reason: `GitLab account ${accountLabel(input.pusher)} matches no active user`,
 					});
 					continue;
 				}
@@ -549,7 +569,7 @@ export async function applyMergeRequestTrigger(input: {
 	repositoryId: string;
 	mergeRequestId: string;
 	kind: "merge_request_opened" | "merge_request_merged";
-	actorEmail: string | null;
+	actor: GitlabAccount | null;
 	issues: IssueRef[];
 }) {
 	if (input.issues.length === 0) return;
@@ -568,7 +588,7 @@ export async function applyMergeRequestTrigger(input: {
 	const appliedIssueIds = new Set(applied.map((event) => event.issueId));
 
 	const [actor, linkedProjects] = await Promise.all([
-		userByEmail(input.actorEmail),
+		userForGitlabAccount(input.actor),
 		linkedProjectIds(input.repositoryId),
 	]);
 
@@ -593,7 +613,7 @@ export async function applyMergeRequestTrigger(input: {
 				issueId: issue.id,
 				kind: input.kind,
 				status: "ignored",
-				reason: `author email ${input.actorEmail ?? "(none)"} matches no active user`,
+				reason: `GitLab account ${accountLabel(input.actor)} matches no active user`,
 			});
 			continue;
 		}

@@ -7,6 +7,7 @@ import {
 	issueHistory,
 	issues,
 	statuses,
+	users,
 	worklogs,
 } from "../src/lib/server/schema.ts";
 import { gitlabAutomationEvents } from "../src/lib/server/schema-gitlab.ts";
@@ -214,17 +215,21 @@ describe("smart commits", () => {
 		await cleanupGitlabFixture(fixture);
 	});
 
-	test("records a reason when the author email matches no user", async () => {
+	test("records a reason when the pushing account matches no user", async () => {
 		const before = await issueState(smart.issueId);
 		await deliverDirect(
 			"Push Hook",
-			pushPayload(smart, `${smart.issueKey}-stranger`, [
-				{
-					sha: "f".repeat(40),
-					title: `${smart.issueKey} #comment from a stranger`,
-					email: "stranger@example.test",
-				},
-			]),
+			pushPayload(
+				smart,
+				`${smart.issueKey}-stranger`,
+				[
+					{
+						sha: "f".repeat(40),
+						title: `${smart.issueKey} #comment from a stranger`,
+					},
+				],
+				{ email: "stranger@example.test", username: "stranger" },
+			),
 			`${tag}:stranger`,
 		);
 
@@ -241,6 +246,130 @@ describe("smart commits", () => {
 
 		const after = await issueState(smart.issueId);
 		expect(after?.status).toBe(before?.status);
+	});
+
+	describe("who acts", () => {
+		let fixture: GitlabFixture;
+		let username: string;
+
+		beforeAll(async () => {
+			fixture = await createGitlabFixture(`${tag}m`);
+			const repositoryId = await linkFixtureRepository(fixture);
+			await saveProjectGitlabSettings(
+				fixture.projectId,
+				settingsFor({
+					smartCommitsEnabled: true,
+					linkedRepositoryIds: [repositoryId],
+				}),
+			);
+			username = `gl-${fixture.tag}`;
+		});
+
+		afterAll(async () => {
+			await cleanupGitlabFixture(fixture);
+		});
+
+		function commentsOf() {
+			return db
+				.select()
+				.from(comments)
+				.where(eq(comments.issueId, fixture.issueId));
+		}
+
+		test("a commit that carries another user's email does not act as that user", async () => {
+			await deliverDirect(
+				"Push Hook",
+				pushPayload(
+					fixture,
+					`${fixture.issueKey}-forged`,
+					[
+						{
+							sha: "a".repeat(40),
+							title: `${fixture.issueKey} #comment written as somebody else`,
+							email: fixture.userEmail,
+						},
+					],
+					{ email: "attacker@example.test", username: "attacker" },
+				),
+				`${tag}:forged`,
+			);
+
+			expect(await commentsOf()).toHaveLength(0);
+			const events = await db
+				.select()
+				.from(gitlabAutomationEvents)
+				.where(eq(gitlabAutomationEvents.issueId, fixture.issueId));
+			expect(events).toHaveLength(1);
+			expect(events[0]?.status).toBe("ignored");
+			expect(events[0]?.reason).toContain("GitLab account attacker");
+		});
+
+		test("the pushing account acts, whoever authored the commits", async () => {
+			await deliverDirect(
+				"Push Hook",
+				pushPayload(fixture, `${fixture.issueKey}-pusher`, [
+					{
+						sha: "b".repeat(40),
+						title: `${fixture.issueKey} #comment pushed by the owner`,
+						email: "colleague@example.test",
+					},
+				]),
+				`${tag}:pusher`,
+			);
+
+			const rows = await commentsOf();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.authorId).toBe(fixture.userId);
+		});
+
+		test("the GitLab user name stands in when GitLab hides the email", async () => {
+			await deliverDirect(
+				"Push Hook",
+				pushPayload(
+					fixture,
+					`${fixture.issueKey}-name`,
+					[
+						{
+							sha: "c".repeat(40),
+							title: `${fixture.issueKey} #comment by user name`,
+						},
+					],
+					{ email: "[REDACTED]", username: username.toUpperCase() },
+				),
+				`${tag}:by-name`,
+			);
+
+			const rows = await commentsOf();
+			expect(rows).toHaveLength(2);
+			expect(rows.every((row) => row.authorId === fixture.userId)).toBe(true);
+		});
+
+		test("two users with one email match nobody", async () => {
+			const [twin] = await db
+				.insert(users)
+				.values({
+					username: `${username}-twin`,
+					email: fixture.userEmail,
+					displayName: "Twin",
+					active: true,
+				})
+				.returning();
+			try {
+				await deliverDirect(
+					"Push Hook",
+					pushPayload(fixture, `${fixture.issueKey}-twin`, [
+						{
+							sha: "d".repeat(40),
+							title: `${fixture.issueKey} #comment ambiguous`,
+						},
+					]),
+					`${tag}:twin`,
+				);
+				expect(await commentsOf()).toHaveLength(2);
+			} finally {
+				await db.delete(users).where(eq(users.id, twin.id));
+			}
+		});
 	});
 
 	test("ignores a command when the repository is not linked to the project", async () => {
@@ -544,6 +673,48 @@ describe("merge request triggers", () => {
 		expect(events).toHaveLength(1);
 		expect(events[0]?.status).toBe("ignored");
 		expect(events[0]?.reason).toContain("matches no active user");
+
+		await cleanupGitlabFixture(other);
+	});
+
+	test("acts as the GitLab user of the event, not as the stored author", async () => {
+		const other = await createGitlabFixture(`${tag}n`);
+		const repositoryId = await linkFixtureRepository(other);
+		await saveProjectGitlabSettings(
+			other.projectId,
+			settingsFor({
+				linkedRepositoryIds: [repositoryId],
+				mergeRequestOpenedEnabled: true,
+				mergeRequestOpenedTransitions: ["Start progress"],
+			}),
+		);
+		const forged = mergeRequestPayload(other, {
+			iid: 11,
+			title: `${other.issueKey} feature`,
+			state: "opened",
+			action: "open",
+			sourceBranch: `${other.issueKey}-feature`,
+			email: "attacker@example.test",
+		});
+		forged.object_attributes.author.email = other.userEmail;
+		await deliverDirect("Merge Request Hook", forged, `${tag}:trigger-forged`);
+		expect((await issueState(other.issueId))?.status).toBe(
+			`${other.tag} To Do`,
+		);
+
+		const hidden = mergeRequestPayload(other, {
+			iid: 12,
+			title: `${other.issueKey} other feature`,
+			state: "opened",
+			action: "open",
+			sourceBranch: `${other.issueKey}-other-feature`,
+			email: "[REDACTED]",
+		});
+		hidden.user.username = `gl-${other.tag}`;
+		await deliverDirect("Merge Request Hook", hidden, `${tag}:trigger-named`);
+		expect((await issueState(other.issueId))?.status).toBe(
+			`${other.tag} In Progress`,
+		);
 
 		await cleanupGitlabFixture(other);
 	});

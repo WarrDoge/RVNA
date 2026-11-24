@@ -1492,6 +1492,14 @@ and `Idempotency-Key` (or `X-Gitlab-Event-UUID`); an empty or oversized key fall
 hash. Project settings decide which repositories are linked, which one is the default for "Create
 branch", and whether smart commits and merge request triggers are on.
 
+Commits, branches, merge requests and pipelines are linked to issues whoever wrote them. A smart
+commit or a merge request trigger, which changes an issue, runs as the RVNA user that GitLab
+itself names: the account that pushed (`user_username` and `user_email` of the push event) or acted
+(`user` of the merge request event). RVNA maps that account to the one active user with the same email,
+and otherwise to the user with the same user name. The author name and email inside a commit are
+free text that any pusher can set; they are shown on the issue but never decide who acts. A push by an
+account that matches no user, or two users, is skipped and the reason is recorded.
+
 ```sh
 npm run gitlab:backfill -- --project group/project [--days 90]
 ```

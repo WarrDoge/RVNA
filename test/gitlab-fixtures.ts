@@ -227,11 +227,15 @@ export function pushPayload(
 		email?: string | null;
 		timestamp?: string;
 	}[],
+	/** The GitLab account that pushed; the commit authors only carry display names. */
+	pusher: { email?: string | null; username?: string | null } = {},
 ) {
 	return {
 		object_kind: "push",
 		ref: `refs/heads/${branch}`,
 		checkout_sha: commits.at(-1)?.sha ?? null,
+		user_username: pusher.username === undefined ? null : pusher.username,
+		user_email: pusher.email === undefined ? fixture.userEmail : pusher.email,
 		project: projectPayload(fixture),
 		commits: commits.map((commit) => ({
 			id: commit.sha,
