@@ -1035,6 +1035,9 @@ A permission or restriction that changed since the first check stops the write.
 5. An inline comment is resolved or reopened by its author, by a user who may edit the page and by
    an administrator. Anyone who can read the page may write a comment.
 6. Deleting a comment or an attachment writes an `audit_log` row.
+7. A page restriction names only active users and the caller's own groups, plus what the page
+   already names. Space administrators may name any existing user and group. A refusal is one 400
+   text, so it does not tell whether a user or group exists.
 
 ### Traps found
 
