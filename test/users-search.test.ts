@@ -45,7 +45,7 @@ afterAll(async () => {
 
 test("equal display names are ordered by username and capped at 20", async () => {
 	const me = await makeUser(run, "search-actor");
-	const result = await searchUsers(actor(me.id, me.username, false), tag);
+	const result = await searchUsers(actor(me.id, me.username, true), tag);
 	expect(result.map((entry) => entry.username)).toEqual(
 		[...names].sort().slice(0, 20),
 	);
@@ -53,7 +53,11 @@ test("equal display names are ordered by username and capped at 20", async () =>
 
 test("a non-admin result has no email field", async () => {
 	const me = await makeUser(run, "search-nonadmin");
-	const [entry] = await searchUsers(actor(me.id, me.username, false), tag);
+	const [entry] = await searchUsers(
+		actor(me.id, me.username, false),
+		me.username,
+	);
+	expect(entry?.username).toBe(me.username);
 	expect(entry).not.toHaveProperty("email");
 });
 

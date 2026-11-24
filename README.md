@@ -853,7 +853,11 @@ Rules for a page task that embeds the editor:
    `load` or at module scope.
 4. `readOnly` and `disabled` make the content non-editable. Pass `uploadImage` only when the page has
    an upload endpoint; the image button appears only then.
-5. Mentions need no wiring: the component calls `/api/users?query=` through `api()`.
+5. Mentions need no wiring: the component calls `/api/users?query=` through `api()`. That endpoint
+   lists only the people the caller may see: everyone who can browse a project the caller can browse
+   (`visibleUsernames`), everyone a user or group read grant names on a wiki space the caller reads the
+   same way (an anonymous grant counts for nobody), and the caller.
+   Administrators see all active accounts, with their email address.
 6. Wiki pages build the editor from `schemaExtensions({ macro: MacroNode, inlineMacro:
    InlineMacroNode })` (`wiki/extensions.ts`, `wiki/MacroNodes.ts`) and import `wiki/macro.css`. Wiki
    content is a JSON `WikiDoc`, not HTML.
