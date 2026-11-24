@@ -286,14 +286,12 @@ export async function importServiceDesk(
 	mergeCounts(counts, "service_desks", deskResult.counts);
 	const deskId = deskResult.ids.get(data.desk.id);
 	if (!deskId) throw new Error(`Service desk ${data.desk.id} was not imported`);
-	// Access is locally owned after the first import; Jira's value only seeds a new desk.
-	if (
-		deskResult.counts.inserted === 1 &&
-		typeof data.openAccess === "boolean"
-	) {
+	// Access is locally owned after the first import; Jira's value only seeds a new desk,
+	// and a value Jira did not give seeds it closed.
+	if (deskResult.counts.inserted === 1) {
 		await tx
 			.update(serviceDesks)
-			.set({ openAccess: data.openAccess })
+			.set({ openAccess: data.openAccess === true })
 			.where(eq(serviceDesks.id, deskId));
 	}
 	context.serviceDeskMaps.deskIds.set(context.projectId, deskId);

@@ -700,7 +700,7 @@ describe("service desk import", () => {
 		]);
 	});
 
-	test("a missing open access value leaves the schema default", async () => {
+	test("a missing open access value seeds the desk closed", async () => {
 		await pool.query("delete from projects where key = $1", [
 			serviceDeskProjectKey,
 		]);
@@ -717,7 +717,7 @@ describe("service desk import", () => {
 		const access = await pool.query(
 			"select open_access from service_desks where source_id = '9100'",
 		);
-		expect(access.rows[0].open_access).toBe(true);
+		expect(access.rows[0].open_access).toBe(false);
 	});
 });
 

@@ -36,6 +36,7 @@ import {
 	workflowTransitions,
 } from "../src/lib/server/schema.ts";
 import {
+	canRaiseRequests,
 	canViewRequest,
 	deskByProjectId,
 	deskByProjectKey,
@@ -2517,6 +2518,20 @@ describe("portal access when the desk is closed", () => {
 		).toBe(404);
 		expect((await createRequest(outsiderSession)).statusCode).toBe(404);
 		expect((await createRequest(customerSession)).statusCode).toBe(201);
+	});
+
+	test("a desk whose open access is unknown is closed", async () => {
+		const outsider = await userFor(outsiderSession);
+		const desk = await deskByProjectId(projectId);
+		if (!desk) throw new Error("fixture desk missing");
+		for (const openAccess of [null, undefined]) {
+			expect(
+				await canRaiseRequests(outsider, { ...desk, openAccess } as never),
+			).toBe(false);
+		}
+		expect(
+			await canRaiseRequests(outsider, { ...desk, openAccess: true }),
+		).toBe(true);
 	});
 
 	test("a user who may not use the portal gets a 404 from its pages", async () => {

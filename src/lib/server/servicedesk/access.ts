@@ -99,7 +99,7 @@ export async function canRaiseRequests(
 	user: ViewerLike,
 	desk: Desk,
 ): Promise<boolean> {
-	if (desk.openAccess) return true;
+	if (desk.openAccess === true) return true;
 	if (await isAgent(user, desk)) return true;
 	const viewer = asPermissionUser(user);
 	const project = {

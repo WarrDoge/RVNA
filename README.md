@@ -1339,7 +1339,9 @@ Service desk projects are imported too: the desk and portal text, request type g
 types and their customer fields, queues with Jira's reported issue counts, SLA metrics, goals and
 calendars, and automation rules. For every request the importer also reads the SLA cycles Jira
 reports and the request channel. The service desk settings, SLA metrics, calendars and automation
-rules need `--private-apis`; the rest imports without it.
+rules need `--private-apis`; the rest imports without it. A new desk takes Jira's "open access"
+setting; when Jira does not report it, the desk starts closed, and an administrator opens it in the
+project settings.
 
 Built-in issue type and priority icons are Atlassian artwork and are never copied: RVNA draws its
 own icon from the type or priority name. A custom icon uploaded by an administrator is imported.
