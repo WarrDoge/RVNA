@@ -3,6 +3,7 @@ import type { JiraClient } from "../src/importer/jira.ts";
 import {
 	fetchRequestSla,
 	fetchServiceDesks,
+	fetchSlaCalendars,
 } from "../src/importer/servicedesk.ts";
 import type { JiraRequestSla } from "../src/importer/types.ts";
 
@@ -170,4 +171,22 @@ test("a forbidden SLA metrics call does not abort the desk import", async () => 
 	expect(desks).toHaveLength(1);
 	expect(desks[0]?.metrics).toEqual([]);
 	expect(desks[0]?.openAccess).toBe(true);
+});
+
+test("a calendar id is encoded into the request path", async () => {
+	const paths: string[] = [];
+	const client = {
+		getJson: async (path: string) => {
+			paths.push(path);
+			return path.endsWith("/calendar")
+				? { calendars: [{ id: "7/../../secure?x=1#" }] }
+				: { id: 7, name: "Calendar", timezoneId: "UTC" };
+		},
+	} as unknown as JiraClient;
+
+	await fetchSlaCalendars(client, { privateApis: true });
+
+	expect(paths[1]).toBe(
+		"/rest/workinghours/1/api/calendar/7%2F..%2F..%2Fsecure%3Fx%3D1%23",
+	);
 });

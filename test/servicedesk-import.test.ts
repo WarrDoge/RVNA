@@ -225,6 +225,29 @@ describe("service desk mapping", () => {
 		}
 	});
 
+	test("rejects a holiday that spans more than a year", async () => {
+		const counts: ImportCounts = {};
+		try {
+			await expect(
+				importSlaCalendars(
+					db,
+					[
+						{
+							id: 9995,
+							name: "Endless holiday",
+							timezoneId: "UTC",
+							holidays: [{ startDate: "2026-01-01", endDate: "9999-12-31" }],
+						},
+					],
+					counts,
+				),
+			).rejects.toThrow(/spans more than/);
+			expect(counts.sla_calendars?.inserted ?? 0).toBe(0);
+		} finally {
+			await pool.query("delete from sla_calendars where source_id = '9995'");
+		}
+	});
+
 	test("keeps only known request channels", () => {
 		expect(mapRequestChannel("portal")).toBe("portal");
 		expect(mapRequestChannel("email")).toBe("email");

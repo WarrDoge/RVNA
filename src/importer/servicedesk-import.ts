@@ -64,6 +64,8 @@ export function mapRequestChannel(value: string | null | undefined) {
 	return isRequestChannel(value) ? value : null;
 }
 
+const MAX_HOLIDAY_DAYS = 366;
+
 function holidayDates(holiday: JiraWorkingHoliday): string[] {
 	if (holiday.recurring) {
 		throw new Error(
@@ -78,6 +80,11 @@ function holidayDates(holiday: JiraWorkingHoliday): string[] {
 		if (Number.isNaN(startTime) || Number.isNaN(endTime)) {
 			throw new Error(
 				`Invalid date in SLA calendar holiday: ${JSON.stringify(holiday)}`,
+			);
+		}
+		if ((endTime - startTime) / DAY_MS >= MAX_HOLIDAY_DAYS) {
+			throw new Error(
+				`SLA calendar holiday spans more than ${MAX_HOLIDAY_DAYS} days: ${JSON.stringify(holiday)}`,
 			);
 		}
 		const dates: string[] = [];

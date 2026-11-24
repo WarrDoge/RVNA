@@ -1341,7 +1341,7 @@ calendars, and automation rules. For every request the importer also reads the S
 reports and the request channel. The service desk settings, SLA metrics, calendars and automation
 rules need `--private-apis`; the rest imports without it. A new desk takes Jira's "open access"
 setting; when Jira does not report it, the desk starts closed, and an administrator opens it in the
-project settings.
+project settings. A holiday that spans more than 366 days is refused.
 
 Built-in issue type and priority icons are Atlassian artwork and are never copied: RVNA draws its
 own icon from the type or priority name. A custom icon uploaded by an administrator is imported.

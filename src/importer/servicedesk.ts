@@ -217,7 +217,7 @@ export async function fetchSlaCalendars(
 	return Promise.all(
 		(list.calendars ?? []).map((calendar) =>
 			client.getJson<JiraWorkingCalendar>(
-				`/rest/workinghours/1/api/calendar/${calendar.id}`,
+				`/rest/workinghours/1/api/calendar/${encodeURIComponent(String(calendar.id))}`,
 				undefined,
 				{ headers: EXPERIMENTAL },
 			),
