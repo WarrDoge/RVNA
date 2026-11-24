@@ -6,11 +6,13 @@ const run = randomUUID().slice(0, 8);
 const projectKey = `SU${run.slice(0, 4).toUpperCase()}`;
 const requestTypeName = `Upload Request ${run}`;
 const summary = `Upload retry ${run}`;
+const requiredTypeName = `Required Upload ${run}`;
 
 let client: Client;
 let projectId: string;
 let deskId: string;
 let requestTypeId: string;
+let requiredTypeId: string;
 let issueTypeId: string;
 let workflowId: string;
 let statusId: string;
@@ -81,6 +83,18 @@ test.beforeAll(async () => {
 		 values ($1, 'summary', 'Summary', true, 0), ($1, 'attachment', 'Attachment', false, 1)`,
 		[requestTypeId],
 	);
+
+	const required = await client.query<{ id: string }>(
+		`insert into request_types (source_id, desk_id, issue_type_id, name, sequence)
+		 values ($1, $2, $3, $4, 1) returning id`,
+		[`e2e:${run}:request-type-required`, deskId, issueTypeId, requiredTypeName],
+	);
+	requiredTypeId = required.rows[0].id;
+	await client.query(
+		`insert into request_type_fields (request_type_id, field_id, label, required, sequence)
+		 values ($1, 'summary', 'Summary', true, 0), ($1, 'attachment', 'Attachment', true, 1)`,
+		[requiredTypeId],
+	);
 });
 
 test.afterAll(async () => {
@@ -120,4 +134,105 @@ test("a failed attachment upload still opens the created request, once", async (
 		[projectId, summary],
 	);
 	expect(rows[0].n).toBe(1);
+});
+
+const requiredForm = () =>
+	`/servicedesk/customer/portal/${deskId}/create/${requiredTypeId}`;
+
+async function requestsAndFiles(title: string) {
+	const { rows } = await client.query<{ requests: number; files: number }>(
+		`select count(distinct i.id)::int as requests, count(a.id)::int as files
+		 from issues i left join attachments a on a.issue_id = i.id
+		 where i.project_id = $1 and i.summary = $2`,
+		[projectId, title],
+	);
+	return rows[0];
+}
+
+test("a required attachment chosen in the browser is sent and stored", async ({
+	page,
+}) => {
+	const title = `Required with file ${run}`;
+	await page.goto("/auth/login?returnTo=/");
+	await page.goto(requiredForm());
+	await page.getByLabel("Summary").fill(title);
+	await page.locator("#portal-attachment").setInputFiles({
+		name: "required.txt",
+		mimeType: "text/plain",
+		buffer: Buffer.from("required"),
+	});
+	await page.getByRole("button", { name: "Send" }).click();
+
+	await expect(page).toHaveURL(
+		new RegExp(
+			`/servicedesk/customer/portal/${deskId}/${projectKey}-\\d+(\\?.*)?$`,
+		),
+	);
+	expect(await requestsAndFiles(title)).toEqual({ requests: 1, files: 1 });
+});
+
+test("a required attachment left out stops the form and creates nothing", async ({
+	page,
+}) => {
+	const title = `Required without file ${run}`;
+	await page.goto("/auth/login?returnTo=/");
+	await page.goto(requiredForm());
+	await page.getByLabel("Summary").fill(title);
+	await page.getByRole("button", { name: "Send" }).click();
+
+	await expect(
+		page.locator("#portal-attachment").evaluate((input) => {
+			const field = input as HTMLInputElement;
+			return field.validationMessage;
+		}),
+	).resolves.not.toBe("");
+	await expect(page).toHaveURL(requiredForm());
+	expect(await requestsAndFiles(title)).toEqual({ requests: 0, files: 0 });
+});
+
+test.describe("without JavaScript", () => {
+	test("a required attachment is sent and stored", async ({ browser }) => {
+		const title = `Required plain with file ${run}`;
+		const context = await browser.newContext({
+			baseURL: test.info().project.use.baseURL,
+			javaScriptEnabled: false,
+		});
+		const page = await context.newPage();
+		await page.goto("/auth/login?returnTo=/");
+		await page.goto(requiredForm());
+		await page.getByLabel("Summary").fill(title);
+		await page.locator("#portal-attachment").setInputFiles({
+			name: "plain.txt",
+			mimeType: "text/plain",
+			buffer: Buffer.from("plain"),
+		});
+		await page.getByRole("button", { name: "Send" }).click();
+
+		await expect(page).toHaveURL(
+			new RegExp(
+				`/servicedesk/customer/portal/${deskId}/${projectKey}-\\d+(\\?.*)?$`,
+			),
+		);
+		expect(await requestsAndFiles(title)).toEqual({ requests: 1, files: 1 });
+		await context.close();
+	});
+
+	test("a required attachment left out stops the form and creates nothing", async ({
+		browser,
+	}) => {
+		const title = `Required plain without file ${run}`;
+		const context = await browser.newContext({
+			baseURL: test.info().project.use.baseURL,
+			javaScriptEnabled: false,
+		});
+		const page = await context.newPage();
+		await page.goto("/auth/login?returnTo=/");
+		await page.goto(requiredForm());
+		await page.getByLabel("Summary").fill(title);
+		await page.getByRole("button", { name: "Send" }).click();
+
+		await expect(page).toHaveURL(requiredForm());
+		expect(await requestsAndFiles(title)).toEqual({ requests: 0, files: 0 });
+		await context.close();
+	});
 });

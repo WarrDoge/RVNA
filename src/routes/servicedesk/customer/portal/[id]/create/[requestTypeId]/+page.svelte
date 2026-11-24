@@ -152,7 +152,7 @@
 							type="file"
 							name="attachment"
 							multiple
-							required={field.required}
+							required={field.required && files.length === 0}
 							class="file-input"
 							onchange={(event) => {
 								files = Array.from(event.currentTarget.files ?? []);
