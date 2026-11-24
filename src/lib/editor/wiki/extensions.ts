@@ -31,6 +31,7 @@ import {
 	safeFontSize,
 	safeListStyle,
 	safeTextAlign,
+	safeUrl,
 	type WikiDoc,
 } from "../../shared/wiki/index.ts";
 
@@ -571,6 +572,7 @@ export function schemaExtensions(overrides: SchemaOverrides = {}): Extensions {
 			openOnClick: false,
 			autolink: true,
 			defaultProtocol: "https",
+			isAllowedUri: (url) => !url || safeUrl(url) !== null,
 		}),
 		WikiCode,
 		WikiOrderedList,

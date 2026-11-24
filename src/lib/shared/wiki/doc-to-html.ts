@@ -1,6 +1,6 @@
 import type { HtmlContext } from "./convert-types.ts";
 import type { DocMark, DocNode, MacroParam, RiRef, WikiDoc } from "./doc.ts";
-import { markOrder } from "./doc.ts";
+import { markOrder, safeUrl } from "./doc.ts";
 import { emoticonChar } from "./emoticons.ts";
 import { attachmentLookupOf, imageLookupOf, pageLookupOf } from "./refs.ts";
 import { safeCssValue } from "./style-values.ts";
@@ -108,18 +108,6 @@ function css(property: string, value: unknown): string | null {
 function style(parts: (string | null)[]): string {
 	const kept = parts.filter((part): part is string => part !== null);
 	return kept.length ? ` style="${escapeAttr(kept.join(";"))}"` : "";
-}
-
-const urlScheme = /^(https?:|mailto:|tel:|\/|#|\?)/i;
-
-function safeUrl(value: unknown): string | null {
-	if (typeof value !== "string") return null;
-	const url = value.trim();
-	if (url === "") return null;
-	if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//")) {
-		return /^(https?:|mailto:|tel:)/i.test(url) ? url : null;
-	}
-	return urlScheme.test(url) || !url.includes(":") ? url : null;
 }
 
 function attr(name: string, value: unknown): string {

@@ -1,10 +1,11 @@
-import type { RiRef } from "#lib/shared/wiki/index.ts";
+import { type RiRef, safeUrl } from "#lib/shared/wiki/index.ts";
 
+/** The address to link to, or "" when it is empty or uses a scheme the wiki does not render. */
 export function normalizeUrl(value: string): string {
 	const trimmed = value.trim();
 	if (trimmed === "") return "";
 	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || /^[/#]/.test(trimmed))
-		return trimmed;
+		return safeUrl(trimmed) ?? "";
 	if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return `mailto:${trimmed}`;
 	return `https://${trimmed}`;
 }

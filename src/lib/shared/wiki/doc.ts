@@ -199,6 +199,19 @@ function validateNodeStyle(node: DocNode): string | null {
 	return null;
 }
 
+const urlScheme = /^(https?:|mailto:|tel:|\/|#|\?)/i;
+
+/** The address if it is relative or uses http, https, mailto or tel; otherwise null. */
+export function safeUrl(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	const url = value.trim();
+	if (url === "") return null;
+	if (/^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//")) {
+		return /^(https?:|mailto:|tel:)/i.test(url) ? url : null;
+	}
+	return urlScheme.test(url) || !url.includes(":") ? url : null;
+}
+
 /** Returns an error message for a structurally invalid document, or null. */
 export function validateDoc(doc: unknown): string | null {
 	if (typeof doc !== "object" || doc === null)
@@ -222,6 +235,10 @@ export function validateDoc(doc: unknown): string | null {
 				if (!markTypes.has(mark.type))
 					return `unknown mark ${String(mark.type)}`;
 				if (mark.type === "link") {
+					const href = mark.attrs?.href;
+					if (typeof href === "string" && href !== "" && !safeUrl(href)) {
+						return "invalid link address";
+					}
 					const ref = mark.attrs?.ref as
 						| { tag?: unknown; attrs?: unknown }
 						| null
