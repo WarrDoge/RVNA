@@ -5,6 +5,8 @@ import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { userProfile } from "../src/lib/server/profile.ts";
 import {
 	groups,
+	spacePermissions,
+	spaces,
 	userGroups,
 	userPreferences,
 	users,
@@ -18,6 +20,7 @@ let subject: { id: string; username: string };
 let viewer: { id: string; username: string };
 let other: { id: string; username: string };
 let admin: { id: string; username: string };
+let spaceId: string;
 
 function actor(
 	user: { id: string; username: string },
@@ -57,9 +60,29 @@ beforeAll(async () => {
 		.values({ name: `${tag}-team` })
 		.returning({ id: groups.id });
 	await db.insert(userGroups).values({ userId: subject.id, groupId: team.id });
+
+	// A shared space makes `subject` visible to `other`.
+	const [space] = await db
+		.insert(spaces)
+		.values({
+			sourceId: `test:${run}:space`,
+			key: `P${run.slice(0, 5)}`.toUpperCase(),
+			name: `Profile space ${run}`,
+		})
+		.returning({ id: spaces.id });
+	spaceId = space.id;
+	await db.insert(spacePermissions).values(
+		[subject, other].map((user) => ({
+			sourceId: `test:${run}:space:${user.id}`,
+			spaceId,
+			permission: "read",
+			userId: user.id,
+		})),
+	);
 });
 
 afterAll(async () => {
+	await db.delete(spaces).where(eq(spaces.id, spaceId));
 	await cleanupTestData(run);
 	await pool.end();
 });
@@ -104,4 +127,10 @@ test("the profile hides private fields from other users and shows them to self a
 	);
 	expect(asAdmin.email).toBe(`${subject.username}@example.test`);
 	expect(asAdmin.groups).toEqual([`${tag}-team`]);
+});
+
+test("a user who shares no project or space with the viewer has no profile", async () => {
+	await expect(
+		userProfile(actor(viewer), subject.username),
+	).rejects.toMatchObject({ status: 404, message: "User not found" });
 });
