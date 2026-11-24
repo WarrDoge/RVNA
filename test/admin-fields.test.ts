@@ -749,6 +749,22 @@ describe("custom field administration", () => {
 		expect(unknown.statusCode).toBe(400);
 		expect(unknown.json().error).toContain("unknown custom field");
 
+		const longKey = await createIssue({
+			type: strictType,
+			customFields: { [`k${"0".repeat(500)}`]: "x", [select.id]: "Alpha" },
+		});
+		expect(longKey.statusCode).toBe(400);
+		expect(longKey.json().error).toContain("unknown custom field");
+		expect(longKey.json().error.length).toBeLessThan(150);
+
+		const longValue = await createIssue({
+			type: strictType,
+			customFields: { [select.id]: "G".repeat(5000) },
+		});
+		expect(longValue.statusCode).toBe(400);
+		expect(longValue.json().error).toContain("has no option");
+		expect(longValue.json().error.length).toBeLessThan(250);
+
 		const inactive = await createIssue({
 			type: strictType,
 			customFields: { [select.id]: "Alpha", [person.id]: inactiveUser.id },

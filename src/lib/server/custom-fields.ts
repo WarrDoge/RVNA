@@ -805,6 +805,13 @@ function validateMultiuser(
 	return { ok: true, value: [...chosen.values()] };
 }
 
+const ECHO_LIMIT = 100;
+
+/** A request value as it appears in an error message: cut so a long value is not sent back whole. */
+function shortened(value: string) {
+	return value.length > ECHO_LIMIT ? `${value.slice(0, ECHO_LIMIT)}...` : value;
+}
+
 function validateOption(
 	field: LoadedField,
 	raw: unknown,
@@ -814,7 +821,10 @@ function validateOption(
 	if (!ref) return { ok: false, error: "must be one of the field options" };
 	const option = findOption(field.options, ref, null);
 	if (!option) {
-		return { ok: false, error: `has no option "${ref.value ?? ref.id}"` };
+		return {
+			ok: false,
+			error: `has no option "${shortened(ref.value ?? ref.id ?? "")}"`,
+		};
 	}
 	if (option.disabled && !isSelected(ctx.current, option)) {
 		return { ok: false, error: `option "${option.value}" is disabled` };
@@ -836,7 +846,10 @@ function validateOptionList(
 		if (!ref) return { ok: false, error: "must be a list of field options" };
 		const option = findOption(field.options, ref, null);
 		if (!option) {
-			return { ok: false, error: `has no option "${ref.value ?? ref.id}"` };
+			return {
+				ok: false,
+				error: `has no option "${shortened(ref.value ?? ref.id ?? "")}"`,
+			};
 		}
 		if (option.disabled && !isSelected(ctx.current, option)) {
 			return { ok: false, error: `option "${option.value}" is disabled` };
@@ -862,7 +875,10 @@ function validateCascading(
 	if (!ref) return { ok: false, error: "must be one of the field options" };
 	const parent = findOption(field.options, ref, null);
 	if (!parent) {
-		return { ok: false, error: `has no option "${ref.value ?? ref.id}"` };
+		return {
+			ok: false,
+			error: `has no option "${shortened(ref.value ?? ref.id ?? "")}"`,
+		};
 	}
 	if (parent.disabled && !isSelected(ctx.current, parent)) {
 		return { ok: false, error: `option "${parent.value}" is disabled` };
@@ -874,7 +890,7 @@ function validateCascading(
 		if (!child) {
 			return {
 				ok: false,
-				error: `option "${parent.value}" has no child "${childRef.value ?? childRef.id}"`,
+				error: `option "${parent.value}" has no child "${shortened(childRef.value ?? childRef.id ?? "")}"`,
 			};
 		}
 		if (child.disabled && !isSelected(ctx.current, child)) {
@@ -1061,12 +1077,15 @@ async function validationContext(
 }
 
 async function unknownFieldError(fieldId: string) {
+	if (!z.uuid().safeParse(fieldId).success) {
+		return `${shortened(fieldId)}: unknown custom field`;
+	}
 	const [row] = await db
 		.select()
 		.from(fields)
 		.where(eq(fields.id, fieldId))
 		.limit(1);
-	if (!row) return `${fieldId}: unknown custom field`;
+	if (!row) return `${shortened(fieldId)}: unknown custom field`;
 	if (!adminTypeForField(row)) {
 		return `${row.name}: is a system field and cannot be edited`;
 	}
