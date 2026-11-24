@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { parseEnv } from "../src/lib/server/env.ts";
+import { configWarnings, parseEnv } from "../src/lib/server/env.ts";
 
 const base = { DATABASE_URL: "postgres://rvna:rvna@127.0.0.1:1/unreachable" };
 
@@ -69,4 +69,33 @@ test("a cross-field error names the variable it belongs to", () => {
 	expect(envError({ BOOTSTRAP_ADMIN_USERNAME: "admin" })).toMatch(
 		/BOOTSTRAP_ADMIN_PASSWORD: BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD must be set together/,
 	);
+});
+
+test("a production start on plain http warns once, unless the address is local", () => {
+	const production = { ...base, NODE_ENV: "production" };
+	const plain = configWarnings(
+		parseEnv({ ...production, APP_URL: "http://tracker.example.com" }),
+	);
+	expect(plain).toHaveLength(1);
+	expect(plain[0]).toMatch(/behind TLS/);
+
+	for (const APP_URL of [
+		"https://tracker.example.com",
+		"http://localhost:3000",
+		"http://127.0.0.1:3000",
+	]) {
+		expect(configWarnings(parseEnv({ ...production, APP_URL }))).toEqual([]);
+	}
+	expect(
+		configWarnings(
+			parseEnv({ ...base, APP_URL: "http://tracker.example.com" }),
+		),
+	).toEqual([]);
+});
+
+test("an armed DEV_LOGIN_USER is announced at start", () => {
+	const warnings = configWarnings(parseEnv({ ...base, DEV_LOGIN_USER: "dev" }));
+	expect(warnings).toHaveLength(1);
+	expect(warnings[0]).toMatch(/DEV_LOGIN_USER is set/);
+	expect(configWarnings(parseEnv(base))).toEqual([]);
 });

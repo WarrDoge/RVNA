@@ -1,5 +1,6 @@
 import { bootstrapAdmin } from "./bootstrap.ts";
 import { pool, runMigrations } from "./db.ts";
+import { configWarnings } from "./env.ts";
 import { startGitlabQueue, stopGitlabQueue } from "./gitlab/queue.ts";
 import {
 	createSmtpTransport,
@@ -17,6 +18,7 @@ import {
 } from "./messenger/worker.ts";
 
 export async function start() {
+	for (const warning of configWarnings()) console.warn(warning);
 	try {
 		await runMigrations();
 		await bootstrapAdmin();

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const APP_URL_PROTOCOLS = new Set(["http:", "https:"]);
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
 function isAppUrl(value: string) {
 	return APP_URL_PROTOCOLS.has(new URL(value).protocol);
@@ -77,9 +78,7 @@ const envSchema = z
 		// NODE_ENV may be forgotten on a server; the address of the app is not.
 		if (
 			value.DEV_LOGIN_USER &&
-			!["localhost", "127.0.0.1", "[::1]"].includes(
-				new URL(value.APP_URL).hostname,
-			)
+			!LOOPBACK_HOSTS.includes(new URL(value.APP_URL).hostname)
 		) {
 			ctx.addIssue({
 				code: "custom",
@@ -150,4 +149,25 @@ export function ssoConfigured() {
 	return Boolean(
 		env.OIDC_ISSUER && env.OIDC_CLIENT_ID && env.OIDC_CLIENT_SECRET,
 	);
+}
+
+/** What a start with this configuration should say aloud: allowed, but not safe on a real installation. */
+export function configWarnings(config: Env = env): string[] {
+	const warnings: string[] = [];
+	const appUrl = new URL(config.APP_URL);
+	if (
+		config.NODE_ENV === "production" &&
+		appUrl.protocol === "http:" &&
+		!LOOPBACK_HOSTS.includes(appUrl.hostname)
+	) {
+		warnings.push(
+			`APP_URL is ${config.APP_URL}: sign-in cookies travel without the Secure flag and no HSTS header is sent. Run RVNA behind TLS and set APP_URL to the https address.`,
+		);
+	}
+	if (config.DEV_LOGIN_USER) {
+		warnings.push(
+			`DEV_LOGIN_USER is set: GET /auth/login signs every visitor in as the administrator "${config.DEV_LOGIN_USER}". Use it on a development machine only.`,
+		);
+	}
+	return warnings;
 }

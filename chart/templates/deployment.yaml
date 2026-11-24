@@ -29,6 +29,9 @@ spec:
       {{- range .Values.extraEnv }}
       {{- $extraEnvNames = append $extraEnvNames .name }}
       {{- end }}
+      {{- if has "DEV_LOGIN_USER" $extraEnvNames }}
+      {{- fail "extraEnv must not set DEV_LOGIN_USER: it signs every visitor in as an administrator" }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

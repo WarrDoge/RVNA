@@ -1153,7 +1153,11 @@ and open sign-up off at the provider. Each attach writes an `account.link` entry
 
 For local work without a provider set `DEV_LOGIN_USER`; `GET /auth/login` then signs that username in
 as an administrator, and `/login.jsp` redirects there unless `?local=1`. The server refuses to start
-with `DEV_LOGIN_USER` when `NODE_ENV=production`.
+with `DEV_LOGIN_USER` when `NODE_ENV=production` or when `APP_URL` is not on localhost, and it logs a
+warning at every start while the variable is set. The Docker image and the Helm chart run with
+`NODE_ENV=production`, and the chart refuses `DEV_LOGIN_USER` in `extraEnv`. Never set it on a
+server that other people can reach: the check of `APP_URL` is a statement about the address, not about who
+can connect.
 
 ## Environment variables
 
@@ -1535,6 +1539,12 @@ chart to `oci://ghcr.io/warrdoge/charts/rvna`, both with the same version:
 ```sh
 helm install rvna oci://ghcr.io/warrdoge/charts/rvna --version <version> --values values.yaml
 ```
+
+A real installation must run behind TLS. RVNA itself speaks plain HTTP, so the Gateway or another
+reverse proxy ends TLS, and `APP_URL` is the `https` address. That sets the `Secure` flag on the session
+cookie and makes every response carry `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
+With `NODE_ENV=production` and an `http` `APP_URL` that is not on localhost, the server logs a warning
+at start. The chart always sets an `https` `APP_URL`.
 
 The chart expects two Secrets in the release namespace and a Gateway to attach the `HTTPRoute` to:
 
