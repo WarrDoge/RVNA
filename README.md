@@ -1293,6 +1293,11 @@ Built-in issue type and priority icons are Atlassian artwork and are never copie
 own icon from the type or priority name. A custom icon uploaded by an administrator is imported.
 A re-import removes a built-in icon that an earlier version stored.
 
+Avatars follow the web upload rules: an avatar larger than 2 MB is refused and cut off while it
+downloads, and a user avatar must be a PNG, JPEG, GIF or WebP image, never SVG. A refused avatar
+counts as failed and the user keeps the generated one. Custom project, space, issue type and priority
+icons may be SVG; they are sent with a sandbox policy.
+
 ## Import from Confluence
 
 ```sh

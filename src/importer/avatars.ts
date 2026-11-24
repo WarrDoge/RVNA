@@ -10,11 +10,18 @@ import {
 	users,
 } from "../lib/server/schema.ts";
 import { spaces } from "../lib/server/schema-wiki.ts";
-import { storeAvatarFile } from "../lib/shared/avatar-storage.ts";
+import {
+	MAX_AVATAR_BYTES,
+	storeAvatarFile,
+} from "../lib/shared/avatar-storage.ts";
+import { uploadImage } from "../lib/shared/images.ts";
 import type { ConfluenceClient } from "./confluence.ts";
 import { db } from "./db.ts";
 import type { JiraClient } from "./jira.ts";
 import type { JiraIssueType, JiraPriority, JiraUser } from "./types.ts";
+
+/** An avatar is read up to the size the web upload accepts, as the web upload does. */
+const avatarLimit = { maxBytes: MAX_AVATAR_BYTES };
 
 const GENERIC_PROJECT_AVATAR_IDS = new Set(["10001", "10324"]);
 
@@ -185,7 +192,10 @@ async function loadSystemAvatars(
 				const hashes = new Set<string>();
 				for (const url of candidates) {
 					try {
-						const bytes = await client.getBytes(requestPath(url, baseUrl));
+						const bytes = await client.getBytes(
+							requestPath(url, baseUrl),
+							avatarLimit,
+						);
 						hashes.add(createHash("sha256").update(bytes).digest("hex"));
 					} catch {
 						// One unavailable system avatar must not stop the whole import.
@@ -406,7 +416,7 @@ async function importJiraUsers(
 
 		let bytes: Buffer;
 		try {
-			bytes = await client.getBytes(requestPath(url, baseUrl));
+			bytes = await client.getBytes(requestPath(url, baseUrl), avatarLimit);
 		} catch {
 			counts.failed++;
 			continue;
@@ -428,7 +438,9 @@ async function importJiraUsers(
 			continue;
 		}
 
-		const stored = await storeAvatarFile(options.avatarsDir, bytes);
+		const stored = uploadImage(bytes)
+			? await storeAvatarFile(options.avatarsDir, bytes)
+			: null;
 		if (!stored) {
 			counts.failed++;
 			continue;
@@ -499,7 +511,7 @@ async function importJiraProjects(
 		}
 		let bytes: Buffer;
 		try {
-			bytes = await client.getBytes(requestPath(url, baseUrl));
+			bytes = await client.getBytes(requestPath(url, baseUrl), avatarLimit);
 		} catch {
 			counts.failed++;
 			continue;
@@ -591,7 +603,7 @@ async function importJiraIssueTypes(
 		}
 		let bytes: Buffer;
 		try {
-			bytes = await client.getBytes(requestPath(url, baseUrl));
+			bytes = await client.getBytes(requestPath(url, baseUrl), avatarLimit);
 		} catch {
 			counts.failed++;
 			continue;
@@ -662,7 +674,7 @@ async function importJiraPriorities(
 		}
 		let bytes: Buffer;
 		try {
-			bytes = await client.getBytes(requestPath(url, baseUrl));
+			bytes = await client.getBytes(requestPath(url, baseUrl), avatarLimit);
 		} catch {
 			counts.failed++;
 			continue;
@@ -773,6 +785,7 @@ async function importConfluenceSpaces(
 		try {
 			bytes = await client.getBytes(
 				requestPath(row.iconPath as string, baseUrl),
+				avatarLimit,
 			);
 		} catch {
 			counts.failed++;
@@ -857,12 +870,14 @@ async function importConfluenceUsers(
 		}
 		let bytes: Buffer;
 		try {
-			bytes = await client.getBytes(requestPath(path, baseUrl));
+			bytes = await client.getBytes(requestPath(path, baseUrl), avatarLimit);
 		} catch {
 			counts.failed++;
 			continue;
 		}
-		const stored = await storeAvatarFile(options.avatarsDir, bytes);
+		const stored = uploadImage(bytes)
+			? await storeAvatarFile(options.avatarsDir, bytes)
+			: null;
 		if (!stored) {
 			counts.failed++;
 			continue;

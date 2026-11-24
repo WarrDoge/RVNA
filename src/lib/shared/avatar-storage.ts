@@ -3,6 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { detectImage } from "./images.ts";
 
+export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+
 export interface StoredAvatar {
 	file: string;
 	sha256: string;

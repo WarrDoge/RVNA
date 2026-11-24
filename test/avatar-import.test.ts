@@ -10,10 +10,12 @@ import {
 	largestAvatarUrl,
 } from "../src/importer/avatars.ts";
 import { pool, runMigrations } from "../src/importer/db.ts";
+import { JiraClient } from "../src/importer/jira.ts";
 import {
 	issueTypeIconKeyForName,
 	priorityIconName,
 } from "../src/lib/components/icons.ts";
+import { MAX_AVATAR_BYTES } from "../src/lib/shared/avatar-storage.ts";
 
 const run = randomUUID().slice(0, 8);
 const baseUrl = "https://jira.example.test";
@@ -254,6 +256,40 @@ class BrokenSystemClient extends MockJiraClient {
 	override async getBytes(path: string): Promise<Buffer> {
 		if (new URL(path, baseUrl).pathname === "/broken-system.png") {
 			throw new Error("system avatar unavailable");
+		}
+		return super.getBytes(path);
+	}
+}
+
+class SvgUserClient extends MockJiraClient {
+	override async getBytes(path: string): Promise<Buffer> {
+		if (new URL(path, baseUrl).pathname === "/custom-user.png") return typeSvg;
+		return super.getBytes(path);
+	}
+}
+
+class EndlessUserClient extends MockJiraClient {
+	pulled = 0;
+	private readonly source = new JiraClient({
+		baseUrl,
+		token: "fixture-token",
+		fetchImpl: (async () =>
+			new Response(
+				new ReadableStream({
+					pull: (controller) => {
+						this.pulled++;
+						controller.enqueue(new Uint8Array(1024 * 1024));
+					},
+				}),
+			)) as typeof fetch,
+	});
+
+	override async getBytes(
+		path: string,
+		options?: { maxBytes?: number },
+	): Promise<Buffer> {
+		if (new URL(path, baseUrl).pathname === "/custom-user.png") {
+			return this.source.getBytes(path, options);
 		}
 		return super.getBytes(path);
 	}
@@ -778,6 +814,74 @@ describe("jira avatar import", () => {
 				[id],
 			);
 			expect(stored.rows[0]?.avatar_file).toMatch(/^[0-9a-f]{64}\.png$/);
+		} finally {
+			await pool.query("delete from users where id = $1", [id]);
+		}
+	});
+
+	test("a user avatar that is an SVG document is not stored, as in the web upload", async () => {
+		const username = `t-${run}-svguser`;
+		const inserted = await pool.query<{ id: string }>(
+			`insert into users (source_key, username, display_name)
+			 values ($1, $2, 'Svg User')
+			 returning id`,
+			[`${prefix}:user:svg`, username],
+		);
+		const id = inserted.rows[0]?.id;
+		if (!id) throw new Error("svg user was not inserted");
+
+		try {
+			const counts = await importJiraAvatars(new SvgUserClient() as never, {
+				baseUrl,
+				avatarsDir,
+				scope: {
+					userIds: [id],
+					projectIds: [],
+					issueTypeIds: [],
+					priorityIds: [],
+				},
+			});
+			expect(counts.users).toMatchObject({ stored: 0, failed: 1 });
+			const stored = await pool.query<{ avatar_file: string | null }>(
+				"select avatar_file from users where id = $1",
+				[id],
+			);
+			expect(stored.rows[0]?.avatar_file).toBeNull();
+		} finally {
+			await pool.query("delete from users where id = $1", [id]);
+		}
+	});
+
+	test("an avatar download over the upload limit is cut off and not stored", async () => {
+		const username = `t-${run}-bigavatar`;
+		const inserted = await pool.query<{ id: string }>(
+			`insert into users (source_key, username, display_name)
+			 values ($1, $2, 'Big Avatar')
+			 returning id`,
+			[`${prefix}:user:big`, username],
+		);
+		const id = inserted.rows[0]?.id;
+		if (!id) throw new Error("big avatar user was not inserted");
+
+		const endless = new EndlessUserClient();
+		try {
+			const counts = await importJiraAvatars(endless as never, {
+				baseUrl,
+				avatarsDir,
+				scope: {
+					userIds: [id],
+					projectIds: [],
+					issueTypeIds: [],
+					priorityIds: [],
+				},
+			});
+			expect(counts.users).toMatchObject({ stored: 0, failed: 1 });
+			expect(endless.pulled * 1024 * 1024).toBeLessThan(MAX_AVATAR_BYTES * 3);
+			const stored = await pool.query<{ avatar_file: string | null }>(
+				"select avatar_file from users where id = $1",
+				[id],
+			);
+			expect(stored.rows[0]?.avatar_file).toBeNull();
 		} finally {
 			await pool.query("delete from users where id = $1", [id]);
 		}

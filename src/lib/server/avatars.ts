@@ -1,7 +1,7 @@
 import { stat, unlink } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { type AnyColumn, eq, type SQL, sql } from "drizzle-orm";
-import { storeAvatarFile } from "../shared/avatar-storage.ts";
+import { MAX_AVATAR_BYTES, storeAvatarFile } from "../shared/avatar-storage.ts";
 import { imageTypeForFile, uploadImage } from "../shared/images.ts";
 import type { CurrentUser } from "./auth.ts";
 import { db } from "./db.ts";
@@ -11,7 +11,7 @@ import { can } from "./permissions.ts";
 import { issueTypes, priorities, projects, users } from "./schema.ts";
 import { spaces } from "./schema-wiki.ts";
 
-export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+export { MAX_AVATAR_BYTES };
 
 const PALETTE = [
 	"#4C9AFF",

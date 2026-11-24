@@ -22,6 +22,59 @@ export class GetOnlyRequestError extends Error {
 
 export type QueryValue = string | number | boolean | undefined;
 
+/** A single download larger than this is refused, so a server cannot fill memory and disk. */
+export const MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024;
+
+export interface GetBytesOptions {
+	/** Defaults to MAX_DOWNLOAD_BYTES. */
+	maxBytes?: number;
+	/** Time allowed to read the body once the headers arrived; defaults to the client's request timeout. */
+	timeoutMs?: number;
+}
+
+async function readBounded(
+	response: Response,
+	path: string,
+	maxBytes: number,
+	timeoutMs: number,
+): Promise<Buffer> {
+	const tooLarge = () =>
+		new Error(`download is larger than ${maxBytes} bytes: ${path}`);
+	if (Number(response.headers.get("content-length")) > maxBytes) {
+		await response.body?.cancel();
+		throw tooLarge();
+	}
+	if (!response.body) return Buffer.alloc(0);
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	let timedOut = false;
+	const timer = setTimeout(() => {
+		timedOut = true;
+		void reader.cancel();
+	}, timeoutMs);
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (timedOut) {
+				throw new Error(
+					`download did not finish within ${timeoutMs} ms: ${path}`,
+				);
+			}
+			if (done) break;
+			total += value.length;
+			if (total > maxBytes) {
+				await reader.cancel();
+				throw tooLarge();
+			}
+			chunks.push(value);
+		}
+	} finally {
+		clearTimeout(timer);
+	}
+	return Buffer.concat(chunks, total);
+}
+
 export interface GetOnlyRequestOptions {
 	headers?: Record<string, string>;
 }
@@ -202,10 +255,15 @@ export class GetOnlyClient {
 		return this.readBody(response, async (value) => (await value.json()) as T);
 	}
 
-	async getBytes(path: string): Promise<Buffer> {
+	async getBytes(path: string, options: GetBytesOptions = {}): Promise<Buffer> {
 		const response = await this.request("GET", path);
-		return this.readBody(response, async (value) =>
-			Buffer.from(await value.arrayBuffer()),
+		return this.readBody(response, (value) =>
+			readBounded(
+				value,
+				path,
+				options.maxBytes ?? MAX_DOWNLOAD_BYTES,
+				options.timeoutMs ?? this.timeoutMs,
+			),
 		);
 	}
 }
