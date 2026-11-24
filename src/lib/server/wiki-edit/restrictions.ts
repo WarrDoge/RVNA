@@ -96,6 +96,51 @@ export const listed = (
 	input.userIds.includes(user.id) ||
 	input.groups.some((group) => hasGroup(user, group));
 
+/**
+ * A user or group in a restriction must be one the caller may pick: an existing active user, or one
+ * of the caller's own groups. Whoever administers the space may name any existing user and any
+ * group. What the page already names stays usable, so an unchanged list can be saved. One text for
+ * every failure, so the answer does not say whether a user or group exists.
+ */
+async function assertSubjectsUsable(
+	actor: CurrentUser,
+	pageId: string,
+	unlimited: boolean,
+	input: Record<Operation, z.infer<typeof subjectsInput>>,
+) {
+	const named = await db
+		.select({
+			userId: pageRestrictions.userId,
+			groupName: pageRestrictions.groupName,
+		})
+		.from(pageRestrictions)
+		.where(eq(pageRestrictions.pageId, pageId));
+	const namedUsers = new Set(named.map((row) => row.userId));
+	const namedGroups = new Set(named.map((row) => row.groupName?.toLowerCase()));
+
+	const ids = [...new Set([...input.read.userIds, ...input.update.userIds])];
+	const found = ids.length
+		? await db
+				.select({ id: users.id, active: users.active })
+				.from(users)
+				.where(inArray(users.id, ids))
+		: [];
+	const usable = new Map(found.map((row) => [row.id, row.active]));
+	const usersOk = ids.every(
+		(id) =>
+			usable.has(id) && (unlimited || usable.get(id) || namedUsers.has(id)),
+	);
+	const groupsOk = [...input.read.groups, ...input.update.groups].every(
+		(group) =>
+			unlimited ||
+			hasGroup(actor, group) ||
+			namedGroups.has(group.toLowerCase()),
+	);
+	if (!usersOk || !groupsOk) {
+		fail(400, "A user or group in the restrictions cannot be used");
+	}
+}
+
 export async function listPageRestrictions(
 	actor: CurrentUser,
 	id: string,
@@ -125,14 +170,7 @@ export async function replacePageRestrictions(
 		},
 	};
 
-	const ids = [...new Set([...input.read.userIds, ...input.update.userIds])];
-	if (ids.length > 0) {
-		const found = await db
-			.select({ id: users.id })
-			.from(users)
-			.where(inArray(users.id, ids));
-		if (found.length !== ids.length) fail(400, "Unknown user in restrictions");
-	}
+	await assertSubjectsUsable(actor, page.id, access.bypass, input);
 	if (!access.bypass) {
 		for (const operation of ["read", "update"] as const) {
 			const subjects = input[operation];
