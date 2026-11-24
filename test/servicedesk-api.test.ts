@@ -54,7 +54,10 @@ import { load as loadQueueList } from "../src/routes/projects/[key]/queues/+page
 import { load as loadQueue } from "../src/routes/projects/[key]/queues/custom/[queueId]/+page.server.ts";
 import { load as loadPortalLayout } from "../src/routes/servicedesk/customer/+layout.server.ts";
 import { load as loadPortalHome } from "../src/routes/servicedesk/customer/portal/[id]/+page.server.ts";
-import { load as loadPortalRequest } from "../src/routes/servicedesk/customer/portal/[id]/[key]/+page.server.ts";
+import {
+	actions as commentPortalActions,
+	load as loadPortalRequest,
+} from "../src/routes/servicedesk/customer/portal/[id]/[key]/+page.server.ts";
 import {
 	actions as createPortalActions,
 	load as loadPortalCreate,
@@ -3207,6 +3210,130 @@ describe("review follow-ups", () => {
 			await db.delete(fields).where(eq(fields.id, field.id));
 			await db.delete(requestTypes).where(eq(requestTypes.id, requestType.id));
 		}
+	});
+
+	test("the portal refuses summary, description, comment and field text over the limits", async () => {
+		const customer = await userFor(customerSession);
+		const route = "/servicedesk/customer/portal/[id]/create/[requestTypeId]";
+		const path = `/servicedesk/customer/portal/${deskId}/create/${requestTypeId}`;
+		const submit = (values: Record<string, string>) => {
+			const data = new FormData();
+			for (const [name, value] of Object.entries(values)) data.set(name, value);
+			return createPortalActions.default(
+				actionEvent(customer, path, { id: deskId, requestTypeId }, data, route),
+			);
+		};
+		const before = await pool.query<{ n: number }>(
+			"select count(*)::int as n from issues where project_id = $1",
+			[projectId],
+		);
+
+		expect(await submit({ summary: "x".repeat(300_000) })).toMatchObject({
+			status: 400,
+			data: { error: "Summary must be at most 255 characters" },
+		});
+		expect(await submit({ summary: "x".repeat(256) })).toMatchObject({
+			status: 400,
+		});
+		expect(
+			await submit({
+				summary: "Long details",
+				description: `<p>${"x".repeat(300_000)}</p>`,
+			}),
+		).toMatchObject({
+			status: 400,
+			data: { error: "Description must be at most 200000 characters" },
+		});
+		const viaFields = await inject(
+			"POST",
+			`/api/servicedesk/portals/${deskId}/requests`,
+			customerSession,
+			{ requestTypeId, fields: { summary: "x".repeat(300_000) } },
+		);
+		expect(viaFields.statusCode).toBe(400);
+		const tooLongForRest = await createRequest(customerSession, {
+			summary: "x".repeat(256),
+		});
+		expect(tooLongForRest.statusCode).toBe(400);
+
+		const key = (await createRequest(customerSession)).json().key as string;
+		const comment = (body: string) => {
+			const data = new FormData();
+			data.set("body", body);
+			return commentPortalActions.default(
+				actionEvent(
+					customer,
+					`/servicedesk/customer/portal/${deskId}/${key}`,
+					{ id: deskId, key },
+					data,
+					"/servicedesk/customer/portal/[id]/[key]",
+				),
+			);
+		};
+		expect(await comment(`<p>${"x".repeat(300_000)}</p>`)).toMatchObject({
+			status: 400,
+			data: { error: "Comment must be at most 200000 characters" },
+		});
+		expect(await comment("<p>A short answer</p>")).toMatchObject({
+			commented: expect.any(String),
+		});
+
+		const [source] = await db
+			.select({ issueTypeId: requestTypes.issueTypeId })
+			.from(requestTypes)
+			.where(eq(requestTypes.id, requestTypeId));
+		if (!source) throw new Error("fixture request type missing");
+		const [requestType] = await db
+			.insert(requestTypes)
+			.values({
+				sourceId: `${tag}:rt:loose-text`,
+				deskId,
+				issueTypeId: source.issueTypeId,
+				name: `${tag} Loose text`,
+				sequence: 22,
+			})
+			.returning();
+		const looseId = `${tag}:customfield:loose-text`;
+		await db.insert(requestTypeFields).values([
+			{
+				requestTypeId: requestType.id,
+				fieldId: "summary",
+				label: "Summary",
+				required: true,
+				sequence: 0,
+			},
+			{
+				requestTypeId: requestType.id,
+				fieldId: looseId,
+				label: "Loose text",
+				sequence: 1,
+			},
+		]);
+		try {
+			const create = (value: string) =>
+				inject(
+					"POST",
+					`/api/servicedesk/portals/${deskId}/requests`,
+					customerSession,
+					{
+						requestTypeId: requestType.id,
+						summary: "Loose text",
+						fields: { [looseId]: value },
+					},
+				);
+			const refused = await create("x".repeat(300_000));
+			expect(refused.statusCode).toBe(400);
+			expect(refused.json().error).toContain("at most 255 characters");
+			expect((await create("x".repeat(255))).statusCode).toBe(201);
+		} finally {
+			await db.delete(requestTypes).where(eq(requestTypes.id, requestType.id));
+		}
+
+		const after = await pool.query<{ n: number }>(
+			"select count(*)::int as n from issues where project_id = $1",
+			[projectId],
+		);
+		expect(after.rows[0].n).toBe(before.rows[0].n + 2);
 	});
 
 	async function optionFixture(

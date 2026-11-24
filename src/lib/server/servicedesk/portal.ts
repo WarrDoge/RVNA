@@ -328,6 +328,9 @@ export type CreateRequestResult =
 	| { ok: true; id: string; key: string }
 	| { ok: false; status: 400 | 404; error: string };
 
+const TEXT_MAX = 255;
+const BODY_MAX = 200_000;
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isUuid(value: string): boolean {
@@ -475,6 +478,20 @@ export async function createRequest(
 	}
 
 	let summary = text(values.summary) ?? input.summary.trim();
+	if (summary.length > TEXT_MAX) {
+		return {
+			ok: false,
+			status: 400,
+			error: `Summary must be at most ${TEXT_MAX} characters`,
+		};
+	}
+	if ((text(values.description)?.length ?? 0) > BODY_MAX) {
+		return {
+			ok: false,
+			status: 400,
+			error: `Description must be at most ${BODY_MAX} characters`,
+		};
+	}
 	const hasDescriptionField = rows.some((row) => row.fieldId === "description");
 	let descriptionHtml = hasDescriptionField
 		? null
@@ -677,6 +694,13 @@ export async function createRequest(
 		}
 		const field = arrayFields.get(row.fieldId);
 		if (!field) {
+			if (wanted.length > TEXT_MAX) {
+				return {
+					ok: false,
+					status: 400,
+					error: `${row.label}: must be at most ${TEXT_MAX} characters`,
+				};
+			}
 			custom[row.fieldId] = wanted;
 			continue;
 		}
@@ -1013,6 +1037,13 @@ export async function addCustomerComment(
 		return { ok: false, status: 404, error: "Request not found" };
 	}
 
+	if (body.length > BODY_MAX) {
+		return {
+			ok: false,
+			status: 400,
+			error: `Comment must be at most ${BODY_MAX} characters`,
+		};
+	}
 	const bodyHtml = await sanitizeBodyHtml(body);
 	if (!bodyHtml) {
 		return { ok: false, status: 400, error: "Comment body is empty" };
