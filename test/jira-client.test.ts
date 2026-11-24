@@ -39,6 +39,63 @@ describe("JiraClient", () => {
 		expect(calls).toHaveLength(1);
 	});
 
+	test("refuses a download that is larger than the limit", async () => {
+		const client = (body: () => Response) =>
+			new JiraClient({
+				baseUrl: "https://jira.example.test",
+				token: "fixture-token",
+				fetchImpl: (async () => body()) as typeof fetch,
+			});
+
+		const declared = client(
+			() => new Response("tiny", { headers: { "content-length": "9999" } }),
+		);
+		await expect(declared.getBytes("/a", { maxBytes: 100 })).rejects.toThrow(
+			/larger than 100 bytes/,
+		);
+
+		let pulled = 0;
+		const unlimited = client(
+			() =>
+				new Response(
+					new ReadableStream({
+						pull(controller) {
+							pulled++;
+							controller.enqueue(new Uint8Array(40));
+						},
+					}),
+				),
+		);
+		await expect(unlimited.getBytes("/b", { maxBytes: 100 })).rejects.toThrow(
+			/larger than 100 bytes/,
+		);
+		expect(pulled).toBeLessThan(10);
+
+		const fits = client(() => new Response("12345"));
+		expect((await fits.getBytes("/c", { maxBytes: 5 })).toString()).toBe(
+			"12345",
+		);
+	});
+
+	test("gives up on a download that stops sending data", async () => {
+		const client = new JiraClient({
+			baseUrl: "https://jira.example.test",
+			token: "fixture-token",
+			fetchImpl: (async () =>
+				new Response(
+					new ReadableStream({
+						start(controller) {
+							controller.enqueue(new Uint8Array(10));
+						},
+					}),
+				)) as typeof fetch,
+		});
+
+		await expect(
+			client.getBytes("/stalled", { timeoutMs: 50 }),
+		).rejects.toThrow(/did not finish within 50 ms/);
+	});
+
 	test("refuses every method except GET", async () => {
 		const calls: string[] = [];
 		const client = new JiraClient({

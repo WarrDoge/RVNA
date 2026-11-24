@@ -1251,7 +1251,9 @@ letters, digits, `_` and `-`.
 
 A paged list from the server ends the import with an error when it passes 10 000 pages or when a
 page brings no row the importer has not already seen; the parity check marks its live snapshot
-incomplete instead.
+incomplete instead. A downloaded file (attachment or avatar) may not be larger than 1 GiB, and its
+body must arrive within 2 minutes after the headers; a larger or stalled download stops the import
+with an error.
 
 Workflow transitions keep their screen: the importer reads the tabs and fields of every distinct
 transition screen once and sets `asks_resolution` when the screen contains the `resolution` field.
