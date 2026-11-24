@@ -13,7 +13,7 @@ import {
 	matrixSync,
 	matrixWhoami,
 } from "./client.ts";
-import { handleMatrixMessage } from "./commands.ts";
+import { handleMatrixMessage, pruneProcessedEvents } from "./commands.ts";
 import {
 	matrixServerName,
 	messengerSettings,
@@ -30,6 +30,7 @@ const UNLOCK_SQL =
 const INITIAL_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 5 * 60_000;
 const LOCK_RETRY_MS = 5_000;
+const PRUNE_EVERY_MS = 60 * 60_000;
 const ENCRYPTED_NOTICE =
 	"I cannot read encrypted rooms; start an unencrypted chat with me";
 
@@ -189,6 +190,7 @@ async function syncLoop(
 	let backoff = INITIAL_BACKOFF_MS;
 	// A failed chat message leaves its error in place; only a transport recovery clears it.
 	let clearError = true;
+	let lastPrune = 0;
 	while (!signal.aborted) {
 		try {
 			const current = await messengerSettings();
@@ -205,6 +207,15 @@ async function syncLoop(
 			await recordMessengerSync(new Date(), clearError && failures === 0);
 			clearError = false;
 			backoff = INITIAL_BACKOFF_MS;
+			if (Date.now() - lastPrune >= PRUNE_EVERY_MS) {
+				lastPrune = Date.now();
+				await pruneProcessedEvents().catch((error) =>
+					console.error(
+						"messenger: could not prune handled events:",
+						error instanceof Error ? error.message : error,
+					),
+				);
+			}
 		} catch (error) {
 			if (signal.aborted) return;
 			const message = error instanceof Error ? error.message : String(error);

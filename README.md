@@ -1543,6 +1543,7 @@ the bot posts a short notice into the request's thread. A reply in that thread b
 comment by the sender and gets a check-mark reaction. Files must be attached in the portal. A
 message is handled at most once: if creating the request or the comment fails, the bot says so in
 the thread, asks the sender to send it again, and shows the error as "Last error" on the admin page.
+The worker deletes the record of a handled message after 30 days.
 
 **Stop the old external `@ticket-bot` before enabling this worker on the same bot account.** Two
 readers of one Matrix account both answer: the external bot would create its Jira request while

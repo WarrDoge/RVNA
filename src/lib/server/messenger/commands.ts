@@ -1,4 +1,4 @@
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, lt, sql } from "drizzle-orm";
 import type { CurrentUser } from "../auth.ts";
 import { effectiveGroups } from "../auth.ts";
 import { db } from "../db.ts";
@@ -66,6 +66,16 @@ async function userForMatrixId(matrixId: string): Promise<CurrentUser | null> {
 		mustChangePassword: linked.mustChangePassword,
 		hasPassword: linked.passwordHash !== null,
 	};
+}
+
+const PROCESSED_EVENT_DAYS = 30;
+
+/** A handled event only needs its dedupe row while the homeserver can still replay it. */
+export async function pruneProcessedEvents(now = new Date()) {
+	const cutoff = new Date(now.getTime() - PROCESSED_EVENT_DAYS * 86_400_000);
+	await db
+		.delete(messengerProcessedEvents)
+		.where(lt(messengerProcessedEvents.processedAt, cutoff));
 }
 
 async function markProcessed(roomId: string, eventId: string) {

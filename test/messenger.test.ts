@@ -3,6 +3,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import * as htmlModule from "../src/lib/server/html.ts";
+import { pruneProcessedEvents } from "../src/lib/server/messenger/commands.ts";
 import { stopMessengerQueue } from "../src/lib/server/messenger/notices.ts";
 import {
 	createMessengerWorker,
@@ -682,6 +683,22 @@ describe("sync worker", () => {
 				String(item.content.body ?? "").includes("Connect to messenger"),
 			).length,
 		).toBe(1);
+	});
+
+	test("handled events older than the retention are pruned", async () => {
+		const old = new Date(Date.now() - 40 * 86_400_000);
+		await db.insert(messengerProcessedEvents).values([
+			{ roomId, eventId: `$old-${run}`, processedAt: old },
+			{ roomId, eventId: `$fresh-${run}` },
+		]);
+		await pruneProcessedEvents();
+		const left = await db
+			.select({ eventId: messengerProcessedEvents.eventId })
+			.from(messengerProcessedEvents)
+			.where(eq(messengerProcessedEvents.roomId, roomId));
+		const ids = left.map((row) => row.eventId);
+		expect(ids).toContain(`$fresh-${run}`);
+		expect(ids).not.toContain(`$old-${run}`);
 	});
 
 	test("a Matrix id named like an RVNA user is still an unknown sender", async () => {
