@@ -143,11 +143,11 @@ export async function heartbeatLock(actor: CurrentUser, id: string) {
 		const fresh = await lockPage(tx, page.id);
 		if (fresh.status === "trashed") fail(404, "Page not found");
 		const state = await lockState(tx, page.id);
-		if (state?.live && state.userId !== actor.id) {
-			return { status: "lost" as const, lock: state.info };
-		}
 		if (!access.edit) {
 			return { status: "expired" as const, lock: null };
+		}
+		if (state?.live && state.userId !== actor.id) {
+			return { status: "lost" as const, lock: state.info };
 		}
 		if (state?.userId === actor.id && state.live) {
 			await tx

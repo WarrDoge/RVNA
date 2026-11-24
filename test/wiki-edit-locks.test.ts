@@ -57,6 +57,18 @@ describe("edit locks", () => {
 		expect(context.body.lock.holder.id).toBe(alice.id);
 	});
 
+	test("the editor page shows the lock holder only to a caller who may edit", async () => {
+		const page = await wiki.page(alice, space.key, "Lock privacy");
+		await alice.post(`/api/wiki/pages/${page.id}/lock`);
+		const viewer = await wiki.user("lockviewer");
+		await wiki.grant(space.id, { userId: viewer.id }, ["read"]);
+		const asViewer = await viewer.get(`/api/wiki/edit/pages/${page.id}`);
+		expect(asViewer.status).toBe(200);
+		expect(asViewer.body.lock).toBeNull();
+		const asEditor = await bob.get(`/api/wiki/edit/pages/${page.id}`);
+		expect(asEditor.body.lock.holder.id).toBe(alice.id);
+	});
+
 	test("publishing is refused with 423 while another user holds a live lock", async () => {
 		const page = await wiki.page(alice, space.key, "Lock publish");
 		await alice.post(`/api/wiki/pages/${page.id}/lock`);
@@ -229,10 +241,12 @@ describe("edit locks", () => {
 		expect(beat.body.lock.holder.id).toBe(alice.id);
 		const stranger = await wiki.user("stranger");
 		await wiki.grant(space.id, { userId: stranger.id }, ["read"]);
-		const denied = await stranger.post(
+		const denied = await bob.post(`/api/wiki/pages/${page.id}/lock/heartbeat`);
+		expect(denied.body.status).toBe("lost");
+		const readOnly = await stranger.post(
 			`/api/wiki/pages/${page.id}/lock/heartbeat`,
 		);
-		expect(denied.body.status).toBe("lost");
+		expect(readOnly.body).toEqual({ status: "expired", lock: null });
 		await pool.query("delete from page_locks where page_id = $1", [page.id]);
 		const expired = await stranger.post(
 			`/api/wiki/pages/${page.id}/lock/heartbeat`,

@@ -106,7 +106,7 @@ async function editorContext(
 		breadcrumb: crumbs.reverse(),
 		labels: labels.map((row) => row.label),
 		draft,
-		lock: lock?.live ? lock.info : null,
+		lock: access.edit && lock?.live ? lock.info : null,
 		permissions: {
 			canEdit: access.edit,
 			canRestrict: access.restrict,
