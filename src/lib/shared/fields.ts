@@ -116,7 +116,9 @@ export interface CustomFieldColumn {
 /** `customfield_10010` becomes `cf[10010]`, which the parser resolves by id. */
 export function customFieldJql(sourceId: string, name: string) {
 	const match = /^customfield_(\d+)$/.exec(sourceId);
-	return match ? `cf[${match[1]}]` : `"${name.replace(/"/g, '\\"')}"`;
+	return match
+		? `cf[${match[1]}]`
+		: `"${name.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 export function customFieldId(sourceId: string) {

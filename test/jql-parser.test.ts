@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { customFieldJql } from "../src/lib/shared/fields.ts";
 import {
 	JqlError,
 	type JqlNode,
@@ -405,5 +406,25 @@ describe("JQL parser", () => {
 				"Error in the JQL Query: Expecting a value but got 'end of input'. (line 2, character 14)",
 			);
 		}
+	});
+});
+
+describe("custom field names in JQL", () => {
+	test.each([
+		["ends in a backslash", "Path\\"],
+		["holds a quote", 'Say "hi"'],
+		["ends in a backslash after a quote", 'Mixed "\\'],
+		["holds a plain backslash", "A\\B"],
+	])("a field name that %s round-trips as one field", (_label, name) => {
+		const query = parseJql(
+			`${customFieldJql("local:abc", name)} ASC`.replace(/^/, "ORDER BY "),
+		);
+		expect(query.where).toBeNull();
+		expect(query.orderBy.map((item) => item.field.name)).toEqual([name]);
+
+		const filtered = parseJql(
+			`${customFieldJql("local:abc", name)} = "x" AND project = DEMO`,
+		);
+		expect(filtered.where?.kind).toBe("and");
 	});
 });
