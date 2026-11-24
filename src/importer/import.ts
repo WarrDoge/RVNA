@@ -48,6 +48,7 @@ import {
 	customFieldId,
 	resolveCustomFieldRoles,
 } from "../lib/shared/custom-field-roles.ts";
+import { withoutBadCalendars } from "./calendar-limits.ts";
 import { db } from "./db.ts";
 import {
 	type IssueMapping,
@@ -1507,9 +1508,10 @@ export async function loadAttachmentIndex() {
 }
 
 export async function importDataset(
-	dataset: JiraDataset,
+	source: JiraDataset,
 	options: ImportOptions,
 ): Promise<ImportResult> {
+	const dataset = withoutBadCalendars(source);
 	const counts: ImportCounts = {};
 	const workflowMatches: WorkflowMatchStats = {
 		matched: 0,
