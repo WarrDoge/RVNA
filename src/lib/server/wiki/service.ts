@@ -688,7 +688,7 @@ async function manageableComment(actor: CurrentUser, id: string) {
 	const access = await loadWikiAccess(actor);
 	const loaded = await loadReadablePage(access, comment.pageId);
 	if (!loaded) throw new HttpError(404, "Comment not found");
-	return comment;
+	return { comment, ...loaded };
 }
 
 export async function updateComment(
@@ -696,7 +696,7 @@ export async function updateComment(
 	id: string,
 	bodyHtml: string,
 ) {
-	const comment = await manageableComment(actor, id);
+	const { comment } = await manageableComment(actor, id);
 	if (!canManageComment(actor, comment)) {
 		throw new HttpError(
 			403,
@@ -720,7 +720,7 @@ export async function updateComment(
 }
 
 export async function deleteComment(actor: CurrentUser, id: string) {
-	const comment = await manageableComment(actor, id);
+	const { comment } = await manageableComment(actor, id);
 	if (!canManageComment(actor, comment)) {
 		throw new HttpError(
 			403,
@@ -735,9 +735,18 @@ export async function resolveComment(
 	id: string,
 	resolved: boolean,
 ) {
-	const comment = await manageableComment(actor, id);
+	const { comment, page } = await manageableComment(actor, id);
 	if (!comment.inline) {
 		throw new HttpError(400, "Only inline comments can be resolved");
+	}
+	if (
+		!canManageComment(actor, comment) &&
+		!(await pageAccess(actor, page)).edit
+	) {
+		throw new HttpError(
+			403,
+			"Only the author, an editor of the page or an administrator can resolve this",
+		);
 	}
 	await db
 		.update(pageComments)

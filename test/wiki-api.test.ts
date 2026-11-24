@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
@@ -1048,6 +1048,57 @@ describe("comments", () => {
 			{ resolved: false },
 		);
 		expect((reopened.json() as { resolved: boolean }).resolved).toBe(false);
+	});
+
+	test("a reader who neither wrote the comment nor can edit the page cannot resolve it", async () => {
+		const [inlineComment] = await db
+			.select()
+			.from(pageComments)
+			.where(
+				and(eq(pageComments.pageId, home.id), eq(pageComments.inline, true)),
+			);
+		const url = `/api/wiki/comments/${inlineComment?.id}/resolve`;
+		const refused = await send("POST", url, carol, { resolved: true });
+		expect(refused.statusCode).toBe(403);
+		const [unchanged] = await db
+			.select({ resolved: pageComments.resolved })
+			.from(pageComments)
+			.where(eq(pageComments.id, inlineComment?.id as string));
+		expect(unchanged?.resolved).toBe(false);
+
+		const byAdmin = await send("POST", url, admin, { resolved: true });
+		expect(byAdmin.statusCode).toBe(200);
+		const reopenedByAdmin = await send("POST", url, admin, { resolved: false });
+		expect(reopenedByAdmin.statusCode).toBe(200);
+	});
+
+	test("the author of an inline comment can resolve it without editing rights", async () => {
+		const created = await send(
+			"POST",
+			`/api/wiki/pages/${home.sourceId}/comments`,
+			carol,
+			{
+				bodyHtml: "<p>my note</p>",
+				inline: true,
+				marker: "marker-carol",
+				selection: "home body",
+			},
+		);
+		expect(created.statusCode).toBe(201);
+		const id = (created.json() as { id: string }).id;
+		const resolved = await send(
+			"POST",
+			`/api/wiki/comments/${id}/resolve`,
+			carol,
+			{
+				resolved: true,
+			},
+		);
+		expect(resolved.statusCode).toBe(200);
+		expect((resolved.json() as { resolved: boolean }).resolved).toBe(true);
+		expect(
+			(await send("DELETE", `/api/wiki/comments/${id}`, carol)).statusCode,
+		).toBe(204);
 	});
 
 	test("an administrator can delete any comment", async () => {
