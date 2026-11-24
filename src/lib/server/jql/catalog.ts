@@ -16,7 +16,12 @@ export interface JqlCatalog {
 	}[];
 	components: { id: string; name: string; projectId: string }[];
 	linkTypes: { id: string; name: string; inward: string; outward: string }[];
-	users: { id: string; username: string; displayName: string }[];
+	users: {
+		id: string;
+		username: string;
+		displayName: string;
+		active: boolean;
+	}[];
 	groups: { id: string; name: string }[];
 	customFields: {
 		id: string;
@@ -79,7 +84,7 @@ async function loadCatalogUncached(): Promise<JqlCatalog> {
 		rows(sql`select id, name, project_id from components order by name`),
 		rows(sql`select id, name, inward, outward from link_types order by name`),
 		rows(
-			sql`select id, username, display_name from users order by display_name`,
+			sql`select id, username, display_name, active from users order by display_name`,
 		),
 		rows(sql`select id, name from groups order by name`),
 		rows(
@@ -145,6 +150,7 @@ async function loadCatalogUncached(): Promise<JqlCatalog> {
 			id: String(row.id),
 			username: String(row.username),
 			displayName: String(row.display_name),
+			active: Boolean(row.active),
 		})),
 		groups: groupRows.map((row) => ({
 			id: String(row.id),

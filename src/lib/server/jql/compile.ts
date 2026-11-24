@@ -2177,8 +2177,9 @@ async function compileNode(node: JqlNode, ctx: CompileContext): Promise<SQL> {
 
 /**
  * What the viewer may name in a query: the projects they can browse, the versions,
- * components and sprints of those projects, and the people and groups they may see. A
- * name outside that gets the answer of a name that does not exist.
+ * components and sprints of those projects, the people they may see and every inactive
+ * account (the issues of a colleague who left stay searchable), and the groups they may
+ * see. A name outside that gets the answer of a name that does not exist.
  */
 async function scopeCatalog(
 	catalog: JqlCatalog,
@@ -2198,14 +2199,19 @@ async function scopeCatalog(
 		users: [] as JqlCatalog["users"],
 		groups: [] as JqlCatalog["groups"],
 	};
-	if (!options.user) return scoped;
 	const viewer = options.user;
+	if (!viewer) {
+		scoped.users = catalog.users.filter((item) => !item.active);
+		return scoped;
+	}
 	const directory = await visibleDirectory(asPermissionUser(viewer));
 	scoped.users = directory.unrestricted
 		? catalog.users
 		: catalog.users.filter(
 				(item) =>
-					item.id === viewer.id || directory.usernames.has(item.username),
+					!item.active ||
+					item.id === viewer.id ||
+					directory.usernames.has(item.username),
 			);
 	scoped.groups = directory.unrestricted
 		? catalog.groups

@@ -114,6 +114,11 @@ beforeAll(async () => {
 				assigneeId: userId,
 				reporterId: userId,
 			},
+			{
+				summary: `Left colleague issue ${run}`,
+				assigneeId: hiddenUserId,
+				reporterId: userId,
+			},
 		],
 	});
 	invisible = await createProjectFixture(client, {
@@ -262,7 +267,7 @@ function suggest(field: string, prefix = "") {
 test("search only returns issues from visible projects", async () => {
 	const visibleResult = await search(`project = ${visibleKey}`);
 	expect(visibleResult.statusCode).toBe(200);
-	expect(visibleResult.json().total).toBe(1);
+	expect(visibleResult.json().total).toBe(2);
 
 	const ordered = await search(`project = ${visibleKey} ORDER BY key ASC`);
 	expect(ordered.statusCode).toBe(200);
@@ -382,6 +387,26 @@ test("a board filter is checked with the same rule when it is saved", async () =
 	const missing = await create(missingKey);
 	expect(missing.status).toBe(400);
 	expect(hidden).toEqual(missing);
+});
+
+test("an inactive user can be named and only the issues the viewer may browse come back", async () => {
+	const left = await search(`assignee = "${invisibleUser}"`);
+	expect(left.statusCode).toBe(200);
+	expect(left.json().issues.map((issue: { key: string }) => issue.key)).toEqual(
+		[visible.issueKeys[1]],
+	);
+	expect(left.body).not.toContain(secretSummary);
+
+	const byName = await search(
+		`reporter = "Hidden User" OR assignee = "Hidden User"`,
+	);
+	expect(byName.json().total).toBe(1);
+
+	const missing = await answer(
+		(name) => `assignee = "${name}"`,
+		`t-${run}-never-existed`,
+	);
+	expect(missing.status).toBe(400);
 });
 
 test("names the viewer may see still resolve", async () => {
