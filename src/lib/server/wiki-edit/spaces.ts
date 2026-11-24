@@ -177,7 +177,7 @@ export async function createSpace(
 					created: now,
 				})
 				.returning();
-			const rendered = await renderBody(tx, emptyDoc(), key, null);
+			const rendered = await renderBody(tx, emptyDoc(), key, null, actor);
 			const [home] = await tx
 				.insert(pages)
 				.values({

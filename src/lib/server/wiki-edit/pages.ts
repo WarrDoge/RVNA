@@ -105,7 +105,7 @@ export async function createPage(
 				}
 				await requireAccess(actor, draft, "edit", undefined, tx);
 			}
-			const rendered = await renderBody(tx, doc, space.key, draftId);
+			const rendered = await renderBody(tx, doc, space.key, draftId, actor);
 			const now = new Date();
 			const values = {
 				spaceId: space.id,
@@ -172,7 +172,7 @@ export async function updatePage(
 					currentVersion: fresh.versionNumber,
 				});
 			}
-			const rendered = await renderBody(tx, doc, space.key, page.id);
+			const rendered = await renderBody(tx, doc, space.key, page.id, actor);
 			const row = await writeVersion(
 				tx,
 				fresh,
@@ -211,7 +211,7 @@ export async function restoreVersion(
 		assertCurrent(fresh);
 		await requireAccess(actor, fresh, "edit", undefined, tx);
 		await assertNotLockedByOthers(tx, page.id, actor.id);
-		const rendered = await renderBody(tx, doc, space.key, page.id);
+		const rendered = await renderBody(tx, doc, space.key, page.id, actor);
 		return writeVersion(
 			tx,
 			fresh,

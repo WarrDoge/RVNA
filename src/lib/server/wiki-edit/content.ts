@@ -18,6 +18,7 @@ import {
 	spaces,
 } from "../schema-wiki.ts";
 import { pageUrl } from "../wiki/data.ts";
+import { loadWikiAccess, pageReadable } from "../wiki/permissions.ts";
 import { type Executor, fail, newSourceId, type PageRow } from "./common.ts";
 
 export type Body = {
@@ -43,12 +44,16 @@ export function docOf(body: {
 
 export const attachmentUrl = (id: string) => `/api/wiki/attachments/${id}`;
 
-/** Bulk-resolves the page links and attachment images of a document into hrefs. */
+/**
+ * Bulk-resolves the page links and attachment images of a document into hrefs.
+ * A page the actor may not read stays unresolved, as if it did not exist.
+ */
 async function htmlContext(
 	ex: Executor,
 	doc: WikiDoc,
 	spaceKey: string,
 	pageId: string | null,
+	actor: CurrentUser,
 ): Promise<HtmlContext> {
 	const refs = collectDocRefs(doc, spaceKey);
 	const titlesBySpace = new Map<string, Set<string>>();
@@ -69,7 +74,12 @@ async function htmlContext(
 		`${normalizeSpaceKey(key)}\n${title}`;
 	if (titlesBySpace.size > 0) {
 		const rows = await ex
-			.select({ id: pages.id, title: pages.title, key: spaces.key })
+			.select({
+				id: pages.id,
+				spaceId: pages.spaceId,
+				title: pages.title,
+				key: spaces.key,
+			})
 			.from(pages)
 			.innerJoin(spaces, eq(spaces.id, pages.spaceId))
 			.where(
@@ -85,7 +95,12 @@ async function htmlContext(
 					),
 				),
 			);
-		for (const row of rows) pageIds.set(mapKey(row.key, row.title), row.id);
+		const access = rows.length > 0 ? await loadWikiAccess(actor) : null;
+		for (const row of rows) {
+			if (access && pageReadable(access, row)) {
+				pageIds.set(mapKey(row.key, row.title), row.id);
+			}
+		}
 	}
 
 	const hostOf = (ref: { title?: string; spaceKey?: string }) =>
@@ -142,8 +157,9 @@ export async function renderBody(
 	input: WikiDoc,
 	spaceKey: string,
 	pageId: string | null,
+	actor: CurrentUser,
 ): Promise<Body> {
-	const ctx = await htmlContext(ex, input, spaceKey, pageId);
+	const ctx = await htmlContext(ex, input, spaceKey, pageId, actor);
 	const doc = resolveDocRefs(input, ctx);
 	return {
 		bodyDoc: doc,
