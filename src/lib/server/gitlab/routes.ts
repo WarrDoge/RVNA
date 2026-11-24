@@ -413,14 +413,30 @@ function validateProjectGitlab(
 }
 
 export async function updateProjectGitlab(
-	_actor: CurrentUser,
+	actor: CurrentUser,
 	key: string,
 	body: ProjectGitlabInput,
 ) {
-	requireAdminActor(_actor);
+	requireAdminActor(actor);
 	const project = await projectByKey(key);
 	if (!project) throw new HttpError(404, "Project not found");
 	validateProjectGitlab(body, await availableTransitionNames(project.id));
+	const before = await projectGitlabSettings(project.id);
 	await saveProjectGitlabSettings(project.id, body);
-	return projectGitlabSettings(project.id);
+	const after = await projectGitlabSettings(project.id);
+	await audit(db, actor, {
+		action: "project.gitlab.save",
+		entityType: "project",
+		entityId: project.id,
+		summary: `Changed the GitLab settings of project ${project.key}`,
+		changes: { from: auditedSettings(before), to: auditedSettings(after) },
+	});
+	return after;
+}
+
+function auditedSettings(
+	settings: Awaited<ReturnType<typeof projectGitlabSettings>>,
+) {
+	const { repositories, availableTransitions, ...changed } = settings;
+	return changed;
 }

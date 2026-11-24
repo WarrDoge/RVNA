@@ -78,6 +78,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	await db.delete(auditLog).where(eq(auditLog.entityType, "gitlab_config"));
+	await db.delete(auditLog).where(eq(auditLog.entityId, fixture.projectId));
 	await app.close();
 	await cleanupGitlabFixture(fixture);
 	await db.delete(gitlabRepositories);
@@ -361,5 +362,43 @@ describe("admin configuration", () => {
 		expect(reread.json().mergeRequestOpenedTransitions).toEqual([
 			"Start progress",
 		]);
+	});
+
+	test("writes a change of the project's GitLab settings to the audit log", async () => {
+		const patch = (smartCommitsEnabled: boolean) =>
+			inject(
+				"PATCH",
+				`/api/projects/${fixture.projectKey}/gitlab`,
+				adminSession,
+				{
+					linkedRepositoryIds: [repositoryId],
+					defaultRepositoryId: repositoryId,
+					smartCommitsEnabled,
+					mergeRequestOpenedEnabled: false,
+					mergeRequestOpenedTransitions: [],
+					mergeRequestMergedEnabled: false,
+					mergeRequestMergedTransitions: [],
+				},
+			);
+		await db.delete(auditLog).where(eq(auditLog.entityId, fixture.projectId));
+		expect((await patch(false)).statusCode).toBe(200);
+		expect((await patch(true)).statusCode).toBe(200);
+
+		const rows = await db
+			.select()
+			.from(auditLog)
+			.where(eq(auditLog.entityId, fixture.projectId))
+			.orderBy(auditLog.createdAt);
+		expect(rows.map((row) => row.action)).toEqual([
+			"project.gitlab.save",
+			"project.gitlab.save",
+		]);
+		expect(rows[1]?.changes).toMatchObject({
+			from: { smartCommitsEnabled: false },
+			to: {
+				smartCommitsEnabled: true,
+				linkedRepositoryIds: [repositoryId],
+			},
+		});
 	});
 });
