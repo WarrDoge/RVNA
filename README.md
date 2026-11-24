@@ -984,6 +984,24 @@ Creating, editing, renaming, labelling, restricting, moving, copying, trashing a
 check the user's access a second time inside the write transaction, after the page row is locked.
 A permission or restriction that changed since the first check stops the write.
 
+### Wiki access rules
+
+1. What a caller may not read answers like what does not exist: a space, a page, a template or a
+   parent page gives 404 with the text a missing one gets (`requireAccess`, `requireReadableSpace`,
+   `requireGrant`, `checkParent`). A caller who can read the space gets 403 for a permission they
+   lack. A taken page title answers 409 with one text, whoever may read the other page; a title
+   that is unique in a space cannot be hidden completely.
+2. An archived space is read only for everybody, administrators included, until it is unarchived.
+   `pageAccess` and `requireGrant` refuse every change to its pages, comments, attachments and
+   labels. Space permissions, templates and the archive switch stay with the space administrators.
+3. A page reference in a body resolves only to a page its author may read.
+4. The edit lock protects against lost edits and is not a permission. An editor may take it over;
+   the displaced editor keeps the text as a draft, and saving a draft never needs the lock.
+   Publishing, renaming and changing labels do.
+5. An inline comment is resolved or reopened by its author, by a user who may edit the page and by
+   an administrator. Anyone who can read the page may write a comment.
+6. Deleting a comment or an attachment writes an `audit_log` row.
+
 ### Traps found
 
 - `BODY_SIZE_LIMIT` defaults to 512K in adapter-node. The Helm chart sets both
