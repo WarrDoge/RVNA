@@ -384,6 +384,31 @@ describe("uploads", () => {
 		]);
 	});
 
+	test("a thumbnail download is private to the signed-in user", async () => {
+		const page = await wiki.page(editor, space.key, "Thumbnail page");
+		const image = multipart({
+			name: "pixel.png",
+			type: "image/png",
+			content: "not really a picture",
+		});
+		const stored = await editor.raw(
+			"POST",
+			`/api/wiki/pages/${page.id}/attachments`,
+			image.payload,
+			image.contentType,
+		);
+		expect(stored.status).toBe(201);
+		const response = await wiki.app.inject({
+			method: "GET",
+			url: `/download/thumbnails/${page.id}/pixel.png`,
+			cookies: { sid: editor.session },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.headers["cache-control"]).toBe(
+			"private, max-age=0, must-revalidate",
+		);
+	});
+
 	test("stores an attachment size above the 32-bit range", async () => {
 		const page = await wiki.page(editor, space.key, "Large attachment");
 		const size = 2 ** 31 + 1;

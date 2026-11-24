@@ -10,7 +10,7 @@ export const GET = endpoint(
 		if (actor instanceof Response) return actor;
 		return fileResponse(
 			await thumbnailDownload(actor, params.pageId, params.fileName),
-			{ size: false, caching: false },
+			{ size: false, caching: true },
 		);
 	},
 );
