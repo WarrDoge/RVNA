@@ -158,6 +158,7 @@ test("the forced password change applies to bearer requests too", async () => {
 		},
 	});
 	expect(changed.statusCode).toBe(204);
+	expect(changed.headers["set-cookie"]).toBeUndefined();
 });
 
 test("the profile token action refuses bearer callers", async () => {
@@ -223,4 +224,24 @@ test("changing the forced password refreshes locals so the profile renders norma
 	expect(response.body).not.toContain(
 		"An administrator requires you to choose a new password",
 	);
+
+	const cookies = [response.headers["set-cookie"]].flat().map(String);
+	const renewed = cookies
+		.find((cookie) => cookie.startsWith("sid="))
+		?.split(";")[0]
+		?.slice(4);
+	expect(renewed).toBeTruthy();
+	expect(renewed).not.toBe(user.session);
+	const old = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		cookies: { sid: user.session },
+	});
+	expect(old.statusCode).toBe(401);
+	const current = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		cookies: { sid: renewed as string },
+	});
+	expect(current.statusCode).toBe(200);
 });

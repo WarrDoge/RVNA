@@ -1,4 +1,4 @@
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type CurrentUser, createSession, sha256 } from "./auth.ts";
 import { db } from "./db.ts";
@@ -284,13 +284,15 @@ export type ChangePasswordInput = {
 	currentPassword: string;
 	newPassword: string;
 	ip: string;
-	keepSessionId?: string;
+	/** The session cookie of the request, if it has one; its session is replaced. */
+	sessionId?: string;
 };
 
+/** Ends every session and API token of the user. Returns a new session when the request had one. */
 export async function changePassword(
 	actor: CurrentUser,
 	input: ChangePasswordInput,
-): Promise<void> {
+): Promise<string | null> {
 	const [row] = await db
 		.select({ passwordHash: users.passwordHash })
 		.from(users)
@@ -331,7 +333,8 @@ export async function changePassword(
 	}
 
 	const passwordHash = await hashPassword(input.newPassword);
-	const changed = await db.transaction(async (tx) => {
+	const callerHash = input.sessionId ? sha256(input.sessionId) : null;
+	const result = await db.transaction(async (tx) => {
 		const now = new Date();
 		const updated = await tx
 			.update(users)
@@ -348,18 +351,13 @@ export async function changePassword(
 				),
 			)
 			.returning({ id: users.id });
-		if (updated.length === 0) return false;
+		if (updated.length === 0) return null;
 
-		await tx
+		const ended = await tx
 			.delete(sessions)
-			.where(
-				and(
-					eq(sessions.userId, actor.id),
-					input.keepSessionId
-						? ne(sessions.idHash, sha256(input.keepSessionId))
-						: undefined,
-				),
-			);
+			.where(eq(sessions.userId, actor.id))
+			.returning({ idHash: sessions.idHash, idToken: sessions.idToken });
+		const caller = ended.find((session) => session.idHash === callerHash);
 		await tx.delete(apiTokens).where(eq(apiTokens.userId, actor.id));
 		await recordAudit(tx, {
 			actorId: actor.id,
@@ -369,12 +367,17 @@ export async function changePassword(
 			entityId: actor.id,
 			summary: `${actor.username} changed their password`,
 		});
-		return true;
+		return {
+			session: caller
+				? await createSession(actor.id, caller.idToken, tx)
+				: null,
+		};
 	});
-	if (!changed) {
+	if (!result) {
 		throw new HttpError(
 			409,
 			"The password was changed in the meantime. Try again.",
 		);
 	}
+	return result.session;
 }

@@ -1,6 +1,6 @@
 import { fail } from "@sveltejs/kit";
 import { z } from "zod";
-import { SESSION_COOKIE } from "#lib/server/auth.ts";
+import { SESSION_COOKIE, sessionCookieOptions } from "#lib/server/auth.ts";
 import { HttpError, isBearer, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
 import { changePassword } from "#lib/server/local-auth.ts";
@@ -101,12 +101,15 @@ export const actions = {
 			}
 
 			try {
-				await changePassword(actor, {
+				const session = await changePassword(actor, {
 					currentPassword,
 					newPassword,
 					ip: event.getClientAddress(),
-					keepSessionId: event.cookies.get(SESSION_COOKIE),
+					sessionId: event.cookies.get(SESSION_COOKIE),
 				});
+				if (session) {
+					event.cookies.set(SESSION_COOKIE, session, sessionCookieOptions());
+				}
 			} catch (cause) {
 				if (isHttpError(cause) && cause.status === 429) {
 					return fail(429, {

@@ -1056,8 +1056,9 @@ characters; there are no composition rules, but it must not be the username or a
 
 Administrators create accounts, set and reset passwords on the Users administration screen. A password
 set by an administrator ends that user's sessions and removes their API tokens. A user can change their
-own password on the profile page (`?selectedTab=password`); that signs every other session out and
-removes their API tokens as well. A user marked "must change password" sees only a "Change your
+own password on the profile page (`?selectedTab=password`) or with `POST /api/me/password`; that ends
+every session, the caller's too, and answers with a new session cookie, so a copy of the old cookie is
+dead. It removes their API tokens as well. A user marked "must change password" sees only a "Change your
 password" screen until they choose a new one; every data request except `GET /api/me`,
 `POST /api/me/password` and logout answers `403 Password change required` meanwhile, every other
 page request redirects to that screen, and its other actions answer the same 403. The gate applies

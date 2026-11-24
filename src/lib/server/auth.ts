@@ -83,9 +83,13 @@ export function transactionCookieOptions() {
 	};
 }
 
-export async function createSession(userId: string, idToken: string | null) {
+export async function createSession(
+	userId: string,
+	idToken: string | null,
+	executor?: Pick<typeof db, "insert" | "update">,
+) {
 	const value = randomValue();
-	await db.transaction(async (tx) => {
+	const write = async (tx: Pick<typeof db, "insert" | "update">) => {
 		await tx.insert(sessions).values({
 			idHash: sha256(value),
 			userId,
@@ -96,7 +100,8 @@ export async function createSession(userId: string, idToken: string | null) {
 			.update(users)
 			.set({ lastLoginAt: new Date() })
 			.where(eq(users.id, userId));
-	});
+	};
+	await (executor ? write(executor) : db.transaction(write));
 	return value;
 }
 

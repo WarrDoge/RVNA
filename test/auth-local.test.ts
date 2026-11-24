@@ -789,7 +789,7 @@ describe("throttling", () => {
 });
 
 describe("password change", () => {
-	test("needs the current password, ends other sessions, keeps this one", async () => {
+	test("needs the current password and replaces every session, this one included", async () => {
 		const user = await makePasswordUser("change");
 		const first = sidFrom(
 			await attempt({ username: user.username, password }),
@@ -861,18 +861,23 @@ describe("password change", () => {
 			await db.select().from(apiTokens).where(eq(apiTokens.userId, user.id)),
 		).toEqual([]);
 
+		const renewed = sidFrom(changed);
+		expect(renewed).toBeTruthy();
+		expect(renewed).not.toBe(first);
+		for (const old of [first, second]) {
+			const dead = await app.inject({
+				method: "GET",
+				url: "/api/me",
+				cookies: { sid: old },
+			});
+			expect(dead.statusCode).toBe(401);
+		}
 		const alive = await app.inject({
 			method: "GET",
 			url: "/api/me",
-			cookies: { sid: first },
-		});
-		const dead = await app.inject({
-			method: "GET",
-			url: "/api/me",
-			cookies: { sid: second },
+			cookies: { sid: renewed as string },
 		});
 		expect(alive.statusCode).toBe(200);
-		expect(dead.statusCode).toBe(401);
 
 		const [row] = await db.select().from(users).where(eq(users.id, user.id));
 		expect(row.passwordChangedAt).toBeInstanceOf(Date);
@@ -993,11 +998,13 @@ describe("forced password change", () => {
 			headers: { authorization: `Bearer ${token}` },
 		});
 		expect(bearerAfter.statusCode).toBe(401);
-		const after = await injectAs(app, sid, "GET", "/api/me/tokens");
+		const renewed = sidFrom(changed) as string;
+		expect((await injectAs(app, sid, "GET", "/api/me")).statusCode).toBe(401);
+		const after = await injectAs(app, renewed, "GET", "/api/me/tokens");
 		expect(after.statusCode).toBe(200);
-		expect((await injectAs(app, sid, "GET", "/api/me")).json()).toMatchObject({
-			mustChangePassword: false,
-		});
+		expect(
+			(await injectAs(app, renewed, "GET", "/api/me")).json(),
+		).toMatchObject({ mustChangePassword: false });
 	});
 
 	test("the user can still log out", async () => {
