@@ -257,9 +257,105 @@ function plainLinkBody(inner: string): string | null {
 	return body.trim();
 }
 
+interface StorageElement {
+	start: number;
+	end: number;
+	attrs: string;
+	inner: string;
+}
+
+/**
+ * The next `<name attrs>inner</name>` at or after `from`. A regular expression
+ * that restarts at every `<name` costs quadratic time on text full of unclosed
+ * tags; here a tag with no closing tag ends the search, because no later tag
+ * can have one either, and a tag that `accepts` refuses is skipped whole.
+ */
+function nextElement(
+	text: string,
+	name: string,
+	from: number,
+	accepts?: (attrs: string) => boolean,
+): StorageElement | null {
+	const open = `<${name}`;
+	const close = `</${name}>`;
+	for (let at = text.indexOf(open, from); at !== -1; ) {
+		const nameEnd = at + open.length;
+		if (/\w/.test(text[nameEnd] ?? "")) {
+			at = text.indexOf(open, nameEnd);
+			continue;
+		}
+		const tagEnd = text.indexOf(">", nameEnd);
+		if (tagEnd === -1) return null;
+		const attrs = text.slice(nameEnd, tagEnd);
+		if (accepts && !accepts(attrs)) {
+			at = text.indexOf(open, tagEnd + 1);
+			continue;
+		}
+		const innerEnd = text.indexOf(close, tagEnd + 1);
+		if (innerEnd === -1) return null;
+		return {
+			start: at,
+			end: innerEnd + close.length,
+			attrs,
+			inner: text.slice(tagEnd + 1, innerEnd),
+		};
+	}
+	return null;
+}
+
+/** Replaces every element of the given names, the leftmost first, in one pass. */
+function replaceElements(
+	text: string,
+	names: string[],
+	render: (element: StorageElement) => string,
+	accepts?: (attrs: string) => boolean,
+): string {
+	let out = "";
+	let last = 0;
+	const found = new Map<string, StorageElement | null>();
+	for (;;) {
+		let next: StorageElement | null = null;
+		for (const name of names) {
+			let element = found.get(name);
+			if (element === undefined || (element && element.start < last)) {
+				element = nextElement(text, name, last, accepts);
+				found.set(name, element);
+			}
+			if (element && (!next || element.start < next.start)) next = element;
+		}
+		if (!next) break;
+		out += text.slice(last, next.start) + render(next);
+		last = next.end;
+	}
+	return out + text.slice(last);
+}
+
+/** The first `<name ...>` tag that `pattern` (sticky, starting at the tag) matches. */
+function matchTag(
+	text: string,
+	name: string,
+	pattern: RegExp,
+): RegExpExecArray | null {
+	const open = `<${name}`;
+	for (let at = text.indexOf(open); at !== -1; ) {
+		pattern.lastIndex = at;
+		const match = pattern.exec(text);
+		if (match) return match;
+		const tagEnd = text.indexOf(">", at);
+		if (tagEnd === -1) return null;
+		at = text.indexOf(open, tagEnd + 1);
+	}
+	return null;
+}
+
+const userTag = /<ri:user\b[^>]*\bri:(?:userkey|username)="([^"]+)"/y;
+const issueTag = /<ri:issue\b[^>]*\bri:key="([^"]+)"/y;
+const pageTagPattern = /<ri:page\b[^>]*>/y;
+const attachmentTag = /<ri:attachment\b[^>]*\bri:filename="([^"]*)"/y;
+
 function richLinkBody(inner: string): string | null {
-	const rich = inner.match(/<ac:link-body[^>]*>([\s\S]*?)<\/ac:link-body>/);
-	return rich ? rich[1].trim() : null;
+	const rich = nextElement(inner, "ac:link-body", 0);
+	return rich ? rich.inner.trim() : null;
 }
 
 function storageLinkBody(inner: string, fallback: string): string {
@@ -278,9 +374,7 @@ function rewriteStorageLink(
 	ctx: WikiLinkContext,
 	pageSourceId: string,
 ) {
-	const user = inner.match(
-		/<ri:user\b[^>]*\bri:(?:userkey|username)="([^"]+)"/,
-	);
+	const user = matchTag(inner, "ri:user", userTag);
 	if (user) {
 		const userId =
 			ctx.userIdsByUserKey.get(user[1]) ?? ctx.userIdsByUsername.get(user[1]);
@@ -293,13 +387,13 @@ function rewriteStorageLink(
 		return `<span class="user-mention" ${attribute}="${escapeHtml(userId ?? decodeEntities(user[1]))}">${name}</span>`;
 	}
 
-	const issue = inner.match(/<ri:issue\b[^>]*\bri:key="([^"]+)"/);
+	const issue = matchTag(inner, "ri:issue", issueTag);
 	if (issue) {
 		const key = escapeHtml(decodeEntities(issue[1]));
 		return `<a class="issue-link" href="/browse/${key}">${key}</a>`;
 	}
 
-	const pageTag = inner.match(/<ri:page\b[^>]*>/)?.[0] ?? "";
+	const pageTag = matchTag(inner, "ri:page", pageTagPattern)?.[0] ?? "";
 	const page = pageTag.match(/\bri:content-title="([^"]*)"/);
 	if (page) {
 		const title = decodeEntities(page[1]);
@@ -313,9 +407,7 @@ function rewriteStorageLink(
 		return `<span>${body}</span>`;
 	}
 
-	const attachment = inner.match(
-		/<ri:attachment\b[^>]*\bri:filename="([^"]*)"/,
-	);
+	const attachment = matchTag(inner, "ri:attachment", attachmentTag);
 	if (attachment) {
 		const fileName = decodeEntities(attachment[1]);
 		const id = ctx.attachmentIds.get(attachmentKey(pageSourceId, fileName));
@@ -335,9 +427,7 @@ function rewriteStorageImage(
 	ctx: WikiLinkContext,
 	pageSourceId: string,
 ) {
-	const attachment = inner.match(
-		/<ri:attachment\b[^>]*\bri:filename="([^"]*)"/,
-	);
+	const attachment = matchTag(inner, "ri:attachment", attachmentTag);
 	const alt = attribs.match(/\bac:alt="([^"]*)"/)?.[1];
 	const width = attribs.match(/\bac:width="([^"]*)"/)?.[1];
 	const height = attribs.match(/\bac:height="([^"]*)"/)?.[1];
@@ -365,31 +455,29 @@ export function rewriteStorageReferences(
 ): string {
 	if (!storage) return "";
 
-	return storage
-		.replace(
-			/<ac:structured-macro\b[^>]*\bac:name="jira"[^>]*>([\s\S]*?)<\/ac:structured-macro>|<ac:macro\b[^>]*\bac:name="jira"[^>]*>([\s\S]*?)<\/ac:macro>/g,
-			(
-				_match,
-				structuredInner: string | undefined,
-				oldInner: string | undefined,
-			) => {
-				const inner = structuredInner ?? oldInner ?? "";
-				const key = inner
-					.match(
-						/<ac:parameter\b[^>]*\bac:name="key"[^>]*>([\s\S]*?)<\/ac:parameter>/,
-					)?.[1]
-					?.trim()
-					.replace(/<!\[CDATA\[|\]\]>/g, "");
-				if (!key) return "";
-				return `<a class="issue-link" href="/browse/${key}">${key}</a>`;
-			},
-		)
-		.replace(/<ac:link\b[^>]*>([\s\S]*?)<\/ac:link>/g, (match, inner: string) =>
-			rewriteStorageLink(inner, match, ctx, pageSourceId),
-		)
-		.replace(
-			/<ac:image\b([^>]*)>([\s\S]*?)<\/ac:image>/g,
-			(_match, attribs: string, inner: string) =>
-				rewriteStorageImage(attribs, inner, ctx, pageSourceId),
-		);
+	const withIssues = replaceElements(
+		storage,
+		["ac:structured-macro", "ac:macro"],
+		(macro) => {
+			const key = nextElement(macro.inner, "ac:parameter", 0, (attrs) =>
+				/\bac:name="key"/.test(attrs),
+			)
+				?.inner.trim()
+				.replace(/<!\[CDATA\[|\]\]>/g, "");
+			if (!key) return "";
+			return `<a class="issue-link" href="/browse/${key}">${key}</a>`;
+		},
+		(attrs) => /\bac:name="jira"/.test(attrs),
+	);
+	const withLinks = replaceElements(withIssues, ["ac:link"], (link) =>
+		rewriteStorageLink(
+			link.inner,
+			withIssues.slice(link.start, link.end),
+			ctx,
+			pageSourceId,
+		),
+	);
+	return replaceElements(withLinks, ["ac:image"], (image) =>
+		rewriteStorageImage(image.attrs, image.inner, ctx, pageSourceId),
+	);
 }

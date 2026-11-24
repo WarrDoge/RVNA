@@ -269,6 +269,36 @@ describe("storage reference escaping", () => {
 		expect(performance.now() - started).toBeLessThan(1000);
 	});
 
+	test("handles megabytes of unclosed tags in linear time", () => {
+		const size = 2_000_000;
+		const repeat = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
+		const inputs = [
+			repeat("<ac:link>"),
+			repeat("<ac:link "),
+			repeat("<ac:image>"),
+			repeat('<ac:structured-macro ac:name="jira">'),
+			repeat("<ac:macro "),
+			`<ac:link>${repeat("<ri:user ")}</ac:link>`,
+			`<ac:link>${repeat("<ri:page ")}</ac:link>`,
+			`<ac:link>${repeat("<ac:link-body>")}</ac:link>`,
+			`<ac:image>${repeat("<ri:attachment ")}</ac:image>`,
+			`<ac:link></ac:link>${repeat("<ac:link>")}`,
+		];
+		const started = performance.now();
+		for (const input of inputs) rewriteStorageReferences(input, ctx, "100");
+		expect(performance.now() - started).toBeLessThan(1000);
+	});
+
+	test("an unclosed link tag takes in everything up to the first closing tag", () => {
+		const rewritten = rewriteStorageReferences(
+			'<ac:link><p>x</p><ac:structured-macro ac:name="jira"><ac:parameter ac:name="key">ABC-1</ac:parameter></ac:structured-macro><ac:link><ri:page ri:content-title="Child One" ri:space-key="FIX" /></ac:link>',
+			ctx,
+			"100",
+		);
+
+		expect(rewritten).toContain('href="/pages/viewpage.action?pageId=101"');
+	});
+
 	test("does not let an image attribute break out of its value", () => {
 		const rewritten = rewriteStorageReferences(
 			'<ac:image ac:alt="x&quot; onerror=&quot;alert(1)"><ri:attachment ri:filename="diagram.png" /></ac:image>',
