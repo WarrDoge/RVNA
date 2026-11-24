@@ -171,13 +171,16 @@ export async function requireAccess(
 	return access;
 }
 
+/** A space the user may not read is answered like one that does not exist. */
+const spaceNotFound = () => fail(404, "Space not found");
+
 export async function requireReadableSpace(
 	user: CurrentUser,
 	spaceId: string,
 	wiki?: WikiAccess,
 ): Promise<WikiAccess> {
 	const access = wiki ?? (await loadWikiAccess(user));
-	allow(spaceReadable(access, spaceId));
+	if (!spaceReadable(access, spaceId)) spaceNotFound();
 	return access;
 }
 
@@ -188,6 +191,7 @@ export async function requireGrant(
 	ex?: Executor,
 ): Promise<Grants> {
 	const grants = await spaceGrants(user, spaceId, ex);
+	if (!can(grants, "read")) spaceNotFound();
 	allow(can(grants, need));
 	return grants;
 }

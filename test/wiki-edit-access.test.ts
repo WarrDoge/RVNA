@@ -90,13 +90,13 @@ describe("space permission mapping", () => {
 					bodyDoc: doc("x"),
 				})
 			).status,
-		).toBe(403);
+		).toBe(404);
 		const spaces = await nobody.get("/api/wiki/edit/spaces");
 		expect(spaces.body.map((s: { key: string }) => s.key)).not.toContain(
 			space.key,
 		);
 		const tree = await nobody.get(`/api/wiki/edit/space-tree/${space.key}`);
-		expect(tree.status).toBe(403);
+		expect(tree.status).toBe(404);
 		const search = await nobody.get(
 			`/api/wiki/edit/page-search?q=Mapping&spaceKey=${space.key}`,
 		);
@@ -295,7 +295,8 @@ describe("space permission mapping", () => {
 			hasPassword: false,
 		};
 		await expect(trashPermissions(actor, own.key)).rejects.toMatchObject({
-			status: 403,
+			status: 404,
+			message: "Space not found",
 		});
 	});
 });

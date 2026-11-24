@@ -19,6 +19,7 @@ import {
 	spacePermissions,
 	spaces,
 } from "../schema-wiki.ts";
+import { loadWikiAccess, spaceReadable } from "../wiki/permissions.ts";
 import {
 	can,
 	requireGrant,
@@ -404,8 +405,11 @@ export async function getTemplate(actor: CurrentUser, id: string) {
 		.leftJoin(spaces, eq(spaces.id, pageTemplates.spaceId))
 		.where(eq(pageTemplates.id, id));
 	if (!row) fail(404, "Template not found");
-	if (row.template.spaceId) {
-		await requireReadableSpace(actor, row.template.spaceId);
+	if (
+		row.template.spaceId &&
+		!spaceReadable(await loadWikiAccess(actor), row.template.spaceId)
+	) {
+		fail(404, "Template not found");
 	}
 	return templateDetail(row.template, row.spaceKey);
 }
@@ -440,6 +444,7 @@ async function ownTemplate(actor: CurrentUser, id: string) {
 	if (!row) fail(404, "Template not found");
 	if (row.template.spaceId) {
 		const grants = await spaceGrants(actor, row.template.spaceId);
+		if (!can(grants, "read")) fail(404, "Template not found");
 		allow(can(grants, "administer"));
 	} else {
 		allow(actor.isAdmin);

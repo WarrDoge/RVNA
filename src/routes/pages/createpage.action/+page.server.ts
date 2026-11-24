@@ -1,8 +1,10 @@
 import { fail } from "@sveltejs/kit";
 import { z } from "zod";
+import type { CurrentUser } from "#lib/server/auth.ts";
 import { db } from "#lib/server/db.ts";
 import { HttpError, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
+import { requireAccess } from "#lib/server/wiki-edit/access.ts";
 import { loadPage } from "#lib/server/wiki-edit/common.ts";
 import { createDraft, createDraftBody } from "#lib/server/wiki-edit/drafts.ts";
 import { editorPageData } from "#lib/server/wiki-edit/editor-page-data.ts";
@@ -16,13 +18,15 @@ function requestedParentId(url: URL) {
 
 /**
  * Accepts a page UUID or the numeric source id of an imported page, and resolves
- * either to the page UUID the draft service expects.
+ * either to the page UUID the draft service expects. A source id of a page the
+ * actor may not read is answered like one that does not exist.
  */
-async function resolveParentId(raw: string | null) {
+async function resolveParentId(actor: CurrentUser, raw: string | null) {
 	if (raw === null) return null;
 	if (z.uuid().safeParse(raw).success) return raw;
 	try {
 		const { page } = await loadPage(db, raw);
+		await requireAccess(actor, page, "read");
 		return page.id;
 	} catch (cause) {
 		if (isHttpError(cause) && cause.status === 404) {
@@ -47,7 +51,7 @@ export const actions = {
 		if (!spaceKey) return fail(400, { error: "No space given" });
 		const parsed = createDraftBody.safeParse({
 			spaceKey,
-			parentId: await resolveParentId(requestedParentId(event.url)),
+			parentId: await resolveParentId(actor, requestedParentId(event.url)),
 		});
 		if (!parsed.success) {
 			const issue = parsed.error.issues[0];

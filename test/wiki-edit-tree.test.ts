@@ -156,6 +156,11 @@ describe("move", () => {
 	test("needs create permission in the target space", async () => {
 		const lonely = await wiki.space("U");
 		const page = await mk("Cannot leave");
+		const unreadable = await editor.post(`/api/wiki/pages/${page.id}/move`, {
+			spaceKey: lonely.key,
+		});
+		expect(unreadable.status).toBe(404);
+		await wiki.grant(lonely.id, { userId: editor.id }, ["read"]);
 		const refused = await editor.post(`/api/wiki/pages/${page.id}/move`, {
 			spaceKey: lonely.key,
 		});

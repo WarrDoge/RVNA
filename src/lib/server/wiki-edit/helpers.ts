@@ -140,10 +140,10 @@ export async function checkParent(
 ): Promise<PageRow | null> {
 	if (!parentId) return null;
 	const { page } = await loadPage(ex, parentId);
+	await requireAccess(user, page, "read", undefined, ex);
 	if (page.spaceId !== space.id || page.status !== "current") {
 		fail(400, "Parent page is not a current page of this space");
 	}
-	await requireAccess(user, page, "read", undefined, ex);
 	return page;
 }
 
