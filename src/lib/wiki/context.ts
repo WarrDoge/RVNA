@@ -25,9 +25,18 @@ export function setWikiContext(context: WikiContext) {
 	currentContext = context;
 }
 
+/** A malformed percent escape in an address someone linked to must not stop the Create button. */
+function decodePathSegment(segment: string) {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		return segment;
+	}
+}
+
 function contextFromPath(pathname: string, search: string): WikiContext {
 	const match = pathname.match(/^\/(?:display|spaces)\/([^/]+)/);
-	const spaceKey = match ? decodeURIComponent(match[1] ?? "") : null;
+	const spaceKey = match ? decodePathSegment(match[1] ?? "") : null;
 	const pageId = new URLSearchParams(search).get("pageId");
 	return { spaceKey, pageId };
 }
