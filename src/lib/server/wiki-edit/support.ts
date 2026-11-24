@@ -298,9 +298,11 @@ export async function trashPermissions(actor: CurrentUser, spaceKey: string) {
 	const space = await loadSpace(db, spaceKey);
 	await requireReadableSpace(actor, space.id);
 	const grants = await spaceGrants(actor, space.id);
+	const writable = space.status !== "archived";
 	return {
-		canRestore: can(grants, "delete") || can(grants, "delete_own"),
-		canPurge: can(grants, "administer"),
+		canRestore:
+			writable && (can(grants, "delete") || can(grants, "delete_own")),
+		canPurge: writable && can(grants, "administer"),
 	};
 }
 

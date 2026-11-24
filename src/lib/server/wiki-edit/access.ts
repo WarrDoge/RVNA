@@ -1,7 +1,7 @@
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { type CurrentUser, hasGroup } from "../auth.ts";
 import { db } from "../db.ts";
-import { pageRestrictions, spacePermissions } from "../schema.ts";
+import { pageRestrictions, spacePermissions, spaces } from "../schema.ts";
 import {
 	loadWikiAccess,
 	pageReadable,
@@ -123,7 +123,20 @@ export type PageAccess = {
 	administer: boolean;
 	/** app admin or space admin: page restrictions do not apply */
 	bypass: boolean;
+	/** The space is archived: nobody changes its content until it is unarchived. */
+	archived: boolean;
 	grants: Grants;
+};
+
+const ARCHIVED = "This space is archived and read only";
+
+export const spaceArchived = async (spaceId: string, ex: Executor = db) => {
+	const [space] = await ex
+		.select({ status: spaces.status })
+		.from(spaces)
+		.where(eq(spaces.id, spaceId))
+		.limit(1);
+	return space?.status === "archived";
 };
 
 type AccessPage = Pick<PageRow, "id" | "spaceId" | "creatorId" | "status">;
@@ -134,7 +147,9 @@ export async function pageAccess(
 	wiki?: WikiAccess,
 	ex: Executor = db,
 ): Promise<PageAccess> {
+	// One after the other: inside a transaction both run on its single connection.
 	const grants = await spaceGrants(user, page.spaceId, ex);
+	const archived = await spaceArchived(page.spaceId, ex);
 	const bypass = grants.has("administer");
 	const hidden =
 		page.status === "draft" && !user.isAdmin && page.creatorId !== user.id;
@@ -144,16 +159,16 @@ export async function pageAccess(
 	const update =
 		bypass || (await updateAllowed(user, [page.id], ex)).has(page.id);
 	const own = page.creatorId === user.id;
+	const write = read && update && !archived;
 	return {
 		read,
-		edit: read && update && can(grants, "create"),
+		edit: write && can(grants, "create"),
 		trash:
-			read &&
-			update &&
-			(can(grants, "delete") || (can(grants, "delete_own") && own)),
-		restrict: read && update && can(grants, "restrict"),
+			write && (can(grants, "delete") || (can(grants, "delete_own") && own)),
+		restrict: write && can(grants, "restrict"),
 		administer: grants.has("administer"),
 		bypass,
+		archived,
 		grants,
 	};
 }
@@ -167,6 +182,7 @@ export async function requireAccess(
 ): Promise<PageAccess> {
 	const access = await pageAccess(user, page, wiki, ex);
 	if (!access.read) fail(404, "Page not found");
+	if (need !== "read") allow(!access.archived, ARCHIVED);
 	allow(access[need]);
 	return access;
 }
@@ -184,6 +200,20 @@ export async function requireReadableSpace(
 	return access;
 }
 
+/** The permissions that change the content of a space; an archived space refuses them. */
+const CONTENT_PERMISSIONS: readonly SpacePermission[] = [
+	"create",
+	"delete_own",
+	"delete",
+	"restrict",
+	"delete_mail",
+];
+
+/** Throws 403 when the space is archived. */
+export function assertNotArchived(space: { status: string }) {
+	allow(space.status !== "archived", ARCHIVED);
+}
+
 export async function requireGrant(
 	user: CurrentUser,
 	spaceId: string,
@@ -193,5 +223,8 @@ export async function requireGrant(
 	const grants = await spaceGrants(user, spaceId, ex);
 	if (!can(grants, "read")) spaceNotFound();
 	allow(can(grants, need));
+	if (CONTENT_PERMISSIONS.includes(need)) {
+		allow(!(await spaceArchived(spaceId, ex)), ARCHIVED);
+	}
 	return grants;
 }

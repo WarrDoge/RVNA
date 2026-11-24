@@ -31,7 +31,7 @@ import {
 	users,
 } from "../schema.ts";
 import { tooManyFiles, type UploadedForm } from "../uploads.ts";
-import { pageAccess } from "../wiki-edit/access.ts";
+import { assertNotArchived, pageAccess } from "../wiki-edit/access.ts";
 import { removeOrphanFiles } from "../wiki-edit/files.ts";
 import { assertNotLockedByOthers } from "../wiki-edit/locks.ts";
 import { pageAttachmentVersions, recentPageLinks } from "./data.ts";
@@ -636,7 +636,8 @@ export async function createComment(
 	id: string,
 	input: CreateCommentInput,
 ) {
-	const { page } = await readablePage(actor, id);
+	const { page, space } = await readablePage(actor, id);
+	assertNotArchived(space);
 	const html = await sanitizeBodyHtml(input.bodyHtml);
 	if (!html) throw new HttpError(400, "Comment is empty");
 
@@ -690,6 +691,7 @@ async function manageableComment(actor: CurrentUser, id: string) {
 	const access = await loadWikiAccess(actor);
 	const loaded = await loadReadablePage(access, comment.pageId);
 	if (!loaded) throw new HttpError(404, "Comment not found");
+	assertNotArchived(loaded.space);
 	return { comment, ...loaded };
 }
 
@@ -880,6 +882,7 @@ export async function deleteAttachment(actor: CurrentUser, id: string) {
 	const access = await loadWikiAccess(actor);
 	const loaded = await loadReadablePage(access, row.pageId);
 	if (!loaded) throw new HttpError(404, "Attachment not found");
+	assertNotArchived(loaded.space);
 	if (row.authorId !== actor.id && !actor.isAdmin) {
 		throw new HttpError(
 			403,
