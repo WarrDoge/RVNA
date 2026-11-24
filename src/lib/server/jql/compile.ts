@@ -821,7 +821,7 @@ function customSpec(
 	const key = field.sourceId;
 	const display = field.name;
 	const type = field.type ?? "";
-	const source = sql.raw(`'${key.replace(/'/g, "''")}'`);
+	const source = sql`${param(key)}::text`;
 	const unsupported = () =>
 		new JqlError(`Field '${display}' cannot be searched.`, position);
 

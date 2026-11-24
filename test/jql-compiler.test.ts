@@ -41,6 +41,7 @@ const CUSTOM_SELECT = "customfield_99003";
 const CUSTOM_CASCADE = "customfield_99004";
 const CUSTOM_USER = "customfield_99005";
 const CUSTOM_DATE = "customfield_99006";
+const CUSTOM_ODD = "customfield_9900'7\\8";
 
 const tag = `jqlt-${run}`;
 const username = (name: string) => `${tag}-${name}`;
@@ -224,6 +225,7 @@ beforeAll(async () => {
 		.insert(fields)
 		.values([
 			{ sourceId: CUSTOM_TEXT, name: "Test Text", type: "string" },
+			{ sourceId: CUSTOM_ODD, name: "Test Odd", type: "string" },
 			{ sourceId: CUSTOM_NUMBER, name: "Test Number", type: "number" },
 			{
 				sourceId: CUSTOM_SELECT,
@@ -292,6 +294,7 @@ beforeAll(async () => {
 				rank: "0|aaa",
 				custom: {
 					[CUSTOM_TEXT]: "hello",
+					[CUSTOM_ODD]: "odd value",
 					[CUSTOM_NUMBER]: 42,
 					[CUSTOM_SELECT]: { id: "1", value: "Alpha" },
 					[CUSTOM_CASCADE]: { value: "Parent", child: { value: "Child" } },
@@ -727,6 +730,15 @@ describe("JQL compiler: fields and operators", () => {
 		await expectKeys(`"Test User" = "${username("alice")}"`, [A]);
 		await expectKeys(`"Test Date" >= -30d`, [A]);
 		await expectKeys(`"Test Date" < -20d`, []);
+	});
+
+	test("a custom field id with a quote and a backslash is bound, not spliced", async () => {
+		await expectKeys(`"Test Odd" = "odd value"`, [A]);
+		await expectKeys(`"Test Odd" ~ odd`, [A]);
+		await expectKeys(`"Test Odd" is EMPTY`, [B, C, D]);
+		expect(
+			await keys(`project = ${KEY} ORDER BY "Test Odd" DESC`),
+		).toHaveLength(4);
 	});
 
 	test("unknown fields and values raise Jira errors", async () => {
