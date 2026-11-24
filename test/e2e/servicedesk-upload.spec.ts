@@ -99,12 +99,13 @@ test("a failed attachment upload still opens the created request, once", async (
 		`/servicedesk/customer/portal/${deskId}/create/${requestTypeId}`,
 	);
 	await page.getByLabel("Summary").fill(summary);
-	await page.locator("#portal-attachment").setInputFiles({
-		name: "log.txt",
-		mimeType: "text/plain",
-		buffer: Buffer.from("printer log"),
-	});
-	await page.route("**/api/issues/*/attachments", (route) => route.abort());
+	await page.locator("#portal-attachment").setInputFiles(
+		Array.from({ length: 21 }, (_, number) => ({
+			name: `log-${number}.txt`,
+			mimeType: "text/plain",
+			buffer: Buffer.from("printer log"),
+		})),
+	);
 	await page.getByRole("button", { name: "Send" }).click();
 
 	await expect(page).toHaveURL(

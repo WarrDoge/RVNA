@@ -2,7 +2,6 @@
 	import { enhance } from "$app/forms";
 	import { goto, invalidate } from "$app/navigation";
 	import { onMount } from "svelte";
-	import { api, ApiError } from "#lib/api.ts";
 	import Button from "#lib/components/Button.svelte";
 	import Icon from "#lib/components/Icon.svelte";
 	import PageTitle from "#lib/components/PageTitle.svelte";
@@ -64,50 +63,26 @@
 		return cause instanceof Error ? cause.message : "Could not send the request";
 	}
 
-	/** Uploads the staged files after the request exists; retries transient failures. */
-	async function uploadAttachments(key: string): Promise<string | null> {
-		let lastError: unknown = null;
-		for (let attempt = 0; attempt < 3; attempt++) {
-			const body = new FormData();
-			for (const file of files) body.append("file", file, file.name);
-			try {
-				await api(`/api/issues/${key}/attachments`, {
-					method: "POST",
-					body,
-				});
-				return null;
-			} catch (cause) {
-				lastError = cause;
-				if (cause instanceof ApiError && cause.status < 500) break;
-				if (attempt < 2) {
-					await new Promise((resolve) => setTimeout(resolve, 250));
-				}
-			}
-		}
-		return message(lastError);
-	}
-
-	const submit: SubmitFunction = () => {
+	const submit: SubmitFunction = ({ formData }) => {
 		submitting = true;
 		localError = null;
 		busy = true;
+		formData.delete("attachment");
+		for (const file of files) formData.append("attachment", file, file.name);
 		return async ({ result, update }) => {
 			try {
 				if (result.type === "success") {
-					const created = (
-						result.data as { created?: { id: string; key: string } } | null
-					)?.created;
+					const { created, attachmentError } = (result.data ?? {}) as {
+						created?: { id: string; key: string };
+						attachmentError?: string | null;
+					};
 					if (!created) {
 						await update();
 						return;
 					}
-					const uploadError =
-						files.length > 0
-							? await uploadAttachments(created.key)
-							: null;
 					await invalidate("app:portal").catch(() => undefined);
-					const query = uploadError
-						? `?attachmentError=${encodeURIComponent(uploadError)}`
+					const query = attachmentError
+						? `?attachmentError=${encodeURIComponent(attachmentError)}`
 						: "";
 					await goto(
 						`/servicedesk/customer/portal/${data.portalId}/${created.key}${query}`,
@@ -155,8 +130,6 @@
 				localError = null;
 			}}
 		>
-			<input type="hidden" name="attachmentCount" value={files.length} />
-
 			{#if actionError}
 				<p role="alert" class="error">{actionError}</p>
 			{/if}

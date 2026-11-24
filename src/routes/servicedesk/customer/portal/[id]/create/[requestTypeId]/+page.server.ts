@@ -18,8 +18,8 @@ import {
 import { tooManyFiles, type UploadedForm } from "#lib/server/uploads.ts";
 import type { Actions, PageServerLoad } from "./$types";
 
-/** A native multipart post carries the chosen files; stage them like the upload endpoint. */
-async function stageNativeFiles(files: File[]): Promise<UploadedForm> {
+/** The post carries the chosen files; stage them like the upload endpoint. */
+async function stageFiles(files: File[]): Promise<UploadedForm> {
 	const limits = attachmentUploadLimits();
 	if (files.length > MAX_UPLOAD_FILES) {
 		throw tooManyFiles(limits.tooManyFilesMessage);
@@ -94,14 +94,11 @@ export const actions = {
 			headers.get("x-sveltekit-action") !== "true" &&
 			(headers.get("sec-fetch-mode") === "navigate" ||
 				(headers.get("accept") ?? "").includes("text/html"));
-		const nativeFiles = native
-			? form
-					.getAll("attachment")
-					.filter(
-						(value): value is File =>
-							value instanceof File && value.name !== "",
-					)
-			: [];
+		const files = form
+			.getAll("attachment")
+			.filter(
+				(value): value is File => value instanceof File && value.name !== "",
+			);
 
 		const values = new Map<string, string | string[]>();
 		for (const field of data.fields) {
@@ -120,15 +117,11 @@ export const actions = {
 		const fields: Record<string, string | string[] | null> = {};
 		let summary = "";
 		let description: string | null = null;
-		const attachmentCount =
-			nativeFiles.length > 0
-				? nativeFiles.length
-				: Number(form.get("attachmentCount") ?? 0);
 
 		for (const field of data.fields) {
 			if (field.hidden) continue;
 			if (field.fieldId === "attachment") {
-				if (field.required && attachmentCount === 0) {
+				if (field.required && files.length === 0) {
 					return fail(400, { error: `${field.label} is required` });
 				}
 				continue;
@@ -182,20 +175,15 @@ export const actions = {
 			summary,
 			description,
 			fields,
-			attachmentCount,
+			attachmentCount: files.length,
 		});
-		if (!native) return { created };
 
 		let attachmentError: string | null = null;
 		let attachmentNotice: number | null = null;
-		if (nativeFiles.length > 0) {
+		if (files.length > 0) {
 			try {
-				await saveAttachmentUpload(
-					actor,
-					created.key,
-					await stageNativeFiles(nativeFiles),
-				);
-				attachmentNotice = nativeFiles.length;
+				await saveAttachmentUpload(actor, created.key, await stageFiles(files));
+				attachmentNotice = files.length;
 			} catch (cause) {
 				if (!(cause instanceof HttpError)) console.error(cause);
 				attachmentError =
@@ -204,6 +192,7 @@ export const actions = {
 						: "Could not upload the attachments";
 			}
 		}
+		if (!native) return { created, attachmentError };
 		const query = new URLSearchParams();
 		if (attachmentError) query.set("attachmentError", attachmentError);
 		if (attachmentNotice)

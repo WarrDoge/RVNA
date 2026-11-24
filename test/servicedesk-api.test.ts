@@ -1296,11 +1296,12 @@ describe("portal pages", () => {
 		const customer = await userFor(customerSession);
 		const path = `/servicedesk/customer/portal/${deskId}/create/${requiredRequestTypeId}`;
 		const params = { id: deskId, requestTypeId: requiredRequestTypeId };
-		const form = (description: string, attachmentCount: string) => {
+		const form = (description: string, files: File[]) => {
 			const data = new FormData();
 			data.set("summary", "Action required fields");
 			data.set("description", description);
-			data.set("attachmentCount", attachmentCount);
+			data.set("attachmentCount", "1");
+			for (const file of files) data.append("attachment", file);
 			return data;
 		};
 
@@ -1310,7 +1311,7 @@ describe("portal pages", () => {
 					customer,
 					path,
 					params,
-					form("", "0"),
+					form("", []),
 					"/servicedesk/customer/portal/[id]/create/[requestTypeId]",
 				),
 			),
@@ -1322,7 +1323,7 @@ describe("portal pages", () => {
 					customer,
 					path,
 					params,
-					form("<p>Details</p>", "0"),
+					form("<p>Details</p>", []),
 					"/servicedesk/customer/portal/[id]/create/[requestTypeId]",
 				),
 			),
@@ -1333,10 +1334,10 @@ describe("portal pages", () => {
 
 		const created = await createPortalActions.default(
 			actionEvent(
-				customer,
+				await userFor(adminSession),
 				path,
 				params,
-				form("<p>Details</p>", "1"),
+				form("<p>Details</p>", [new File(["log"], "log.txt")]),
 				"/servicedesk/customer/portal/[id]/create/[requestTypeId]",
 			),
 		);
@@ -1344,7 +1345,14 @@ describe("portal pages", () => {
 			created: {
 				key: expect.stringMatching(new RegExp(`^${projectKey}-\\d+$`)),
 			},
+			attachmentError: null,
 		});
+		const stored = await pool.query(
+			`select a.file_name from attachments a join issues i on i.id = a.issue_id
+			 where i.key = $1`,
+			[(created as { created: { key: string } }).created.key],
+		);
+		expect(stored.rows).toEqual([{ file_name: "log.txt" }]);
 	});
 
 	test("the request list holds the customer's own requests, as the API lists them", async () => {
