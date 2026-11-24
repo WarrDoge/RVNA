@@ -3,6 +3,7 @@ import {
 	calendarDateTime,
 	relativeShortDate,
 } from "#lib/dates.ts";
+import { isRasterImageType, servedType } from "#lib/shared/served-type.ts";
 import { decodeEntities } from "#lib/shared/wiki/xml.ts";
 
 export function pageHref(page: { sourceId: string }) {
@@ -42,8 +43,9 @@ export function formatSize(bytes: number) {
 }
 
 export function isPreviewable(mimeType: string | null) {
-	const base = (mimeType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
-	return base.startsWith("image/") || base === "application/pdf";
+	return (
+		isRasterImageType(mimeType) || servedType(mimeType) === "application/pdf"
+	);
 }
 
 export function attachmentUrl(

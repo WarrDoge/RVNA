@@ -5,6 +5,7 @@
 	import Icon from "#lib/components/Icon.svelte";
 	import Module from "#lib/components/Module.svelte";
 	import { formatBytes, relativeDate } from "#lib/dates.ts";
+	import { isRasterImageType } from "#lib/shared/served-type.ts";
 	import { errorMessage } from "./panels-format.ts";
 
 	interface Props {
@@ -80,7 +81,7 @@
 	{:else}
 		<div class="attachments">
 			{#each issue.attachments as attachment (attachment.id)}
-				{@const image = attachment.mimeType?.startsWith("image/")}
+				{@const image = isRasterImageType(attachment.mimeType)}
 				{@const canDelete =
 					canDeleteAll ||
 					(canDeleteOwn && me?.id === attachment.author?.id)}

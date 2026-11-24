@@ -1,5 +1,6 @@
 import type { JSONContent } from "@tiptap/core";
 import { api } from "#lib/api.ts";
+import { isRasterImageType } from "#lib/shared/served-type.ts";
 import type { UploadedAttachment } from "#lib/shared/wiki/index.ts";
 
 export function uploadAttachments(
@@ -14,14 +15,14 @@ export function uploadAttachments(
 	);
 }
 
-const imageName = /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i;
+const imageName = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 
 export function isImageAttachment(item: {
 	mimeType: string | null;
 	fileName: string;
 }): boolean {
 	return item.mimeType
-		? item.mimeType.startsWith("image/")
+		? isRasterImageType(item.mimeType)
 		: imageName.test(item.fileName);
 }
 

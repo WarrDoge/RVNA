@@ -5,6 +5,7 @@ import { basename, join, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { isInertType, servedType } from "../../shared/served-type.ts";
 import { maxAttachmentBytes, maxUploadRequestBytes } from "../attachments.ts";
 import type { CurrentUser } from "../auth.ts";
 import { userAvatarSql } from "../avatars.ts";
@@ -23,35 +24,6 @@ import {
 
 export const issueParams = z.object({ key: z.string().min(1).max(100) });
 export const attachmentParams = z.object({ id: z.string().min(1) });
-
-const inlineTypes = ["application/pdf", "text/plain"];
-const activeTypes = [
-	"text/html",
-	"text/xml",
-	"application/xml",
-	"application/javascript",
-	"application/x-javascript",
-	"text/javascript",
-	"text/xsl",
-];
-
-function baseType(mimeType: string | null) {
-	return (mimeType ?? "application/octet-stream")
-		.split(";")[0]
-		?.trim()
-		.toLowerCase();
-}
-
-function isInline(mimeType: string | null) {
-	const type = baseType(mimeType);
-	if (activeTypes.includes(type) || type.endsWith("+xml")) return false;
-	return (
-		type.startsWith("image/") ||
-		type.startsWith("audio/") ||
-		type.startsWith("video/") ||
-		inlineTypes.includes(type)
-	);
-}
 
 export function contentDisposition(
 	kind: "inline" | "attachment",
@@ -296,9 +268,9 @@ export async function attachmentDownload(actor: CurrentUser, id: string) {
 	return {
 		filePath,
 		size,
-		mimeType: row.mimeType ?? "application/octet-stream",
+		mimeType: servedType(row.mimeType),
 		fileName: row.fileName,
-		inline: isInline(row.mimeType),
+		inline: isInertType(row.mimeType),
 	};
 }
 

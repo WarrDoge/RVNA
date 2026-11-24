@@ -544,6 +544,11 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
   adds a nonce to its own inline script), no plugins, no `<base>` to another site, no framing by another
   site. Stored HTML is sanitized on write; the policy is the second barrier. A new inline `<script>` or
   an HTML `on…=` attribute will not run; the browser tests fail when the policy blocks something.
+- A file that a user uploaded (issue, service desk and wiki attachments, thumbnails) never keeps the
+  content type its uploader declared. `src/lib/shared/served-type.ts` is the one rule: raster images,
+  PDF, plain text, audio and video are sent as they are and may open in the browser; every other file
+  is `application/octet-stream` and always a download. So no upload can be a script, a style sheet or a
+  page of the app's origin. These responses also carry `nosniff` and `Content-Security-Policy: sandbox`.
 - Forced password change: every request answers `403 { "error": "Password change required" }` except
   `GET /api/me` and `POST /api/me/password`; a session request to a page (unknown addresses included)
   redirects to `/secure/ViewProfile.jspa?selectedTab=password` instead, and that page runs only its

@@ -3,6 +3,11 @@ import { mkdir, rename, stat, unlink } from "node:fs/promises";
 import { basename, join, resolve, sep } from "node:path";
 import { and, asc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import {
+	isInertType,
+	isRasterImageType,
+	servedType,
+} from "../../shared/served-type.ts";
 import { audit } from "../admin/audit.ts";
 import {
 	attachmentUploadLimits,
@@ -273,42 +278,6 @@ async function pageRestrictionRows(pageId: string) {
 		.from(pageRestrictions)
 		.leftJoin(users, eq(users.id, pageRestrictions.userId))
 		.where(eq(pageRestrictions.pageId, pageId));
-}
-
-const mimeBase = (value: string | null) =>
-	(value ?? "application/octet-stream").split(";")[0]?.trim().toLowerCase() ??
-	"";
-
-function isActiveMime(mimeType: string | null) {
-	const base = mimeBase(mimeType);
-	return (
-		base === "text/html" ||
-		base === "text/xml" ||
-		base === "application/xml" ||
-		base.endsWith("+xml") ||
-		base === "application/javascript" ||
-		base === "application/x-javascript" ||
-		base === "text/javascript" ||
-		base === "text/xsl"
-	);
-}
-
-export function isInlineMime(mimeType: string | null) {
-	const base = mimeBase(mimeType);
-	if (isActiveMime(base)) return false;
-	return (
-		base.startsWith("image/") ||
-		base.startsWith("audio/") ||
-		base.startsWith("video/") ||
-		base === "application/pdf" ||
-		base === "text/plain"
-	);
-}
-
-/** Thumbnails only preview raster images; SVG and documents go through the attachment route. */
-function isRasterImageMime(mimeType: string | null) {
-	const base = mimeBase(mimeType);
-	return base.startsWith("image/") && !isActiveMime(base);
 }
 
 function safeFileName(value: string | undefined) {
@@ -1348,16 +1317,15 @@ async function storedFile(
 	} catch {
 		throw new HttpError(404, "Attachment file is missing");
 	}
-	const active = isActiveMime(row.mimeType);
 	const inline =
-		!active &&
+		isInertType(row.mimeType) &&
 		(inlineParam === "1" ||
 			inlineParam === "true" ||
-			(isInlineMime(row.mimeType) && inlineParam === undefined));
+			inlineParam === undefined);
 	return {
 		filePath,
 		fileName: row.fileName,
-		mimeType: row.mimeType,
+		mimeType: servedType(row.mimeType),
 		size,
 		inline,
 	};
@@ -1409,7 +1377,7 @@ export async function thumbnailDownload(
 	const loaded = await loadReadablePage(access, pageId);
 	if (!loaded) throw new HttpError(404, "Attachment not found");
 	const row = await pageAttachmentByName(loaded.page.id, fileName);
-	if (!row || !isRasterImageMime(row.mimeType)) {
+	if (!row || !isRasterImageType(row.mimeType)) {
 		throw new HttpError(404, "Attachment not found");
 	}
 	const root = storageRoot();
@@ -1420,7 +1388,7 @@ export async function thumbnailDownload(
 	return {
 		filePath,
 		fileName: row.fileName,
-		mimeType: row.mimeType,
+		mimeType: servedType(row.mimeType),
 		inline: true,
 	};
 }

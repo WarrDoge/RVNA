@@ -1065,6 +1065,79 @@ test("attachments round trip, are served safely and can be deleted", async () =>
 	expect(unauthenticated.statusCode).toBe(401);
 });
 
+test.each([
+	["application/javascript", "script.js"],
+	["text/javascript; charset=utf-8", "script.mjs"],
+	["Application/X-Javascript", "old.js"],
+	["text/html", "page.html"],
+	["image/svg+xml", "diagram.svg"],
+	["text/css", "style.css"],
+	["application/xml", "data.xml"],
+	["application/xhtml+xml", "page.xhtml"],
+	["text/csv", "table.csv"],
+	["application/octet-stream", "blob.bin"],
+])(
+	"an attachment declared as %j is served as an octet stream download",
+	async (declared, name) => {
+		const key = (await createIssue(userSession)).json().key as string;
+		const file = multipartBody({
+			name,
+			type: declared,
+			content: "window.__ran = 1",
+		});
+		const upload = await inject(
+			"POST",
+			`/api/issues/${key}/attachments`,
+			userSession,
+			file.body,
+			{ "content-type": file.contentType },
+		);
+		expect(upload.statusCode).toBe(201);
+		const download = await inject(
+			"GET",
+			`/api/attachments/${upload.json()[0].id}`,
+			userSession,
+		);
+		expect(download.statusCode).toBe(200);
+		expect(download.headers["content-type"]).toBe("application/octet-stream");
+		expect(download.headers["x-content-type-options"]).toBe("nosniff");
+		expect(download.headers["content-security-policy"]).toBe("sandbox");
+		expect(String(download.headers["content-disposition"])).toMatch(
+			/^attachment;/,
+		);
+	},
+);
+
+test.each([
+	["text/plain; charset=utf-8", "text/plain"],
+	["image/PNG", "image/png"],
+	["application/pdf", "application/pdf"],
+	["video/mp4", "video/mp4"],
+	["audio/mpeg", "audio/mpeg"],
+])("an attachment declared as %j is shown as %s", async (declared, served) => {
+	const key = (await createIssue(userSession)).json().key as string;
+	const file = multipartBody({
+		name: "file.bin",
+		type: declared,
+		content: "x",
+	});
+	const upload = await inject(
+		"POST",
+		`/api/issues/${key}/attachments`,
+		userSession,
+		file.body,
+		{ "content-type": file.contentType },
+	);
+	const download = await inject(
+		"GET",
+		`/api/attachments/${upload.json()[0].id}`,
+		userSession,
+	);
+	expect(download.headers["content-type"]).toBe(served);
+	expect(download.headers["x-content-type-options"]).toBe("nosniff");
+	expect(String(download.headers["content-disposition"])).toMatch(/^inline;/);
+});
+
 test("the RFC 5987 filename escapes characters attr-char does not allow", () => {
 	expect(contentDisposition("attachment", "O'Brien (1)*.txt")).toBe(
 		`attachment; filename="O'Brien (1)*.txt"; filename*=UTF-8''O%27Brien%20%281%29%2A.txt`,

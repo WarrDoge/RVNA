@@ -1,4 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { isRasterImageType } from "#lib/shared/served-type.ts";
 import { attachmentUrl, formatSize } from "#lib/wiki/format.ts";
 import { JqlError } from "../../shared/jql/index.ts";
 import type { CurrentUser } from "../auth.ts";
@@ -324,7 +325,7 @@ const viewFile: MacroRenderer = async (macro, ctx) => {
 	}
 	const height = integerParam(macro.params.height, 480, 120, 2000);
 	const mime = (attachment.mimeType ?? "").toLowerCase();
-	if (mime.startsWith("image/")) {
+	if (isRasterImageType(mime)) {
 		const url = attachmentUrl(
 			ctx.page.sourceId,
 			name,

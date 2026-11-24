@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { dismiss } from "#lib/components/dismiss.ts";
+	import { isRasterImageType } from "#lib/shared/served-type.ts";
 	import { attachmentUrl, formatSize } from "#lib/wiki/format.ts";
 	import type { Attachment } from "#lib/wiki/types.ts";
 
@@ -45,7 +46,7 @@
 			<span class="size">{formatSize(attachment.size)}</span>
 			<button type="button" aria-label="Close preview" onclick={onClose}>×</button>
 		</div>
-		{#if mime.startsWith("image/")}
+		{#if isRasterImageType(mime)}
 			<img src={url} alt={attachment.fileName} />
 		{:else}
 			<iframe src={url} title={attachment.fileName}></iframe>

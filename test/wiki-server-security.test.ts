@@ -489,6 +489,20 @@ beforeAll(async () => {
 		content:
 			'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
 	});
+	for (const [fileName, mimeType] of [
+		["script.js", "application/javascript"],
+		["page.html", "text/html"],
+		["style.css", "text/css"],
+		["notes.txt", "text/plain; charset=utf-8"],
+	] as const) {
+		await attachment({
+			pageId: page.id,
+			fileName,
+			mimeType,
+			storagePath: `security-${run}/${fileName}`,
+			content: "window.__ran = 1",
+		});
+	}
 	await attachment({
 		pageId: page.id,
 		fileName: "photo.png",
@@ -718,6 +732,40 @@ describe("downloads", () => {
 		expect(response.headers.get("content-security-policy")).toBe("sandbox");
 		expect(response.headers.get("x-content-type-options")).toBe("nosniff");
 		expect(response.headers.get("content-disposition")).toContain("attachment");
+	});
+
+	test("a script, a page and a style sheet are served as octet-stream downloads", async () => {
+		for (const fileName of ["script.js", "page.html", "style.css"]) {
+			for (const inline of [undefined, "1"]) {
+				const file = await attachmentDownloadByName(
+					reader,
+					page.sourceId,
+					fileName,
+					{ inline },
+				);
+				const response = fileResponse(file, { size: true, caching: true });
+				expect(response.headers.get("content-type")).toBe(
+					"application/octet-stream",
+				);
+				expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+				expect(response.headers.get("content-disposition")).toMatch(
+					/^attachment;/,
+				);
+			}
+		}
+		const svg = await attachmentDownloadByName(
+			reader,
+			page.sourceId,
+			"diagram.svg",
+			{ inline: "1" },
+		);
+		expect(svg.mimeType).toBe("application/octet-stream");
+		const text = fileResponse(
+			await attachmentDownloadByName(reader, page.sourceId, "notes.txt", {}),
+			{ size: true, caching: true },
+		);
+		expect(text.headers.get("content-type")).toBe("text/plain");
+		expect(text.headers.get("content-disposition")).toMatch(/^inline;/);
 	});
 
 	test("thumbnails reject SVG and serve raster images", async () => {
