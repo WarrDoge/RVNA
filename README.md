@@ -10,6 +10,64 @@ not affiliated with or endorsed by Atlassian.
 Licence: Apache-2.0, see `LICENSE`. `NOTICE` lists the parts that come from Atlassian's Apache-2.0
 packages.
 
+## Screenshots
+
+All names, projects and texts in the screenshots are invented demo data. Select an image to see it
+in full size.
+
+### Issue tracker
+
+A dashboard with gadgets, and an issue with its details, links and workflow buttons:
+
+<p>
+  <img src="docs/screenshots/dashboard.png" width="49%" alt="Dashboard with an issue list, a pie chart, a created vs resolved chart, a statistics table and an activity stream">
+  <img src="docs/screenshots/issue.png" width="49%" alt="Issue view of a story">
+</p>
+
+The board of the active sprint, and the backlog with sprints, epics and versions:
+
+<p>
+  <img src="docs/screenshots/board.png" width="49%" alt="Sprint board with three columns">
+  <img src="docs/screenshots/backlog.png" width="49%" alt="Backlog with an active sprint, a future sprint and the epics panel">
+</p>
+
+The burndown chart, one of four board reports, and the search with JQL, saved filters and export:
+
+<p>
+  <img src="docs/screenshots/burndown.png" width="49%" alt="Burndown chart of the active sprint">
+  <img src="docs/screenshots/search.png" width="49%" alt="Issue search with a JQL query and a result table">
+</p>
+
+A workflow as a diagram:
+
+<p>
+  <img src="docs/screenshots/workflow.png" width="49%" alt="Workflow diagram with four statuses">
+</p>
+
+### Service desk
+
+The customer portal with request types in groups, and an agent queue with SLA timers:
+
+<p>
+  <img src="docs/screenshots/service-desk-portal.png" width="49%" alt="Customer portal of a help desk">
+  <img src="docs/screenshots/service-desk-queue.png" width="49%" alt="Agent queue with two SLA columns">
+</p>
+
+A request in the agent view, with its SLAs and the conversation:
+
+<p>
+  <img src="docs/screenshots/service-desk-request.png" width="49%" alt="Service desk request with an SLA panel and comments">
+</p>
+
+### Wiki
+
+A page with the page tree, a table of contents, tasks, panels and code, and the page editor:
+
+<p>
+  <img src="docs/screenshots/wiki-page.png" width="49%" alt="Wiki page with a page tree">
+  <img src="docs/screenshots/wiki-editor.png" width="49%" alt="Wiki page editor">
+</p>
+
 ## Requirements
 
 - Node.js 26 — `node build` runs the SvelteKit server; server modules stay TypeScript source
