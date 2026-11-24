@@ -181,6 +181,10 @@ beforeAll(async () => {
 	);
 	aliceId = aliceRow.rows[0].id;
 	bobId = bobRow.rows[0].id;
+	await db
+		.update(users)
+		.set({ messengerMatrixId: `@t-${run}-alice:matrix.test` })
+		.where(eq(users.id, aliceId));
 
 	const type = await db
 		.insert(issueTypes)
@@ -680,7 +684,17 @@ describe("sync worker", () => {
 		).toBe(1);
 	});
 
-	test("a linked id wins over the name rule", async () => {
+	test("a Matrix id named like an RVNA user is still an unknown sender", async () => {
+		const before = await deskIssueCount();
+		const answer = await command(
+			`@t-${run}-bob:matrix.test`,
+			"!ticket Posing as another user",
+		);
+		expect(String(answer[0].content.body)).toContain("Connect to messenger");
+		expect(await deskIssueCount()).toBe(before);
+	});
+
+	test("a linked id acts as its user", async () => {
 		const codeResponse = await inject(
 			"POST",
 			"/api/profile/messenger",
@@ -1087,6 +1101,7 @@ describe("sync worker", () => {
 			username: rateUser,
 			displayName: "Rate Sender",
 			active: true,
+			messengerMatrixId: `@${rateUser}:matrix.test`,
 		});
 		const before = fake.sent.length;
 		fake.pushTimeline(

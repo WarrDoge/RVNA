@@ -1531,10 +1531,9 @@ People invite the bot to a room or start an unencrypted direct chat and send:
   ten minutes and is stored only as a SHA-256 hash.
 - `!help` — the command list.
 
-A Matrix id `@name:server` is the active RVNA user `name` when `server` is the bot's server;
-a linked id on the profile wins over that rule. The rule trusts the homeserver, so use it only
-when strangers cannot register Matrix names there; otherwise people connect with `!link`. Five wrong
-`!link` codes lock one sender for ten minutes. Requests created in chat carry the `chat` request
+A Matrix id is an RVNA user only after that user linked it with `!link`; a Matrix name that equals
+an RVNA user name proves nothing, and the bot treats that sender as unknown. Five wrong `!link`
+codes lock one sender for ten minutes. Requests created in chat carry the `chat` request
 channel, use the same portal creation path (required fields, SLA, notifications, history and
 permissions), and are limited to five per sender in ten minutes. The bot cannot read encrypted
 rooms; it says so once per room. When a request's status changes or an agent adds a public comment,

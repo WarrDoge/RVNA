@@ -20,7 +20,7 @@ import {
 import { addCustomerComment, createRequest } from "../servicedesk/portal.ts";
 import { type MatrixEvent, matrixReact, matrixSendText } from "./client.ts";
 import type { MessengerSettings } from "./config.ts";
-import { matrixIdParts, recordMessengerError } from "./config.ts";
+import { recordMessengerError } from "./config.ts";
 import { redeemMessengerLinkCode, shouldSendUnknownNotice } from "./links.ts";
 import {
 	DESCRIPTION_LIMIT,
@@ -38,10 +38,8 @@ import {
 
 const CHECK_MARK = "\u2705";
 
-async function userForMatrixId(
-	settings: MessengerSettings,
-	matrixId: string,
-): Promise<CurrentUser | null> {
+/** Only a Matrix id that its user linked with a code stands for an RVNA user. */
+async function userForMatrixId(matrixId: string): Promise<CurrentUser | null> {
 	const [linked] = await db
 		.select({
 			id: users.id,
@@ -56,55 +54,17 @@ async function userForMatrixId(
 		.from(users)
 		.where(eq(users.messengerMatrixId, matrixId))
 		.limit(1);
-	if (linked) {
-		if (!linked.active) return null;
-		return {
-			id: linked.id,
-			username: linked.username,
-			displayName: linked.displayName,
-			email: linked.email,
-			avatarUrl: null,
-			groups: await effectiveGroups(linked.id),
-			isAdmin: linked.isAdmin,
-			mustChangePassword: linked.mustChangePassword,
-			hasPassword: linked.passwordHash !== null,
-		};
-	}
-
-	const parts = matrixIdParts(matrixId);
-	if (!parts || !settings.serverName) return null;
-	if (parts.serverName.toLowerCase() !== settings.serverName.toLowerCase()) {
-		return null;
-	}
-	const [byName] = await db
-		.select({
-			id: users.id,
-			username: users.username,
-			displayName: users.displayName,
-			email: users.email,
-			isAdmin: users.isAdmin,
-			mustChangePassword: users.mustChangePassword,
-			passwordHash: users.passwordHash,
-		})
-		.from(users)
-		.where(
-			and(
-				sql`lower(${users.username}) = ${parts.localpart.toLowerCase()}`,
-				eq(users.active, true),
-			),
-		)
-		.limit(1);
-	if (!byName) return null;
+	if (!linked?.active) return null;
 	return {
-		id: byName.id,
-		username: byName.username,
-		displayName: byName.displayName,
-		email: byName.email,
+		id: linked.id,
+		username: linked.username,
+		displayName: linked.displayName,
+		email: linked.email,
 		avatarUrl: null,
-		groups: await effectiveGroups(byName.id),
-		isAdmin: byName.isAdmin,
-		mustChangePassword: byName.mustChangePassword,
-		hasPassword: byName.passwordHash !== null,
+		groups: await effectiveGroups(linked.id),
+		isAdmin: linked.isAdmin,
+		mustChangePassword: linked.mustChangePassword,
+		hasPassword: linked.passwordHash !== null,
 	};
 }
 
@@ -485,7 +445,7 @@ export async function handleMatrixMessage(
 		const thread = await loadThread(roomId, event);
 		if (thread) threadRoot = thread.rootEventId;
 		const body = typeof content.body === "string" ? content.body : "";
-		const user = await userForMatrixId(settings, event.sender);
+		const user = await userForMatrixId(event.sender);
 
 		if (content.msgtype !== "m.text") {
 			if (thread) await handleAttachment(settings, roomId, thread, user);
