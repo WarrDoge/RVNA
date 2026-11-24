@@ -1,10 +1,13 @@
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { pool } from "../src/lib/server/db.ts";
 import {
 	type Client,
+	type Reply,
 	rows,
 	setupWiki,
 	type TestSpace,
+	waitForBlockedPages,
 } from "./wiki-edit-support.ts";
 
 let wiki: Awaited<ReturnType<typeof setupWiki>>;
@@ -432,5 +435,138 @@ describe("trash and restore", () => {
 		expect(restored.body.parentId).toBeNull();
 		expect(await ownReaders(leaf.id)).toEqual([editor.id, alice.id].sort());
 		expect(await reach(outsider, leaf.id, leaf.token)).toEqual(hidden);
+	});
+});
+
+describe("authorization is checked again inside the write", () => {
+	/** Runs a request that waits on the page row, changes access meanwhile, then lets the request go on. */
+	async function changedWhileWaiting(
+		pageId: string,
+		request: () => Promise<Reply>,
+		change: (locker: PoolClient) => Promise<unknown>,
+	) {
+		const locker = await pool.connect();
+		try {
+			await locker.query("begin");
+			await locker.query("select 1 from pages where id = $1 for update", [
+				pageId,
+			]);
+			const pending = request();
+			await waitForBlockedPages(1);
+			await change(locker);
+			await locker.query("commit");
+			return await pending;
+		} finally {
+			await locker.query("rollback").catch(() => undefined);
+			locker.release();
+		}
+	}
+
+	async function lateEditor(name: string) {
+		const client = await wiki.user(name);
+		await wiki.grant(space.id, { userId: client.id }, [
+			"read",
+			"create",
+			"delete",
+		]);
+		return client;
+	}
+
+	const revoke = (client: Client, permission: string) => () =>
+		pool.query(
+			"delete from space_permissions where space_id = $1 and user_id = $2 and permission = $3",
+			[space.id, client.id, permission],
+		);
+
+	const body = {
+		bodyDoc: {
+			type: "doc",
+			content: [{ type: "paragraph", content: [{ type: "text", text: "x" }] }],
+		},
+	};
+
+	test("an edit is refused when the create grant was withdrawn meanwhile", async () => {
+		const late = await lateEditor("late-edit");
+		const page = await mk("Late edit");
+		const reply = await changedWhileWaiting(
+			page.id,
+			() => late.put(`/api/wiki/pages/${page.id}`, body),
+			revoke(late, "create"),
+		);
+		expect(reply.status).toBe(403);
+		const [row] = await rows("select version_number from pages where id = $1", [
+			page.id,
+		]);
+		expect(row.version_number).toBe(1);
+	});
+
+	test("an edit is refused when an ancestor was restricted meanwhile", async () => {
+		const late = await lateEditor("late-hidden");
+		const top = await mk("Late hidden top");
+		const page = await mk("Late hidden page", top.id);
+		const reply = await changedWhileWaiting(
+			page.id,
+			() => late.put(`/api/wiki/pages/${page.id}`, body),
+			() => restrict(top.id, { userIds: [alice.id] }),
+		);
+		expect(reply.status).toBe(404);
+	});
+
+	test("a move is refused when the create grant was withdrawn meanwhile", async () => {
+		const late = await lateEditor("late-move");
+		const page = await mk("Late move");
+		const reply = await changedWhileWaiting(
+			page.id,
+			() => late.post(`/api/wiki/pages/${page.id}/move`, { parentId: null }),
+			revoke(late, "create"),
+		);
+		expect(reply.status).toBe(403);
+		const [row] = await rows("select parent_id from pages where id = $1", [
+			page.id,
+		]);
+		expect(row.parent_id).toBe(space.homeId);
+	});
+
+	test("a copy is refused when the create grant was withdrawn meanwhile", async () => {
+		const late = await lateEditor("late-copy");
+		const page = await mk("Late copy");
+		const title = `Late copy of ${page.token}`;
+		const reply = await changedWhileWaiting(
+			page.id,
+			() => late.post(`/api/wiki/pages/${page.id}/copy`, { title }),
+			revoke(late, "create"),
+		);
+		expect(reply.status).toBe(403);
+		expect(
+			await rows("select 1 from pages where title = $1", [title]),
+		).toHaveLength(0);
+	});
+
+	test("trashing is refused when the delete grant was withdrawn meanwhile", async () => {
+		const late = await lateEditor("late-trash");
+		const page = await mk("Late trash");
+		const reply = await changedWhileWaiting(
+			page.id,
+			() => late.post(`/api/wiki/pages/${page.id}/trash`),
+			revoke(late, "delete"),
+		);
+		expect(reply.status).toBe(403);
+		const [row] = await rows("select status from pages where id = $1", [
+			page.id,
+		]);
+		expect(row.status).toBe("current");
+	});
+
+	test("an edit of a page that was trashed meanwhile is refused", async () => {
+		const page = await mk("Late trashed");
+		const reply = await changedWhileWaiting(
+			page.id,
+			() => editor.put(`/api/wiki/pages/${page.id}`, body),
+			(locker) =>
+				locker.query("update pages set status = 'trashed' where id = $1", [
+					page.id,
+				]),
+		);
+		expect(reply.status).toBe(409);
 	});
 });

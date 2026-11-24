@@ -143,7 +143,7 @@ export async function checkParent(
 	if (page.spaceId !== space.id || page.status !== "current") {
 		fail(400, "Parent page is not a current page of this space");
 	}
-	await requireAccess(user, page, "read");
+	await requireAccess(user, page, "read", undefined, ex);
 	return page;
 }
 

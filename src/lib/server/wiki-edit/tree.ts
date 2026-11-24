@@ -200,7 +200,7 @@ export async function movePage(
 	body: z.infer<typeof moveBody>,
 ) {
 	const { page, space } = await loadPage(db, id);
-	const access = await requireAccess(actor, page, "edit");
+	await requireAccess(actor, page, "edit");
 	assertCurrent(page);
 
 	const target =
@@ -228,7 +228,11 @@ export async function movePage(
 	const moved = await titleClash(page.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, target.id, parentId);
-			assertCurrent(await lockPage(tx, page.id));
+			const fresh = await lockPage(tx, page.id);
+			assertCurrent(fresh);
+			const access = await requireAccess(actor, fresh, "edit", undefined, tx);
+			await requireGrant(actor, target.id, "create", tx);
+			await checkParent(tx, actor, target, parentId);
 			const subtree = await descendantIds(tx, page.id);
 			if (parentId && (parentId === page.id || subtree.includes(parentId))) {
 				fail(400, "A page cannot be moved under itself");
@@ -298,7 +302,7 @@ export async function copyPage(
 	body: z.infer<typeof copyBody>,
 ) {
 	const { page: source, space } = await loadPage(db, id);
-	const access = await requireAccess(actor, source, "read");
+	await requireAccess(actor, source, "read");
 	assertCurrent(source);
 
 	const target =
@@ -411,7 +415,11 @@ export async function copyPage(
 	const created = await titleClash(body.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, target.id, parentId);
-			assertCurrent(await lockPage(tx, source.id));
+			const fresh = await lockPage(tx, source.id);
+			assertCurrent(fresh);
+			const access = await requireAccess(actor, fresh, "read", undefined, tx);
+			await requireGrant(actor, target.id, "create", tx);
+			await checkParent(tx, actor, target, parentId);
 			const restrictionRows = await tx
 				.select()
 				.from(pageRestrictions)
@@ -524,7 +532,7 @@ export async function copyPage(
 
 export async function trashPage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	const access = await requireAccess(actor, page, "trash");
+	await requireAccess(actor, page, "trash");
 	assertCurrent(page);
 	if (space.homePageId === page.id) {
 		fail(409, "The space home page cannot be moved to the trash");
@@ -534,6 +542,7 @@ export async function trashPage(actor: CurrentUser, id: string) {
 		await lockSiblings(tx, space.id, page.parentId);
 		const fresh = await lockPage(tx, page.id);
 		assertCurrent(fresh);
+		const access = await requireAccess(actor, fresh, "trash", undefined, tx);
 		if (fresh.parentId !== page.parentId) {
 			fail(409, "The page was moved while it was being trashed");
 		}
@@ -585,7 +594,7 @@ export async function trashPage(actor: CurrentUser, id: string) {
 
 export async function restorePage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	const access = await requireAccess(actor, page, "trash");
+	await requireAccess(actor, page, "trash");
 	if (page.status !== "trashed") fail(409, "Page is not in the trash");
 	await assertTitleFree(db, space.id, page.title);
 
@@ -593,6 +602,7 @@ export async function restorePage(actor: CurrentUser, id: string) {
 		db.transaction(async (tx) => {
 			const fresh = await lockPage(tx, page.id);
 			if (fresh.status !== "trashed") fail(409, "Page is not in the trash");
+			const access = await requireAccess(actor, fresh, "trash", undefined, tx);
 			const [trash] = await tx
 				.select()
 				.from(pageTrash)

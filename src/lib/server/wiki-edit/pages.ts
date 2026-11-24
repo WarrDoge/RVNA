@@ -96,12 +96,14 @@ export async function createPage(
 	const created = await titleClash(body.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, space.id, parentId);
+			await requireGrant(actor, space.id, "create", tx);
+			await checkParent(tx, actor, space, parentId);
 			if (draftId) {
 				const draft = await lockPage(tx, draftId);
 				if (draft.status !== "draft" || draft.spaceId !== space.id) {
 					fail(409, "This page is no longer an unpublished draft");
 				}
-				await requireAccess(actor, draft, "edit");
+				await requireAccess(actor, draft, "edit", undefined, tx);
 			}
 			const rendered = await renderBody(tx, doc, space.key, draftId);
 			const now = new Date();
@@ -159,6 +161,8 @@ export async function updatePage(
 	const updated = await titleClash(title, () =>
 		db.transaction(async (tx) => {
 			const fresh = await lockPage(tx, page.id);
+			assertCurrent(fresh);
+			await requireAccess(actor, fresh, "edit", undefined, tx);
 			await assertNotLockedByOthers(tx, page.id, actor.id);
 			if (
 				body.baseVersion !== undefined &&
@@ -204,6 +208,8 @@ export async function restoreVersion(
 
 	const updated = await db.transaction(async (tx) => {
 		const fresh = await lockPage(tx, page.id);
+		assertCurrent(fresh);
+		await requireAccess(actor, fresh, "edit", undefined, tx);
 		await assertNotLockedByOthers(tx, page.id, actor.id);
 		const rendered = await renderBody(tx, doc, space.key, page.id);
 		return writeVersion(
@@ -235,6 +241,8 @@ export async function renamePage(
 	const updated = await titleClash(title, () =>
 		db.transaction(async (tx) => {
 			const fresh = await lockPage(tx, page.id);
+			assertCurrent(fresh);
+			await requireAccess(actor, fresh, "edit", undefined, tx);
 			await assertNotLockedByOthers(tx, page.id, actor.id);
 			return writeVersion(
 				tx,
@@ -263,7 +271,9 @@ export async function setPageLabels(
 	assertCurrent(page);
 	const labels = normalizeLabels(body.labels);
 	await db.transaction(async (tx) => {
-		await lockPage(tx, page.id);
+		const fresh = await lockPage(tx, page.id);
+		assertCurrent(fresh);
+		await requireAccess(actor, fresh, "edit", undefined, tx);
 		await setLabels(tx, page.id, labels);
 	});
 	const rows = await db

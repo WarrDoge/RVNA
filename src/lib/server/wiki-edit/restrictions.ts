@@ -149,6 +149,7 @@ export async function replacePageRestrictions(
 	await db.transaction(async (tx) => {
 		const fresh = await lockPage(tx, page.id);
 		assertCurrent(fresh);
+		await requireAccess(actor, fresh, "restrict", undefined, tx);
 		await tx
 			.delete(pageRestrictions)
 			.where(eq(pageRestrictions.pageId, page.id));

@@ -31,10 +31,13 @@ function matchesUser(
  * ancestor has a read restriction that excludes the user. Application
  * administrators and space administrators see everything.
  */
-export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
+export async function loadWikiAccess(
+	user: CurrentUser,
+	ex: Pick<typeof db, "select" | "execute"> = db,
+): Promise<WikiAccess> {
 	const [spaceRows, permissionRows] = await Promise.all([
-		db.select({ id: spaces.id }).from(spaces),
-		db
+		ex.select({ id: spaces.id }).from(spaces),
+		ex
 			.select({
 				spaceId: spacePermissions.spaceId,
 				permission: spacePermissions.permission,
@@ -77,7 +80,7 @@ export async function loadWikiAccess(user: CurrentUser): Promise<WikiAccess> {
 		// large page tree is never read into memory.
 		const administered = [...administeredSpaceIds];
 		const groups = user.groups.map((name) => name.toLowerCase());
-		const hiddenRows = await db.execute(sql`
+		const hiddenRows = await ex.execute(sql`
 			with recursive blocked as (
 				select pr.page_id
 				from page_restrictions pr

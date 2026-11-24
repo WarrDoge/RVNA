@@ -8,7 +8,7 @@ import {
 	spaceReadable,
 	type WikiAccess,
 } from "../wiki/permissions.ts";
-import { allow, fail, type PageRow } from "./common.ts";
+import { allow, type Executor, fail, type PageRow } from "./common.ts";
 
 export const SPACE_PERMISSIONS = [
 	"read",
@@ -41,9 +41,10 @@ const appliesTo = (user: CurrentUser) =>
 export async function spaceGrants(
 	user: CurrentUser,
 	spaceId: string,
+	ex: Executor = db,
 ): Promise<Grants> {
 	if (user.isAdmin) return everything;
-	const rows = await db
+	const rows = await ex
 		.select({ permission: spacePermissions.permission })
 		.from(spacePermissions)
 		.where(and(eq(spacePermissions.spaceId, spaceId), appliesTo(user)));
@@ -80,10 +81,11 @@ export const grantsFor = (
 export async function updateAllowed(
 	user: CurrentUser,
 	ids: string[],
+	ex: Executor = db,
 ): Promise<Set<string>> {
 	const allowed = new Set(ids);
 	if (ids.length === 0) return allowed;
-	const rows = await db
+	const rows = await ex
 		.select({
 			pageId: pageRestrictions.pageId,
 			userId: pageRestrictions.userId,
@@ -130,15 +132,17 @@ export async function pageAccess(
 	user: CurrentUser,
 	page: AccessPage,
 	wiki?: WikiAccess,
+	ex: Executor = db,
 ): Promise<PageAccess> {
-	const grants = await spaceGrants(user, page.spaceId);
+	const grants = await spaceGrants(user, page.spaceId, ex);
 	const bypass = grants.has("administer");
 	const hidden =
 		page.status === "draft" && !user.isAdmin && page.creatorId !== user.id;
 	const read =
 		!hidden &&
-		(bypass || pageReadable(wiki ?? (await loadWikiAccess(user)), page));
-	const update = bypass || (await updateAllowed(user, [page.id])).has(page.id);
+		(bypass || pageReadable(wiki ?? (await loadWikiAccess(user, ex)), page));
+	const update =
+		bypass || (await updateAllowed(user, [page.id], ex)).has(page.id);
 	const own = page.creatorId === user.id;
 	return {
 		read,
@@ -159,8 +163,9 @@ export async function requireAccess(
 	page: AccessPage,
 	need: "read" | "edit" | "trash" | "restrict" | "administer",
 	wiki?: WikiAccess,
+	ex?: Executor,
 ): Promise<PageAccess> {
-	const access = await pageAccess(user, page, wiki);
+	const access = await pageAccess(user, page, wiki, ex);
 	if (!access.read) fail(404, "Page not found");
 	allow(access[need]);
 	return access;
@@ -180,8 +185,9 @@ export async function requireGrant(
 	user: CurrentUser,
 	spaceId: string,
 	need: SpacePermission,
+	ex?: Executor,
 ): Promise<Grants> {
-	const grants = await spaceGrants(user, spaceId);
+	const grants = await spaceGrants(user, spaceId, ex);
 	allow(can(grants, need));
 	return grants;
 }

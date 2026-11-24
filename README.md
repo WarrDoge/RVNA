@@ -980,6 +980,10 @@ read it. These operations (`wiki-edit/tree.ts`) never widen that:
   others). The trash records the moved children in `page_trash.moved_children`; restoring the page
   puts back those that still sit where the trash left them.
 
+Creating, editing, renaming, labelling, restricting, moving, copying, trashing and restoring a page
+check the user's access a second time inside the write transaction, after the page row is locked.
+A permission or restriction that changed since the first check stops the write.
+
 ### Traps found
 
 - `BODY_SIZE_LIMIT` defaults to 512K in adapter-node. The Helm chart sets both
