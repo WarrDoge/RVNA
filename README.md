@@ -1495,7 +1495,8 @@ People invite the bot to a room or start an unencrypted direct chat and send:
   description. The answer is a threaded reply with the key and the portal link.
 - `!status KEY-123` — status, assignee and link, when the sender may see the request.
 - `!link CODE` — connects the Matrix id to the RVNA account that generated the one-time code
-  under "Messenger" on `/secure/ViewProfile.jspa`.
+  under "Messenger" on `/secure/ViewProfile.jspa`. The code has 12 characters (60 bits), is valid for
+  ten minutes and is stored only as a SHA-256 hash.
 - `!help` — the command list.
 
 A Matrix id `@name:server` is the active RVNA user `name` when `server` is the bot's server;

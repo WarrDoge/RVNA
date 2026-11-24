@@ -5,6 +5,7 @@ import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	createMessengerLinkCode,
+	generateLinkCode,
 	redeemMessengerLinkCode,
 } from "../src/lib/server/messenger/links.ts";
 import {
@@ -21,7 +22,7 @@ vi.mock("node:crypto", async (importOriginal) => {
 		...actual,
 		randomBytes: (size: number) => {
 			const next = codeQueue.next.shift();
-			if (size === 8 && next) return next;
+			if (size === 12 && next) return next;
 			return actual.randomBytes(size);
 		},
 	};
@@ -86,13 +87,13 @@ afterAll(async () => {
 });
 
 test("a code collision is retried instead of failing the request", async () => {
-	await insertCode(otherId, "AAAAAAAA");
-	const previous = await insertCode(actorId, "CCCCCCCC");
-	codeQueue.next = [Buffer.alloc(8, 0), Buffer.alloc(8, 1)];
+	await insertCode(otherId, "AAAAAAAAAAAA");
+	const previous = await insertCode(actorId, "CCCCCCCCCCCC");
+	codeQueue.next = [Buffer.alloc(12, 0), Buffer.alloc(12, 1)];
 
 	const result = await createMessengerLinkCode(actor);
 
-	expect(result.code).toBe("BBBBBBBB");
+	expect(result.code).toBe("BBBBBBBBBBBB");
 	const [old] = await db
 		.select()
 		.from(messengerLinkCodes)
@@ -107,14 +108,14 @@ test("a code collision is retried instead of failing the request", async () => {
 	const [other] = await db
 		.select()
 		.from(messengerLinkCodes)
-		.where(eq(messengerLinkCodes.code, storedCode("AAAAAAAA")));
+		.where(eq(messengerLinkCodes.code, storedCode("AAAAAAAAAAAA")));
 	expect(other.usedAt).toBeNull();
 });
 
 test("a code that cannot be inserted leaves the previous code usable", async () => {
-	await insertCode(otherId, "AAAAAAAA");
-	const previous = await insertCode(actorId, "DDDDDDDD");
-	codeQueue.next = Array.from({ length: 5 }, () => Buffer.alloc(8, 0));
+	await insertCode(otherId, "AAAAAAAAAAAA");
+	const previous = await insertCode(actorId, "DDDDDDDDDDDD");
+	codeQueue.next = Array.from({ length: 5 }, () => Buffer.alloc(12, 0));
 
 	await expect(createMessengerLinkCode(actor)).rejects.toThrow();
 
@@ -126,10 +127,13 @@ test("a code that cannot be inserted leaves the previous code usable", async () 
 });
 
 test("a successful link retires the user's other unused codes", async () => {
-	await insertCode(actorId, "EEEEEEEE");
-	await insertCode(actorId, "FFFFFFFF");
+	await insertCode(actorId, "EEEEEEEEEEEE");
+	await insertCode(actorId, "FFFFFFFFFFFF");
 
-	const linked = await redeemMessengerLinkCode("@matrix-one:test", "EEEEEEEE");
+	const linked = await redeemMessengerLinkCode(
+		"@matrix-one:test",
+		"EEEEEEEEEEEE",
+	);
 	expect(linked.ok).toBe(true);
 	const rows = await db
 		.select()
@@ -139,7 +143,7 @@ test("a successful link retires the user's other unused codes", async () => {
 
 	const takeover = await redeemMessengerLinkCode(
 		"@matrix-two:test",
-		"FFFFFFFF",
+		"FFFFFFFFFFFF",
 	);
 	expect(takeover.ok).toBe(false);
 	if (!takeover.ok) expect(takeover.message).toContain("already been used");
@@ -148,4 +152,8 @@ test("a successful link retires the user's other unused codes", async () => {
 		.from(users)
 		.where(eq(users.id, actorId));
 	expect(user.messengerMatrixId).toBe("@matrix-one:test");
+});
+
+test("a link code has 12 characters, 60 bits, from the unambiguous alphabet", () => {
+	expect(generateLinkCode()).toMatch(/^[A-HJ-NP-Z2-9]{12}$/);
 });

@@ -11,7 +11,7 @@ import {
 import { messengerSettings } from "./config.ts";
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const CODE_LENGTH = 8;
+const CODE_LENGTH = 12;
 const CODE_TTL_MS = 10 * 60 * 1000;
 const UNKNOWN_NOTICE_MS = 60 * 60 * 1000;
 const WRONG_CODE_LIMIT = 5;
