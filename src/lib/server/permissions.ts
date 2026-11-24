@@ -722,6 +722,43 @@ export async function visibleDirectory(user: PermissionUser) {
 	};
 }
 
+/**
+ * The SQL condition on `users` for the people a signed-in user may see: those who can browse a
+ * project the user can browse (`visibleUsernames`), those a user or group read grant names on a
+ * wiki space the user reads the same way, and the user. A space's anonymous read grant is about
+ * visitors who are not signed in, so it counts for nobody. Administrators see everyone: no
+ * condition. Every place that shows a person by name, profile or user id goes through this.
+ */
+export async function visibleUsersFilter(user: PermissionUser) {
+	if (user.isAdmin) return undefined;
+	const usernames = [...(await visibleUsernames(user)), user.username];
+	const groupNames = user.groups.map((name) => name.toLowerCase());
+	return or(
+		sql`${users.username} = any(${sql.param(usernames)}::text[])`,
+		sql`exists (
+			select 1
+			from space_permissions mine
+			join space_permissions theirs on theirs.space_id = mine.space_id
+			where mine.permission in ('read', 'administer')
+				and theirs.permission in ('read', 'administer')
+				and (
+					mine.user_id = ${user.id}
+					or lower(mine.group_name) = any(${sql.param(groupNames)}::text[])
+				)
+				and (
+					theirs.user_id = ${users.id}
+					or exists (
+						select 1
+						from user_groups ug
+						join groups g on g.id = ug.group_id
+						where ug.user_id = ${users.id}
+							and lower(g.name) = lower(theirs.group_name)
+					)
+				)
+		)`,
+	);
+}
+
 export async function issuePermissionContext(keyOrId: string) {
 	const byId =
 		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(

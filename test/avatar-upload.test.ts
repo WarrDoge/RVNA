@@ -264,14 +264,15 @@ test("upload validation rejects wrong magic, SVG and oversize files", async () =
 });
 
 test("only the owner or an administrator may change an avatar", async () => {
-	const forbidden = await upload(
+	// `other` shares no project or space with `owner`, so the account is not visible: 404, not 403.
+	const hidden = await upload(
 		owner.username,
 		other.session,
 		"avatar.png",
 		"image/png",
 		png,
 	);
-	expect(forbidden.statusCode).toBe(403);
+	expect(hidden.statusCode).toBe(404);
 
 	const allowed = await upload(
 		owner.username,

@@ -4,11 +4,14 @@ import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	groups,
+	issues,
+	issueTypes,
 	permissionGrants,
 	permissionSchemes,
 	projects,
 	spacePermissions,
 	spaces,
+	statuses,
 	userGroups,
 } from "../src/lib/server/schema.ts";
 import { searchUsers } from "../src/lib/server/users.ts";
@@ -26,6 +29,10 @@ let viewer: TestUser;
 let alone: TestUser;
 let admin: TestUser;
 let member: TestUser;
+let colleague: TestUser;
+let other: TestUser;
+let typeId: string;
+let statusId: string;
 
 function actor(user: TestUser, isAdmin = false, names: string[] = []) {
 	return {
@@ -72,6 +79,22 @@ async function visibleProject(label: string, browsers: string[]) {
 			raw: {},
 		})),
 	);
+	return project.id;
+}
+
+let issueNumber = 0;
+async function assignedIssue(projectId: string, assigneeId: string) {
+	issueNumber += 1;
+	await db.insert(issues).values({
+		sourceId: `test:${run}:issue:${issueNumber}`,
+		projectId,
+		number: issueNumber,
+		key: `D${run.slice(0, 3)}X-${issueNumber}`.toUpperCase(),
+		typeId,
+		statusId,
+		summary: `Directory issue ${issueNumber}`,
+		assigneeId,
+	});
 }
 
 async function space(
@@ -107,20 +130,37 @@ beforeAll(async () => {
 	viewer = await makeUser(run, "viewer");
 	alone = await makeUser(run, "alone");
 	admin = await makeUser(run, "admin", { admin: true });
-	const colleague = await makeUser(run, "colleague");
+	colleague = await makeUser(run, "colleague");
 	const retired = await makeUser(run, "retired", { active: false });
-	const other = await makeUser(run, "other");
+	other = await makeUser(run, "other");
 	const writer = await makeUser(run, "writer");
 	member = await makeUser(run, "member");
 	const stranger = await makeUser(run, "stranger");
 	await makeUser(run, "nobody");
 
-	await visibleProject("one", [
+	const [type] = await db
+		.insert(issueTypes)
+		.values({ sourceId: `test:${run}:type`, name: `Directory type ${run}` })
+		.returning({ id: issueTypes.id });
+	typeId = type.id;
+	const [status] = await db
+		.insert(statuses)
+		.values({
+			sourceId: `test:${run}:status`,
+			name: `Directory status ${run}`,
+			category: "new",
+		})
+		.returning({ id: statuses.id });
+	statusId = status.id;
+
+	const one = await visibleProject("one", [
 		viewer.username,
 		colleague.username,
 		retired.username,
 	]);
-	await visibleProject("two", [other.username]);
+	const two = await visibleProject("two", [other.username, colleague.username]);
+	await assignedIssue(one, colleague.id);
+	await assignedIssue(two, colleague.id);
 
 	const [team] = await db
 		.insert(groups)
@@ -151,6 +191,8 @@ afterAll(async () => {
 	if (groupIds.length > 0) {
 		await db.delete(groups).where(inArray(groups.id, groupIds));
 	}
+	await db.delete(statuses).where(inArray(statuses.id, [statusId]));
+	await db.delete(issueTypes).where(inArray(issueTypes.id, [typeId]));
 	await cleanupTestData(run);
 	await app.close();
 	await pool.end();
@@ -222,4 +264,71 @@ test("GET /api/users answers with the same scope", async () => {
 	expect(
 		asAlone.json().map((entry: { username: string }) => entry.username),
 	).toEqual([`t-${run}-alone`]);
+});
+
+const get = (user: TestUser, url: string) =>
+	app.inject({ method: "GET", url, cookies: { sid: user.session } });
+
+test("a profile of a user the caller may not see answers like a missing user", async () => {
+	const missing = await get(viewer, `/api/users/t-${run}-nobody-here/profile`);
+	expect(missing.statusCode).toBe(404);
+
+	for (const hidden of [other, member]) {
+		const response = await get(viewer, `/api/users/${hidden.username}/profile`);
+		expect(response.statusCode, hidden.username).toBe(404);
+		expect(response.json()).toEqual(missing.json());
+	}
+	const page = await get(
+		viewer,
+		`/secure/ViewProfile.jspa?name=${other.username}`,
+	);
+	expect(page.statusCode).toBe(404);
+});
+
+test("a profile stays open to the caller, to the people they see and to administrators", async () => {
+	const self = await get(alone, `/api/users/${alone.username}/profile`);
+	expect(self.statusCode).toBe(200);
+	expect(self.json().isSelf).toBe(true);
+
+	const shared = await get(viewer, `/api/users/${colleague.username}/profile`);
+	expect(shared.statusCode).toBe(200);
+
+	const viaAdmin = await get(admin, `/api/users/${other.username}/profile`);
+	expect(viaAdmin.statusCode).toBe(200);
+	const page = await get(
+		viewer,
+		`/secure/ViewProfile.jspa?name=${colleague.username}`,
+	);
+	expect(page.statusCode).toBe(200);
+});
+
+test("the assigned-issue count only counts issues in projects the caller browses", async () => {
+	const count = async (caller: TestUser) =>
+		(await get(caller, `/api/users/${colleague.username}/profile`)).json()
+			.assignedOpenIssues;
+	expect(await count(viewer)).toBe(1);
+	expect(await count(other)).toBe(1);
+	expect(await count(admin)).toBe(2);
+});
+
+test("changing an avatar of a hidden user is a 404, of a visible user a 403", async () => {
+	const upload = (caller: TestUser, target: TestUser) =>
+		app.inject({
+			method: "POST",
+			url: `/api/users/${target.username}/avatar`,
+			cookies: { sid: caller.session },
+			headers: { "x-requested-with": "rvna" },
+		});
+	const missing = await app.inject({
+		method: "POST",
+		url: `/api/users/t-${run}-nobody-here/avatar`,
+		cookies: { sid: alone.session },
+		headers: { "x-requested-with": "rvna" },
+	});
+	expect(missing.statusCode).toBe(404);
+
+	const hidden = await upload(alone, viewer);
+	expect(hidden.statusCode).toBe(404);
+	expect(hidden.json()).toEqual(missing.json());
+	expect((await upload(colleague, viewer)).statusCode).toBe(403);
 });

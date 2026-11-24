@@ -870,7 +870,11 @@ Rules for a page task that embeds the editor:
    lists only the people the caller may see: everyone who can browse a project the caller can browse
    (`visibleUsernames`), everyone a user or group read grant names on a wiki space the caller reads the
    same way (an anonymous grant counts for nobody), and the caller.
-   Administrators see all active accounts, with their email address.
+   Administrators see all active accounts, with their email address. The profile page and
+   `GET /api/users/:username/profile` use the same rule: a user the caller may not see answers 404, like a
+   name that does not exist, and so does `POST /api/users/:username/avatar`. Avatar images
+   (`/api/avatars/users/:id`) stay readable by every signed-in user: they are addressed by an unguessable id
+   and show up wherever an author or assignee is shown.
 6. Wiki pages build the editor from `schemaExtensions({ macro: MacroNode, inlineMacro:
    InlineMacroNode })` (`wiki/extensions.ts`, `wiki/MacroNodes.ts`) and import `wiki/macro.css`. Wiki
    content is a JSON `WikiDoc`, not HTML.

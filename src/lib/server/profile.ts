@@ -4,7 +4,7 @@ import { type CurrentUser, effectiveGroups } from "./auth.ts";
 import { userAvatarUrl } from "./avatars.ts";
 import { db } from "./db.ts";
 import { HttpError } from "./http.ts";
-import { viewerProjectIds } from "./permissions.ts";
+import { viewerProjectIds, visibleUsersFilter } from "./permissions.ts";
 import { issues, userPreferences, users } from "./schema.ts";
 
 export const profileSchema = z.object({
@@ -23,10 +23,12 @@ export const profileSchema = z.object({
 
 export type UserProfile = z.infer<typeof profileSchema>;
 
+/** A user the viewer may not see answers like a user that does not exist. */
 export async function userProfile(
 	viewer: CurrentUser,
 	username: string,
 ): Promise<UserProfile> {
+	const scope = await visibleUsersFilter(viewer);
 	const [user] = await db
 		.select({
 			id: users.id,
@@ -36,7 +38,7 @@ export async function userProfile(
 			messengerMatrixId: users.messengerMatrixId,
 		})
 		.from(users)
-		.where(and(eq(users.username, username), eq(users.active, true)))
+		.where(and(eq(users.username, username), eq(users.active, true), scope))
 		.limit(1);
 	if (!user) throw new HttpError(404, "User not found");
 

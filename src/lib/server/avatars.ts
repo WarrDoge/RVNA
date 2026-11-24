@@ -1,13 +1,13 @@
 import { stat, unlink } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { type AnyColumn, eq, type SQL, sql } from "drizzle-orm";
+import { type AnyColumn, and, eq, type SQL, sql } from "drizzle-orm";
 import { MAX_AVATAR_BYTES, storeAvatarFile } from "../shared/avatar-storage.ts";
 import { imageTypeForFile, uploadImage } from "../shared/images.ts";
 import type { CurrentUser } from "./auth.ts";
 import { db } from "./db.ts";
 import { env } from "./env.ts";
 import { HttpError } from "./http.ts";
-import { can } from "./permissions.ts";
+import { can, visibleUsersFilter } from "./permissions.ts";
 import { issueTypes, priorities, projects, users } from "./schema.ts";
 import { spaces } from "./schema-wiki.ts";
 
@@ -303,6 +303,13 @@ export async function uploadAvatar(
 		.limit(1);
 	if (!target) throw new HttpError(404, "User not found");
 	if (target.id !== actor.id && !actor.isAdmin) {
+		// A 403 would tell the caller that the name exists; a user the caller may not see is a 404.
+		const [seen] = await db
+			.select({ id: users.id })
+			.from(users)
+			.where(and(eq(users.id, target.id), await visibleUsersFilter(actor)))
+			.limit(1);
+		if (!seen) throw new HttpError(404, "User not found");
 		throw new HttpError(
 			403,
 			"Only the user or an administrator can change this avatar",
