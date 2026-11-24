@@ -521,6 +521,20 @@ describe("Jira agile mapping", () => {
 		expect(starts).toEqual([0, 2]);
 	});
 
+	test("stops when a board list repeats the same page", async () => {
+		let requests = 0;
+		const client = {
+			async getJson() {
+				requests++;
+				return { values: [{ id: 1, name: "One", type: "scrum" }] };
+			},
+		} as unknown as JiraClient;
+		await expect(fetchBoards(client)).rejects.toThrow(
+			/paging did not finish \(a page brought no new rows\)/,
+		);
+		expect(requests).toBe(2);
+	});
+
 	test("returns null for a sprint report Jira cannot serve", async () => {
 		const client = {
 			getJson: async () => {

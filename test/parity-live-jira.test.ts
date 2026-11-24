@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { MAX_PAGES } from "../src/importer/client.ts";
 import { JiraClient } from "../src/importer/jira.ts";
 import { fetchJiraLive } from "../src/importer/parity/live-jira.ts";
 
@@ -200,6 +201,93 @@ describe("parity live Jira", () => {
 			warn.mockRestore();
 		}
 	});
+
+	test("lists that repeat the same page for ever end with an incomplete snapshot", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const requests = { users: 0, issues: 0, boards: 0, sprints: 0 };
+		const fetchImpl = (async (input: string | URL | Request) => {
+			const url = new URL(String(input));
+			const path = url.pathname;
+			if (path === "/rest/api/2/user/search") {
+				requests.users++;
+				return json(
+					Array.from({ length: 100 }, (_, index) => ({
+						key: `u${index}`,
+						name: `user${index}`,
+					})),
+				);
+			}
+			const standard = standardJiraResponse(url);
+			if (standard) return standard;
+			if (path === "/rest/api/2/search") {
+				if (url.searchParams.get("maxResults") === "0") {
+					return json({ total: 0 });
+				}
+				requests.issues++;
+				return json({
+					issues: [{ key: "P-1", fields: {} }],
+				});
+			}
+			if (path === "/rest/agile/1.0/board") {
+				requests.boards++;
+				return json({ values: [{ id: 10 }], isLast: false });
+			}
+			if (path === "/rest/agile/1.0/board/10/sprint") {
+				requests.sprints++;
+				return json({ values: [{ id: 1, state: "closed" }], isLast: false });
+			}
+			if (path === "/rest/agile/1.0/sprint/1/issue") return json({ total: 0 });
+			return json({}, 404);
+		}) as typeof fetch;
+
+		try {
+			const live = await fetchJiraLive(client(fetchImpl), {
+				privateApis: true,
+				serviceDesks: false,
+				agile: true,
+				filters: false,
+			});
+
+			expect(live.incomplete).toBe(true);
+			expect(requests).toEqual({ users: 2, issues: 2, boards: 2, sprints: 2 });
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a list with a fresh page every time stops at the page limit", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		let boardRequests = 0;
+		const fetchImpl = (async (input: string | URL | Request) => {
+			const url = new URL(String(input));
+			const standard = standardJiraResponse(url);
+			if (standard) return standard;
+			const path = url.pathname;
+			if (path === "/rest/api/2/search") return searchResponse(url);
+			if (path === "/rest/agile/1.0/board") {
+				boardRequests++;
+				return json({
+					values: [{ id: Number(url.searchParams.get("startAt")) + 1 }],
+				});
+			}
+			return json({}, 404);
+		}) as typeof fetch;
+
+		try {
+			const live = await fetchJiraLive(client(fetchImpl), {
+				privateApis: true,
+				serviceDesks: false,
+				agile: false,
+				boardsOnly: true,
+				filters: false,
+			});
+
+			expect(live.incomplete).toBe(true);
+			expect(boardRequests).toBe(MAX_PAGES + 1);
+		} finally {
+			warn.mockRestore();
+		}
+	}, 60_000);
 
 	test("saved filters are fetched concurrently and a missing filter is tolerated", async () => {
 		let active = 0;

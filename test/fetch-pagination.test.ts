@@ -56,70 +56,78 @@ function paged(path: string, start: number) {
 	return undefined;
 }
 
-describe("Jira pagination without a total", () => {
-	test("reads every page of issues, comments, worklogs and history", async () => {
-		const client = {
-			async getJson(
-				path: string,
-				params?: Record<string, string | number | boolean | undefined>,
+function fakeClient(
+	respond: (path: string, start: number) => unknown | undefined,
+) {
+	return {
+		async getJson(
+			path: string,
+			params?: Record<string, string | number | boolean | undefined>,
+		) {
+			const response = respond(path, Number(params?.startAt ?? 0));
+			if (response) return response;
+			if (path === "/rest/api/2/user/search") return [];
+			if (
+				path === "/rest/api/2/issuetype" ||
+				path === "/rest/api/2/priority" ||
+				path === "/rest/api/2/resolution" ||
+				path === "/rest/api/2/status" ||
+				path === "/rest/api/2/field" ||
+				path === "/rest/api/2/workflow"
 			) {
-				const start = Number(params?.startAt ?? 0);
-				const pagedResponse = paged(path, start);
-				if (pagedResponse) {
-					if (path === "/rest/api/2/search" && start === 0) {
-						const issues = pagedResponse.issues as ReturnType<typeof issue>[];
-						if (issues[0]) {
-							issues[0].fields.comment = { total: 1 };
-							issues[0].fields.worklog = { total: 1 };
-							issues[0].changelog = { total: 101, histories: [] };
-						}
-					}
-					return pagedResponse;
-				}
-				if (path === "/rest/api/2/user/search") return [];
-				if (
-					path === "/rest/api/2/issuetype" ||
-					path === "/rest/api/2/priority" ||
-					path === "/rest/api/2/resolution" ||
-					path === "/rest/api/2/status" ||
-					path === "/rest/api/2/field" ||
-					path === "/rest/api/2/workflow"
-				) {
-					return [];
-				}
-				if (path === "/rest/api/2/issueLinkType") return { issueLinkTypes: [] };
-				if (path === "/rest/api/2/project") {
-					return [
-						{
-							id: "1",
-							key: "DEMO",
-							name: "Demo",
-							projectTypeKey: "software",
-						},
-					];
-				}
-				if (path === "/rest/api/2/project/DEMO") {
-					return {
+				return [];
+			}
+			if (path === "/rest/api/2/issueLinkType") return { issueLinkTypes: [] };
+			if (path === "/rest/api/2/project") {
+				return [
+					{
 						id: "1",
 						key: "DEMO",
 						name: "Demo",
 						projectTypeKey: "software",
-						issueTypes: [],
-					};
-				}
-				if (path.endsWith("/components") || path.endsWith("/versions")) {
-					return [];
-				}
-				if (path.endsWith("/statuses")) return [];
-				throw new Error(`unexpected ${path}`);
-			},
-		} as unknown as JiraClient;
+					},
+				];
+			}
+			if (path === "/rest/api/2/project/DEMO") {
+				return {
+					id: "1",
+					key: "DEMO",
+					name: "Demo",
+					projectTypeKey: "software",
+					issueTypes: [],
+				};
+			}
+			if (path.endsWith("/components") || path.endsWith("/versions")) {
+				return [];
+			}
+			if (path.endsWith("/statuses")) return [];
+			throw new Error(`unexpected ${path}`);
+		},
+	} as unknown as JiraClient;
+}
 
-		const dataset = await fetchDataset(client, {
-			attachmentsDir: "/tmp",
-			skipAttachments: true,
-			privateApis: true,
+const fetchOptions = {
+	attachmentsDir: "/tmp",
+	skipAttachments: true,
+	privateApis: true,
+};
+
+describe("Jira pagination without a total", () => {
+	test("reads every page of issues, comments, worklogs and history", async () => {
+		const client = fakeClient((path, start) => {
+			const response = paged(path, start);
+			if (response && path === "/rest/api/2/search" && start === 0) {
+				const issues = response.issues as ReturnType<typeof issue>[];
+				if (issues[0]) {
+					issues[0].fields.comment = { total: 1 };
+					issues[0].fields.worklog = { total: 1 };
+					issues[0].changelog = { total: 101, histories: [] };
+				}
+			}
+			return response;
 		});
+
+		const dataset = await fetchDataset(client, fetchOptions);
 
 		expect(dataset.issues).toHaveLength(51);
 		const first = dataset.issues.find((data) => data.issue.key === "DEMO-1");
@@ -127,4 +135,72 @@ describe("Jira pagination without a total", () => {
 		expect(first?.worklogs).toHaveLength(101);
 		expect(first?.histories).toHaveLength(101);
 	});
+});
+
+describe("Jira pagination that never ends", () => {
+	test.each([
+		["users", "/rest/api/2/user/search"],
+		["issues", "/rest/api/2/search"],
+	])("a page of %s that repeats stops the fetch", async (_name, listPath) => {
+		let requests = 0;
+		const client = fakeClient((path) => {
+			if (path !== listPath) return undefined;
+			requests++;
+			if (path === "/rest/api/2/user/search") {
+				return Array.from({ length: 100 }, (_, index) => ({
+					key: `u${index}`,
+					name: `user${index}`,
+				}));
+			}
+			return {
+				issues: Array.from({ length: 50 }, (_, index) =>
+					issue(`DEMO-${index + 1}`),
+				),
+				total: 1_000_000,
+			};
+		});
+
+		await expect(fetchDataset(client, fetchOptions)).rejects.toThrow(
+			/paging did not finish \(a page brought no new rows\)/,
+		);
+		expect(requests).toBe(2);
+	});
+
+	test.each([["comment"], ["worklog"], ["changelog"]])(
+		"a repeating page of %s rows stops the fetch",
+		async (suffix) => {
+			let requests = 0;
+			const client = fakeClient((path, start) => {
+				if (path === "/rest/api/2/search") {
+					const demo = issue("DEMO-1");
+					demo.fields.comment = { total: 1 };
+					demo.fields.worklog = { total: 1 };
+					demo.changelog = { total: 101, histories: [] };
+					return start === 0 ? { issues: [demo] } : { issues: [] };
+				}
+				const kind = path.split("/").pop();
+				if (kind !== "comment" && kind !== "worklog" && kind !== "changelog") {
+					return undefined;
+				}
+				const key = {
+					comment: "comments",
+					worklog: "worklogs",
+					changelog: "histories",
+				}[kind];
+				if (kind !== suffix) return { [key]: [], total: 0 };
+				requests++;
+				return {
+					[key]: Array.from({ length: 100 }, (_, index) => ({
+						id: `r${index}`,
+					})),
+					total: 1_000_000,
+				};
+			});
+
+			await expect(fetchDataset(client, fetchOptions)).rejects.toThrow(
+				/DEMO-1: paging did not finish/,
+			);
+			expect(requests).toBe(2);
+		},
+	);
 });

@@ -144,9 +144,7 @@ export async function runParity(
 	}
 	const incomplete = liveJira?.incomplete === true;
 	if (incomplete) {
-		notes.push(
-			"jira live snapshot is incomplete: a paged list did not advance",
-		);
+		notes.push("jira live snapshot is incomplete: a paged list did not finish");
 	}
 	let watermark: string | null = null;
 	let changedSinceImport: { count: number; issues: string[] } = {

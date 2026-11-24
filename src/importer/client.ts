@@ -119,6 +119,43 @@ export function pathSegment(id: string | number) {
 	return segment;
 }
 
+/** More pages than this in one list means the server is paging for ever. */
+export const MAX_PAGES = 10_000;
+
+/**
+ * The server decides where a list ends, so a loop cannot rely on it. Call the
+ * returned function with the ids of each non-empty page: it fails when the
+ * list passes MAX_PAGES pages or a page brings no id it has not seen yet. With
+ * `onStop` it reports the reason there and returns false instead of throwing.
+ */
+export function pageGuard(
+	what: string,
+	onStop?: (reason: string) => void,
+): (ids: Iterable<string | number | undefined>) => boolean {
+	const seen = new Set<string | number | undefined>();
+	let pages = 0;
+	return (ids) => {
+		let fresh = false;
+		let any = false;
+		for (const id of ids) {
+			any = true;
+			if (!seen.has(id)) {
+				seen.add(id);
+				fresh = true;
+			}
+		}
+		pages++;
+		let reason: string | null = null;
+		if (pages > MAX_PAGES) reason = `more than ${MAX_PAGES} pages`;
+		else if (any && !fresh) reason = "a page brought no new rows";
+		if (reason === null) return true;
+		if (!onStop) throw new Error(`paging did not finish (${reason}): ${what}`);
+		console.warn(`pagination did not finish at ${what}: ${reason}`);
+		onStop(reason);
+		return false;
+	};
+}
+
 export class GetOnlyClient {
 	private readonly baseUrl: string;
 	private readonly token: string;

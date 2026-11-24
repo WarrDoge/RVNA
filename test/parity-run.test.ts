@@ -292,7 +292,7 @@ describe("parity run", () => {
 		expect(report.incomplete).toBe(true);
 		expect(report.ok).toBe(false);
 		expect(report.notes).toContain(
-			"jira live snapshot is incomplete: a paged list did not advance",
+			"jira live snapshot is incomplete: a paged list did not finish",
 		);
 		expect(formatReport(report)).toContain("result: INCOMPLETE");
 	});

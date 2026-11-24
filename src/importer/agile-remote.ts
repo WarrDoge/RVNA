@@ -19,6 +19,7 @@ import {
 	customFieldId,
 	resolveCustomFieldRoles,
 } from "../lib/shared/custom-field-roles.ts";
+import { pageGuard } from "./client.ts";
 import { db } from "./db.ts";
 import type { JiraClient } from "./jira.ts";
 import { type PrivateApiOptions, skipPrivateApi } from "./private-apis.ts";
@@ -459,6 +460,7 @@ async function fetchPaged<T extends { isLast?: boolean }>(
 	maxResults = 100,
 ): Promise<unknown[]> {
 	const values: unknown[] = [];
+	const guard = pageGuard(path);
 	let startAt = 0;
 	for (;;) {
 		const page = await client.getJson<T>(path, {
@@ -467,6 +469,7 @@ async function fetchPaged<T extends { isLast?: boolean }>(
 			maxResults,
 		});
 		const pageValues = pick(page);
+		guard(pageValues.map((value) => (value as { id?: string | number }).id));
 		values.push(...pageValues);
 		if (page.isLast === true || pageValues.length === 0) break;
 		startAt += pageValues.length;

@@ -1249,6 +1249,10 @@ attachment address on another host stops the import with an error. Set the URL t
 server itself uses in its links. An id from the server is used as a file name only when it holds
 letters, digits, `_` and `-`.
 
+A paged list from the server ends the import with an error when it passes 10 000 pages or when a
+page brings no row the importer has not already seen; the parity check marks its live snapshot
+incomplete instead.
+
 Workflow transitions keep their screen: the importer reads the tabs and fields of every distinct
 transition screen once and sets `asks_resolution` when the screen contains the `resolution` field.
 The other screen fields, such as assignee and linked issues, are not imported.

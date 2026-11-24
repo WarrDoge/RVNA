@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { pathSegment } from "./client.ts";
+import { pageGuard, pathSegment } from "./client.ts";
 import { type JiraClient, JiraRequestError } from "./jira.ts";
 import { type PrivateApiOptions, skipPrivateApi } from "./private-apis.ts";
 import {
@@ -75,6 +75,7 @@ function withIssueKey(key: string, error: unknown): Error {
 
 async function fetchUsers(client: JiraClient): Promise<JiraUser[]> {
 	const users: JiraUser[] = [];
+	const guard = pageGuard("/rest/api/2/user/search");
 	let startAt = 0;
 	for (;;) {
 		const page = await client.getJson<JiraUser[]>("/rest/api/2/user/search", {
@@ -83,6 +84,7 @@ async function fetchUsers(client: JiraClient): Promise<JiraUser[]> {
 			startAt,
 			maxResults: pageSize,
 		});
+		guard(page.map((user) => user.key ?? user.name));
 		users.push(...page);
 		if (page.length < pageSize) break;
 		startAt += page.length;
@@ -280,6 +282,9 @@ async function fetchProjectFieldOptions(
 	const fields = new Map<string, FieldOptionEntry>();
 	for (const issueType of project.issueTypes) {
 		let startAt = 0;
+		const guard = pageGuard(
+			`createmeta of ${project.project.key} ${issueType.id}`,
+		);
 		for (;;) {
 			const page = await client.getJson<{
 				values?: JiraCreateMetaField[];
@@ -289,6 +294,7 @@ async function fetchProjectFieldOptions(
 				{ maxResults: pageSize, startAt },
 			);
 			const values = page.values ?? [];
+			guard(values.map((field) => field.fieldId));
 
 			for (const field of values) {
 				if (
@@ -350,6 +356,7 @@ async function fetchFieldOptions(
 
 async function fetchComments(client: JiraClient, key: string) {
 	const comments = [];
+	const guard = pageGuard(`${key} comment`);
 	let startAt = 0;
 	for (;;) {
 		const page = await client.getJson<{
@@ -361,6 +368,7 @@ async function fetchComments(client: JiraClient, key: string) {
 			maxResults: pageSize,
 		});
 		const values = page.comments ?? [];
+		guard(values.map((row) => row.id));
 		comments.push(...values);
 		if (lastPage(comments.length, page.total, values.length, pageSize)) break;
 		startAt += values.length;
@@ -370,6 +378,7 @@ async function fetchComments(client: JiraClient, key: string) {
 
 async function fetchWorklogs(client: JiraClient, key: string) {
 	const worklogs = [];
+	const guard = pageGuard(`${key} worklog`);
 	let startAt = 0;
 	for (;;) {
 		const page = await client.getJson<{
@@ -380,6 +389,7 @@ async function fetchWorklogs(client: JiraClient, key: string) {
 			maxResults: pageSize,
 		});
 		const values = page.worklogs ?? [];
+		guard(values.map((row) => row.id));
 		worklogs.push(...values);
 		if (lastPage(worklogs.length, page.total, values.length, pageSize)) break;
 		startAt += values.length;
@@ -396,6 +406,7 @@ async function fetchWatchers(client: JiraClient, key: string) {
 
 async function fetchChangelog(client: JiraClient, key: string) {
 	const histories = [];
+	const guard = pageGuard(`${key} changelog`);
 	let startAt = 0;
 	for (;;) {
 		const page = await client.getJson<{
@@ -406,6 +417,7 @@ async function fetchChangelog(client: JiraClient, key: string) {
 			maxResults: pageSize,
 		});
 		const values = page.histories ?? [];
+		guard(values.map((row) => row.id));
 		histories.push(...values);
 		if (lastPage(histories.length, page.total, values.length, pageSize)) break;
 		startAt += values.length;
@@ -525,6 +537,7 @@ async function fetchProjectIssues(
 	serviceDesk: boolean,
 ): Promise<JiraIssueData[]> {
 	const issues: JiraIssueData[] = [];
+	const guard = pageGuard(`issues of ${projectKey}`);
 	let startAt = 0;
 	for (;;) {
 		const page = await client.getJson<{
@@ -538,6 +551,7 @@ async function fetchProjectIssues(
 			expand: "changelog,renderedFields",
 		});
 		const values = page.issues ?? [];
+		guard(values.map((issue) => issue.key));
 		const enriched = await Promise.all(
 			values.map((issue) => enrichIssue(client, issue, options, serviceDesk)),
 		);
