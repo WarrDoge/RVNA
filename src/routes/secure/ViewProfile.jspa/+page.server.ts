@@ -1,9 +1,14 @@
-import { fail } from "@sveltejs/kit";
+import { fail, redirect } from "@sveltejs/kit";
 import { z } from "zod";
-import { SESSION_COOKIE, sessionCookieOptions } from "#lib/server/auth.ts";
+import {
+	clearCookieOptions,
+	loginPath,
+	SESSION_COOKIE,
+	sessionCookieOptions,
+} from "#lib/server/auth.ts";
 import { HttpError, isBearer, isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
-import { changePassword } from "#lib/server/local-auth.ts";
+import { changePassword, endAllSessions } from "#lib/server/local-auth.ts";
 import { me } from "#lib/server/me/service.ts";
 import { messengerProfileInfo } from "#lib/server/messenger/links.ts";
 import {
@@ -74,6 +79,14 @@ export const actions = {
 			isBearer(event.request)
 		) {
 			throw new HttpError(403, "Bearer tokens cannot manage tokens");
+		}
+		if (intent === "signOutEverywhere") {
+			if (isBearer(event.request)) {
+				throw new HttpError(403, "Bearer tokens cannot end sessions");
+			}
+			await endAllSessions(actor, event.getClientAddress());
+			event.cookies.set(SESSION_COOKIE, "", clearCookieOptions("/"));
+			redirect(303, loginPath());
 		}
 
 		if (intent === "changePassword") {

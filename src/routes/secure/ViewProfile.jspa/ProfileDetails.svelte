@@ -1,5 +1,8 @@
 <script lang="ts">
+	import { enhance } from "$app/forms";
 	import type { Profile } from "#lib/api-types.ts";
+	import Button from "#lib/components/Button.svelte";
+	import ConfirmDialog from "#lib/components/ConfirmDialog.svelte";
 	import { profileJql } from "./profile-jql.ts";
 
 	interface Props {
@@ -9,6 +12,10 @@
 	}
 
 	let { profile, notice, selfHasPassword }: Props = $props();
+
+	let confirming = $state(false);
+	let pending = $state(false);
+	let signOutForm = $state<HTMLFormElement>();
 
 	let summary = $derived(
 		!profile.isSelf
@@ -51,9 +58,41 @@
 					Manage personal access tokens
 				</a>
 			</section>
+			<section class="card">
+				<h3>Sessions</h3>
+				<p>
+					Sign out of every browser where you are signed in, this one too. API
+					tokens keep working.
+				</p>
+				<Button onclick={() => (confirming = true)}>Sign out everywhere</Button>
+			</section>
 		{/if}
 	</div>
 </div>
+
+{#if confirming}
+	<form
+		method="POST"
+		bind:this={signOutForm}
+		use:enhance={() => {
+			pending = true;
+			return async ({ update }) => {
+				pending = false;
+				await update();
+			};
+		}}
+	>
+		<input type="hidden" name="intent" value="signOutEverywhere" />
+	</form>
+	<ConfirmDialog
+		title="Sign out everywhere"
+		message="This ends every session of your account, including this one. You will need to sign in again."
+		confirmLabel="Sign out everywhere"
+		{pending}
+		onConfirm={() => signOutForm?.requestSubmit()}
+		onClose={() => (confirming = false)}
+	/>
+{/if}
 
 <style>
 	.notice {

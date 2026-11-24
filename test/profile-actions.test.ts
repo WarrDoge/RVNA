@@ -4,7 +4,7 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import { createSession, randomValue, sha256 } from "../src/lib/server/auth.ts";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import { hashPassword } from "../src/lib/server/passwords.ts";
-import { apiTokens, users } from "../src/lib/server/schema.ts";
+import { apiTokens, sessions, users } from "../src/lib/server/schema.ts";
 import { makeUser, newRun } from "./admin-helpers.ts";
 import { buildServer, cleanupTestData } from "./helpers.ts";
 import type { TestApp } from "./server.ts";
@@ -128,6 +128,59 @@ test("the token form asks for the password and honours the expiry choices", asyn
 	expect(days).toEqual([90, 365, null]);
 });
 
+test("Sign out everywhere ends every session, keeps the API tokens and writes an audit row", async () => {
+	const user = await makeTokenUser("sign-out-all", false);
+	const second = await createSession(user.id, null);
+	const sessionsOf = () =>
+		db
+			.select({ id: sessions.idHash })
+			.from(sessions)
+			.where(eq(sessions.userId, user.id));
+	expect(await sessionsOf()).toHaveLength(2);
+
+	const bearer = await app.inject({
+		method: "POST",
+		url: "/secure/ViewProfile.jspa",
+		headers: {
+			authorization: `Bearer ${user.token}`,
+			origin: "http://127.0.0.1:3000",
+			"content-type": "application/x-www-form-urlencoded",
+		},
+		payload: new URLSearchParams({ intent: "signOutEverywhere" }).toString(),
+	});
+	expect(bearer.statusCode).toBe(403);
+	expect(await sessionsOf()).toHaveLength(2);
+
+	const response = await formPost(user.session, "/secure/ViewProfile.jspa", {
+		intent: "signOutEverywhere",
+	});
+	expect(response.statusCode).toBe(303);
+	expect(response.headers.location).toMatch(/^\/login\.jsp/);
+	expect([response.headers["set-cookie"]].flat().join(";")).toMatch(/sid=;/);
+	expect(await sessionsOf()).toEqual([]);
+	for (const sid of [user.session, second]) {
+		const me = await app.inject({
+			method: "GET",
+			url: "/api/me",
+			cookies: { sid },
+		});
+		expect(me.statusCode).toBe(401);
+	}
+
+	const viaToken = await app.inject({
+		method: "GET",
+		url: "/api/me",
+		headers: { authorization: `Bearer ${user.token}` },
+	});
+	expect(viaToken.statusCode).toBe(200);
+
+	const { rows } = await pool.query(
+		"select summary from audit_log where action = 'auth.logout_all' and actor_id = $1",
+		[user.id],
+	);
+	expect(rows).toHaveLength(1);
+});
+
 test("a forced password change allows only the password action", async () => {
 	const user = await makePasswordUser("must-token", true);
 	const [token] = await db
@@ -143,6 +196,7 @@ test("a forced password change allows only the password action", async () => {
 		{ intent: "createToken", name: "Escape token" },
 		{ intent: "revokeToken", id: token?.id ?? "" },
 		{ intent: "saveNotifications", emailNotifications: "on" },
+		{ intent: "signOutEverywhere" },
 		{ intent: "anythingElse" },
 	];
 	for (const fields of actions) {

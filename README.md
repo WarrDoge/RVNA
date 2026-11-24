@@ -1072,7 +1072,10 @@ email (`email_verified`). Accounts without a password attach by username or veri
 ### Sessions and API tokens
 
 A sign-in sets the `sid` cookie (HttpOnly, SameSite=Lax, valid for `SESSION_TTL_DAYS`, 14 by default).
-A password change ends every session and answers with a new cookie.
+A password change ends every session and answers with a new cookie. "Sign out everywhere" on the
+profile page ends every session of the user, the current one too, after a confirmation, and writes an
+`auth.logout_all` audit row. A session ends only after those 14 days, a sign-out or one of these two
+actions: there is no idle timeout and no list of single sessions.
 
 A user makes an API token on the profile page (`?selectedTab=tokens`) or with `POST /api/me/tokens`.
 A token expires after 90 days unless the request says otherwise: the form offers 30, 90 and 365 days

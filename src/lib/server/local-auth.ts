@@ -395,3 +395,21 @@ export async function changePassword(
 	}
 	return result.session;
 }
+
+/** Ends every session of the user, the caller's included. API tokens stay valid. */
+export async function endAllSessions(actor: CurrentUser, ip: string) {
+	await db.transaction(async (tx) => {
+		const ended = await tx
+			.delete(sessions)
+			.where(eq(sessions.userId, actor.id))
+			.returning({ idHash: sessions.idHash });
+		await recordAudit(tx, {
+			actorId: actor.id,
+			actorName: actor.displayName,
+			action: "auth.logout_all",
+			entityType: "user",
+			entityId: actor.id,
+			summary: `${actor.username} ended all ${ended.length} sessions from ${ip}`,
+		});
+	});
+}

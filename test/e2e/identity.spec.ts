@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures.ts";
+import { request as apiRequest, expect, test } from "./fixtures.ts";
 
 test("shell, personal access tokens and logout", async ({ page }) => {
 	await page.goto("/");
@@ -66,4 +66,36 @@ test("the old logout address asks before it ends the session", async ({
 	await page.getByRole("button", { name: "Log out", exact: true }).click();
 	expect((await logout).status()).toBe(200);
 	await expect(page).toHaveURL(/\/secure\/Dashboard\.jspa$/);
+});
+
+test("Sign out everywhere asks first and then ends the session", async ({
+	page,
+	baseURL,
+}) => {
+	await page.goto("/auth/login?returnTo=/secure/ViewProfile.jspa");
+	const sessionCookie = async () =>
+		(await page.context().cookies()).find((cookie) => cookie.name === "sid")
+			?.value;
+	const before = await sessionCookie();
+	expect(before).toBeTruthy();
+
+	const open = page.getByRole("button", { name: "Sign out everywhere" });
+	await open.click();
+	const dialog = page.getByRole("dialog");
+	await dialog.getByRole("button", { name: "Cancel" }).click();
+	await expect(dialog).toHaveCount(0);
+	expect(await sessionCookie()).toBe(before);
+
+	await open.click();
+	await dialog.getByRole("button", { name: "Sign out everywhere" }).click();
+	// The development sign-in starts a new session at once; the old one is gone.
+	await expect(page).toHaveURL(/\/secure\/Dashboard\.jspa$/);
+	expect(await sessionCookie()).not.toBe(before);
+
+	const stale = await apiRequest.newContext({
+		baseURL,
+		extraHTTPHeaders: { cookie: `sid=${before}` },
+	});
+	expect((await stale.get("/api/me")).status()).toBe(401);
+	await stale.dispose();
 });
