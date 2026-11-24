@@ -558,6 +558,9 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
   automatically: they run after the body is parsed, which `handle` cannot do without consuming it.
   A mutating route is either in `writeRouteScopes` or exempt; anything else is refused, so a new
   route fails closed until it is classified. A server task never has to remember either guard.
+  A previous key is rewritten only for a viewer who may browse the project (an issue key also counts
+  the issue-level browse rights); for anyone else it is an unknown key, so an old address never shows
+  that a hidden project exists or what its key is now.
 - JQL a viewer types resolves names only among what the viewer may see: the projects they can browse
   with their versions, components and sprints, the people `visibleDirectory` lists (the viewer
   included; an administrator sees every account) and the groups named there or the viewer's own. A

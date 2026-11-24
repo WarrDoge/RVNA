@@ -65,10 +65,10 @@ function withKey(routeId: string, url: URL, key: string) {
  * A project key the project once had is a 302 to the same address with the current key,
  * as the project pages always answered.
  */
-async function redirectPreviousKey(event: ServerLoadEvent) {
+async function redirectPreviousKey(event: ServerLoadEvent, actor: CurrentUser) {
 	if (typeof event.params.key !== "string" || !event.route.id) return;
 	const params: Record<string, unknown> = { ...event.params };
-	await resolvePreviousKeysFor(params, undefined);
+	await resolvePreviousKeysFor(params, undefined, actor);
 	if (params.key !== event.params.key) {
 		const location = withKey(event.route.id, event.url, params.key as string);
 		if (location) redirect(302, location);
@@ -92,7 +92,7 @@ function wrapLoad<E extends ServerLoadEvent, T>(
 		} catch (cause) {
 			loadError(cause);
 		}
-		await redirectPreviousKey(event);
+		await redirectPreviousKey(event, actor);
 		try {
 			return await handler(event, actor);
 		} catch (cause) {

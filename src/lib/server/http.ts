@@ -374,7 +374,7 @@ export async function prepareWrite(
 	params: Record<string, unknown>,
 	body: unknown,
 ) {
-	await resolvePreviousKeysFor(params, body);
+	await resolvePreviousKeysFor(params, body, event.locals.user);
 	const message = await rejectArchivedWriteFor({
 		method: event.request.method,
 		route: routePattern(event.route.id ?? ""),

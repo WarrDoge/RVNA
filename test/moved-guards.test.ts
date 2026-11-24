@@ -36,6 +36,12 @@ import type { TestApp } from "./server.ts";
 const run = fixtureRun();
 const key = fixtureKey(run);
 const previousKey = `BACK${run.slice(0, 4).toUpperCase()}`;
+const viewer = {
+	id: randomUUID(),
+	username: `t-${run}-viewer`,
+	groups: [],
+	isAdmin: false,
+};
 let app: TestApp;
 let client: Client;
 let projectId: string;
@@ -47,6 +53,7 @@ function event(method: string, routeId: string) {
 	return {
 		request: new Request("http://127.0.0.1:3000", { method }),
 		route: { id: routeId },
+		locals: { user: null },
 	} as never;
 }
 
@@ -92,7 +99,7 @@ test("a previous project key is rewritten before the handler sees it", async () 
 		[projectId, oldKey],
 	);
 	const params = { key: oldKey };
-	await resolvePreviousKeysFor(params, {});
+	await resolvePreviousKeysFor(params, {}, viewer);
 	expect(params.key).toBe(key);
 });
 
@@ -105,7 +112,7 @@ test("an imported previous key with an underscore resolves its issues", async ()
 	const { resolvePreviousKey } = await import(
 		"../src/lib/server/project-keys.ts"
 	);
-	expect(await resolvePreviousKey(`${oldKey}-12`)).toBe(`${key}-12`);
+	expect(await resolvePreviousKey(`${oldKey}-12`, viewer)).toBe(`${key}-12`);
 });
 
 test("the write guard reads the project from a form or a JSON body", async () => {

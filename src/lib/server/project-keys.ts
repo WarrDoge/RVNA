@@ -2,6 +2,12 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "./db.ts";
 import {
+	asPermissionUser,
+	can,
+	issuePermissionContext,
+	type ViewerLike,
+} from "./permissions.ts";
+import {
 	attachments,
 	boards,
 	components,
@@ -17,8 +23,16 @@ import {
 export const issueKeyPattern = /^([A-Za-z][A-Za-z0-9_]*)-(\d+)$/;
 const uuidPattern = z.uuid();
 
-/** Current key of the project that used `key` before, or null when `key` is current or unknown. */
-async function currentKeyOf(key: string) {
+/**
+ * Current key of the project that used `key` before, or null when `key` is current or
+ * unknown, or when the viewer may not browse the project: a hidden project answers like an
+ * unknown key. With an issue number the issue-level browse rights count too.
+ */
+async function currentKeyOf(
+	key: string,
+	viewer: ViewerLike | null,
+	issueNumber?: string,
+) {
 	const upper = key.toUpperCase();
 	const [current] = await db
 		.select({ key: projects.key })
@@ -28,25 +42,35 @@ async function currentKeyOf(key: string) {
 	if (current) return null;
 
 	const [previous] = await db
-		.select({ key: projects.key })
+		.select({ id: projects.id, key: projects.key, leadId: projects.leadId })
 		.from(projectPreviousKeys)
 		.innerJoin(projects, eq(projects.id, projectPreviousKeys.projectId))
 		.where(eq(projectPreviousKeys.key, upper))
 		.limit(1);
-	return previous?.key ?? null;
+	if (!previous || !viewer) return null;
+	const issue = issueNumber
+		? await issuePermissionContext(`${previous.key}-${issueNumber}`)
+		: null;
+	const user = asPermissionUser(viewer);
+	return (await can(user, "BROWSE_PROJECTS", previous, issue))
+		? previous.key
+		: null;
 }
 
 /** Rewrites a previous project key, or an issue key of one, to the current key. */
-export async function resolvePreviousKey(value: string): Promise<string> {
+export async function resolvePreviousKey(
+	value: string,
+	viewer: ViewerLike | null,
+): Promise<string> {
 	const issue = issueKeyPattern.exec(value);
 	if (issue) {
 		const [, prefix, number] = issue;
-		const current = await currentKeyOf(prefix ?? "");
+		const current = await currentKeyOf(prefix ?? "", viewer, number);
 		return current ? `${current}-${number}` : value;
 	}
 	// Only undashed values can be project keys; anything else is left to the route.
 	if (value.includes("-")) return value;
-	const current = await currentKeyOf(value);
+	const current = await currentKeyOf(value, viewer);
 	return current ?? value;
 }
 
@@ -82,15 +106,16 @@ function setBodyProject(body: unknown, value: string) {
 export async function resolvePreviousKeysFor(
 	params: Record<string, unknown> | undefined,
 	body: unknown,
+	viewer: ViewerLike | null,
 ) {
 	if (params && typeof params.key === "string") {
-		const resolved = await resolvePreviousKey(params.key);
+		const resolved = await resolvePreviousKey(params.key, viewer);
 		if (resolved !== params.key) params.key = resolved;
 	}
 
 	const project = bodyProject(body);
 	if (project !== null) {
-		const resolved = await resolvePreviousKey(project);
+		const resolved = await resolvePreviousKey(project, viewer);
 		if (resolved !== project) setBodyProject(body, resolved);
 	}
 }
