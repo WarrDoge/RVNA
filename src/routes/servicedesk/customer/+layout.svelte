@@ -89,7 +89,7 @@
 	.portal {
 		min-height: 100vh;
 		background-image: linear-gradient(
-			var(--ds-background-accent-blue-subtler) 0 280px,
+			var(--ds-background-brand-subtlest-pressed) 0 280px,
 			var(--ds-surface) 280px
 		);
 		color: var(--ds-text);
