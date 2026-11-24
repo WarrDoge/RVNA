@@ -1341,7 +1341,8 @@ group that is no longer listed in Confluence loses its imported memberships.
 
 A Jira or Confluence group that has the name of a local group is left alone: the import adds no
 members to the local group, removes the imported memberships it already holds, and does not seed
-the global ADMINISTER permission to it.
+the global ADMINISTER permission to it. A saved filter shared with such a Jira group is not shared
+with the local group; the import prints a warning for each skipped share.
 
 Service desk projects are imported too: the desk and portal text, request type groups, request
 types and their customer fields, queues with Jira's reported issue counts, SLA metrics, goals and
