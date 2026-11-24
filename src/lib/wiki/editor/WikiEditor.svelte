@@ -3,6 +3,7 @@
 	import { Editor } from "@tiptap/core";
 	import Placeholder from "@tiptap/extension-placeholder";
 	import { onDestroy, onMount, untrack } from "svelte";
+	import { scrubPastedHtml } from "#lib/editor/safe-html.ts";
 	import type { MacroDef } from "#lib/editor/wiki/macros.ts";
 	import {
 		InlineMacroNode,
@@ -189,6 +190,7 @@
 			editable,
 			autofocus: autoFocus ? "start" : false,
 			editorProps: {
+				transformPastedHTML: scrubPastedHtml,
 				attributes: {
 					class: "wke-content fat-editor-content",
 					"aria-label": "Page body",

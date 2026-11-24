@@ -830,6 +830,11 @@ and error formatting.
   toolbar, mentions, links, images, tables and task lists.
 - `MentionList.svelte` (`users`, `active`, `pending`, `left`, `top`, `onPick`; a `role="listbox"`),
   `editor-html.ts` (`isEditorEmpty(html)`), `issue-extensions.ts` (`UnknownBlock`, `Mention`).
+- `safe-html.ts`: the only way HTML from outside reaches the editor DOM. `scrubPastedHtml` is the
+  `transformPastedHTML` of both editors (paste and drop): it removes active elements, `on…` handlers,
+  `srcdoc` and addresses with another scheme. `UnknownBlock` keeps only what the server sanitizer
+  allows (`src/lib/shared/html-policy.ts`, one list for both) and builds its elements from that; the
+  stored string is never parsed into the page. Do not add a node that renders `innerHTML`.
 - `node-view.ts` (`SvelteNodeViewRenderer(Component, { as, className })`) and
   `node-view-state.svelte.ts`: the adapter that renders a Svelte component as a TipTap node view.
 - `wiki/`: `extensions.ts` and `macros.ts` (the schema and the macro catalog), `MacroNodes.ts`, the macro node views and `macro.css`.

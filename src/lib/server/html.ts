@@ -1,56 +1,16 @@
 import { inArray } from "drizzle-orm";
 import sanitizeHtml from "sanitize-html";
 import { profileHref } from "../profile-link.ts";
+import {
+	allowedAttributes,
+	allowedSchemes,
+	allowedTags,
+	imageSchemes,
+} from "../shared/html-policy.ts";
 import { db } from "./db.ts";
 import { users } from "./schema.ts";
 
-export const allowedTags = [
-	"a",
-	"blockquote",
-	"br",
-	"code",
-	"col",
-	"colgroup",
-	"del",
-	"div",
-	"em",
-	"h1",
-	"h2",
-	"h3",
-	"h4",
-	"h5",
-	"h6",
-	"hr",
-	"img",
-	"input",
-	"ins",
-	"label",
-	"li",
-	"ol",
-	"p",
-	"pre",
-	"span",
-	"strong",
-	"sub",
-	"sup",
-	"table",
-	"tbody",
-	"td",
-	"th",
-	"thead",
-	"tr",
-	"u",
-	"ul",
-];
-
-export const allowedAttributes: sanitizeHtml.IOptions["allowedAttributes"] = {
-	a: ["href", "title", "class", "rel", "target", "data-user-id"],
-	img: ["src", "alt", "title", "width", "height", "class"],
-	ul: ["class", "data-type"],
-	li: ["class", "data-type", "data-checked"],
-	input: ["type", "checked", "disabled"],
-	"*": ["class"],
-};
+export { allowedAttributes, allowedTags };
 
 /** A link that opens another window must not hand that window a reference to ours. */
 export function withSafeRel(attributes: Record<string, string>) {
@@ -69,8 +29,8 @@ function cleanBodyHtml(
 	return sanitizeHtml(html, {
 		allowedTags,
 		allowedAttributes,
-		allowedSchemes: ["http", "https", "mailto"],
-		allowedSchemesByTag: { img: ["http", "https"] },
+		allowedSchemes,
+		allowedSchemesByTag: { img: imageSchemes },
 		allowProtocolRelative: false,
 		transformTags: {
 			a: (tagName: string, attributes: Record<string, string>) => {

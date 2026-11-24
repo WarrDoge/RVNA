@@ -16,6 +16,7 @@
 	import MentionList from "./MentionList.svelte";
 	import ToolButton from "./ToolButton.svelte";
 	import { Mention, UnknownBlock } from "./issue-extensions.ts";
+	import { scrubPastedHtml } from "./safe-html.ts";
 
 	interface Props {
 		value: string;
@@ -252,6 +253,7 @@
 			autofocus: autoFocus && editable,
 			editable,
 			editorProps: {
+				transformPastedHTML: scrubPastedHtml,
 				attributes: {
 					class: "fat-editor-content",
 					style: contentStyle,

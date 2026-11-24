@@ -1,6 +1,10 @@
 import { mergeAttributes, Node } from "@tiptap/core";
+import { safeFragment, safeHtml } from "./safe-html.ts";
 
-/** A block the importer kept as HTML and the editor cannot represent as nodes. */
+/**
+ * A block the importer kept as HTML and the editor cannot represent as nodes. Only what the
+ * server sanitizer allows is kept, and the page gets elements built from that, not the string.
+ */
 export const UnknownBlock = Node.create({
 	name: "unknownBlock",
 	group: "block",
@@ -17,16 +21,16 @@ export const UnknownBlock = Node.create({
 			{
 				tag: "div[class]",
 				getAttrs: (element) => ({
-					html: (element as HTMLElement).outerHTML,
+					html: safeHtml((element as HTMLElement).outerHTML),
 				}),
 			},
 		];
 	},
 
 	renderHTML({ node }) {
-		const template = document.createElement("template");
-		template.innerHTML = String(node.attrs.html ?? "");
-		const element = template.content.firstElementChild;
+		const element = safeFragment(
+			String(node.attrs.html ?? ""),
+		).firstElementChild;
 		return (
 			(element as HTMLElement | null) ?? ["div", { class: "fat-unknown-block" }]
 		);
