@@ -416,12 +416,20 @@ const macroCases: {
 		expect: ["wiki-attachments", "diagram.png", "notes.docx"],
 	},
 	{
-		name: "attachments regular expression",
+		name: "attachments wildcard",
 		storage: storage(
-			'<ac:structured-macro ac:name="attachments"><ac:parameter ac:name="patterns">.*\\.pdf</ac:parameter></ac:structured-macro>',
+			'<ac:structured-macro ac:name="attachments"><ac:parameter ac:name="patterns">*.PDF, diagram.pn?</ac:parameter></ac:structured-macro>',
 		),
-		expect: ["wiki-attachments", "manual.pdf"],
-		absent: ["diagram.png", "notes.docx"],
+		expect: ["wiki-attachments", "manual.pdf", "diagram.png"],
+		absent: ["notes.docx"],
+	},
+	{
+		name: "attachments regular expression matches nothing",
+		storage: storage(
+			'<ac:structured-macro ac:name="attachments"><ac:parameter ac:name="patterns">.*\\.pdf, (a+)+$, ^diagram</ac:parameter></ac:structured-macro>',
+		),
+		expect: ["wiki-empty", "No attachments."],
+		absent: ["manual.pdf", "diagram.png", "notes.docx"],
 	},
 	{
 		name: "anchor",
@@ -640,6 +648,29 @@ test("widget links do not emit unsafe schemes", async () => {
 	);
 	expect(html).not.toContain('href="javascript:');
 	expect(html).toContain("javascript:alert(1)");
+});
+
+test("attachment patterns never run as regular expressions", async () => {
+	const page = await createPage(
+		"Long attachment name",
+		storage(
+			'<ac:structured-macro ac:name="attachments"><ac:parameter ac:name="patterns">(a+)+$, *a*a*a*a*a*a*a*a*a*a*a*b</ac:parameter></ac:structured-macro>',
+		),
+	);
+	await db.insert(pageAttachments).values({
+		sourceId: `wm-long-${randomUUID()}`,
+		pageId: page.id,
+		fileName: `${"a".repeat(30)}!`,
+		mimeType: "text/plain",
+		size: 1,
+		version: 1,
+		storagePath: `dd/${randomUUID()}`,
+		sha256: "dd",
+	});
+	const started = performance.now();
+	const html = await render(page);
+	expect(performance.now() - started).toBeLessThan(1000);
+	expect(html).toContain("No attachments.");
 });
 
 test("page properties report reads the editor's parameter names", async () => {

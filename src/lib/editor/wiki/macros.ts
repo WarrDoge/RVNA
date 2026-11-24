@@ -339,7 +339,7 @@ export const macroCatalog: MacroDef[] = [
 		description: "Lists the attachments of a page",
 		body: "none",
 		fields: [
-			text("patterns", "File name patterns", { placeholder: ".*\\.pdf" }),
+			text("patterns", "File name patterns", { placeholder: "*.pdf" }),
 			flag("old", "Show previous versions"),
 			flag("upload", "Show upload form"),
 			select("sort", "Sort by", [

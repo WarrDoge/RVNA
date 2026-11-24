@@ -505,25 +505,52 @@ const widget: MacroRenderer = (macro) => {
 	return `<div class="wiki-widget wiki-widget-link" data-macro="widget"><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a><span class="wiki-widget-url">${escapeHtml(url)}</span></div>`;
 };
 
+const attachmentPatternLimit = 200;
+const attachmentPatternCount = 50;
+
+/** Case-insensitive file name match where `*` and `?` are the only wildcards. */
+function matchesFileName(pattern: string, fileName: string): boolean {
+	if (pattern.length > attachmentPatternLimit) return false;
+	const wanted = pattern.toLowerCase();
+	const name = fileName.toLowerCase();
+	let at = 0;
+	let from = 0;
+	let star = -1;
+	let resume = 0;
+	while (from < name.length) {
+		if (wanted[at] === "*") {
+			star = at++;
+			resume = from;
+		} else if (
+			at < wanted.length &&
+			(wanted[at] === "?" || wanted[at] === name[from])
+		) {
+			at++;
+			from++;
+		} else if (star !== -1) {
+			at = star + 1;
+			from = ++resume;
+		} else {
+			return false;
+		}
+	}
+	while (wanted[at] === "*") at++;
+	return at === wanted.length;
+}
+
 const attachments: MacroRenderer = async (macro, ctx) => {
 	const patterns = (macro.params.patterns ?? "")
 		.split(",")
 		.map((pattern) => pattern.trim())
-		.filter(Boolean);
-	const matchers = patterns
-		.map((pattern) => {
-			try {
-				return new RegExp(pattern, "i");
-			} catch {
-				return null;
-			}
-		})
-		.filter((matcher): matcher is RegExp => matcher !== null);
+		.filter(Boolean)
+		.slice(0, attachmentPatternCount);
 	const rows = [...ctx.storage.attachments.values()]
 		.filter(
 			(attachment) =>
 				patterns.length === 0 ||
-				matchers.some((matcher) => matcher.test(attachment.fileName)),
+				patterns.some((pattern) =>
+					matchesFileName(pattern, attachment.fileName),
+				),
 		)
 		.sort((left, right) => left.fileName.localeCompare(right.fileName));
 	if (rows.length === 0) {
