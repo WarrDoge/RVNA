@@ -962,6 +962,24 @@ draft), `CopyPageForm`, `MovePageScreen`, remove, trash and space creation. `edi
 3. `export const actions` stays in `+page.server.ts`, never `export { actions }`. The route
    inventory reads the actions from the built routes, so any spelling is seen, and a test proves it.
 
+### Wiki page tree and read restrictions
+
+A read restriction hides its page and every page below it; an edit restriction applies to its own
+page only. Moving, copying or trashing a page changes the pages above it, so it can change who may
+read it. These operations (`wiki-edit/tree.ts`) never widen that:
+
+- Move, and restoring a page from the trash: a page that stops being below a read-restricted page
+  takes that restriction as its own read restriction, narrowed by its own one. The result names the
+  people and groups that every one of those restrictions names. A user who may change the restrictions
+  of the page (the `restrict` permission, space administrators) moves it freely: nothing is added. If
+  the combined list is empty or leaves out the user, the request is a 403.
+- Copy: the copy always takes the read restrictions that the source loses, in the same way, whoever
+  makes the copy. Pages copied below it sit under the copy and need nothing more.
+- Trash: trashing moves the children up to the page's parent. If the page has its own read
+  restriction and children, only a user who may change its restrictions can trash it (403 for
+  others). The trash records the moved children in `page_trash.moved_children`; restoring the page
+  puts back those that still sit where the trash left them.
+
 ### Traps found
 
 - `BODY_SIZE_LIMIT` defaults to 512K in adapter-node. The Helm chart sets both

@@ -1,0 +1,1 @@
+ALTER TABLE "page_trash" ADD COLUMN "moved_children" uuid[] DEFAULT '{}' NOT NULL;

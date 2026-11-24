@@ -232,6 +232,13 @@
 			"when": 1795368292396,
 			"tag": "0032_tricky_red_wolf",
 			"breakpoints": true
+		},
+		{
+			"idx": 33,
+			"version": "7",
+			"when": 1795543637013,
+			"tag": "0033_common_patriot",
+			"breakpoints": true
 		}
 	]
 }

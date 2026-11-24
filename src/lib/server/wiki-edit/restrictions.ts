@@ -89,7 +89,10 @@ export const restrictionsBody = z.object({
 	update: subjectsInput,
 });
 
-const listed = (user: CurrentUser, input: z.infer<typeof subjectsInput>) =>
+export const listed = (
+	user: CurrentUser,
+	input: z.infer<typeof subjectsInput>,
+) =>
 	input.userIds.includes(user.id) ||
 	input.groups.some((group) => hasGroup(user, group));
 

@@ -473,7 +473,7 @@ describe("copy", () => {
 });
 
 describe("trash", () => {
-	test("children move up to the parent, restore puts the page back", async () => {
+	test("children move up to the parent, restore puts the page and its children back", async () => {
 		const parent = await mk("Trash parent");
 		const before = await mk("Trash before", parent.id);
 		const victim = await mk("Trash victim", parent.id);
@@ -510,9 +510,8 @@ describe("trash", () => {
 			"Trash before",
 			"Trash victim",
 			"Trash after",
-			"Trash kid 1",
-			"Trash kid 2",
 		]);
+		expect(await childrenOf(victim.id)).toEqual(["Trash kid 1", "Trash kid 2"]);
 		expect(before.id).not.toBe(after.id);
 		expect(
 			await rows("select * from page_trash where page_id = $1", [victim.id]),

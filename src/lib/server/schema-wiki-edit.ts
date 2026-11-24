@@ -83,4 +83,6 @@ export const pageTrash = pgTable("page_trash", {
 		onDelete: "set null",
 	}),
 	originalPosition: integer("original_position").notNull().default(0),
+	/** The pages that trashing moved up to `originalParentId`; restoring moves them back. */
+	movedChildren: uuid("moved_children").array().notNull().default([]),
 });

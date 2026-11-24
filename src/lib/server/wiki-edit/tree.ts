@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type DocNode, walkDoc } from "../../shared/wiki/index.ts";
 import type { CurrentUser } from "../auth.ts";
@@ -14,9 +14,11 @@ import {
 } from "../schema-wiki.ts";
 import { pageDrafts, pageLocks, pageTrash } from "../schema-wiki-edit.ts";
 import { loadWikiAccess } from "../wiki/permissions.ts";
-import { requireAccess, requireGrant } from "./access.ts";
+import { type PageAccess, requireAccess, requireGrant } from "./access.ts";
 import {
+	allow,
 	assertCurrent,
+	type Executor,
 	fail,
 	loadPage,
 	loadSpace,
@@ -25,9 +27,10 @@ import {
 	pageRef,
 	titleSchema,
 } from "./common.ts";
-import { attachmentUrl } from "./content.ts";
+import { attachmentUrl, lockPage } from "./content.ts";
 import { removeOrphanFiles } from "./files.ts";
 import {
+	ancestors,
 	assertTitleFree,
 	checkParent,
 	descendantIds,
@@ -37,6 +40,7 @@ import {
 	siblingIds,
 	titleClash,
 } from "./helpers.ts";
+import { listed } from "./restrictions.ts";
 
 function copyTitle(base: string, taken: Set<string>) {
 	if (!taken.has(base)) return base;
@@ -64,13 +68,139 @@ export const copyBody = z.object({
 
 export const orderBody = z.object({ childIds: z.array(z.uuid()) });
 
+type Subjects = { userIds: string[]; groups: string[] };
+
+/** The people and groups named by the read restriction of each page; a page without one has no entry. */
+function readLists(
+	rows: Pick<
+		typeof pageRestrictions.$inferSelect,
+		"pageId" | "operation" | "userId" | "groupName"
+	>[],
+) {
+	const lists = new Map<string, Subjects>();
+	for (const row of rows) {
+		if (row.operation !== "read") continue;
+		const list = lists.get(row.pageId) ?? { userIds: [], groups: [] };
+		if (row.userId) list.userIds.push(row.userId);
+		else if (row.groupName) list.groups.push(row.groupName);
+		lists.set(row.pageId, list);
+	}
+	return lists;
+}
+
+async function loadReadLists(ex: Executor, ids: string[]) {
+	if (ids.length === 0) return new Map<string, Subjects>();
+	return readLists(
+		await ex
+			.select()
+			.from(pageRestrictions)
+			.where(inArray(pageRestrictions.pageId, ids)),
+	);
+}
+
+/** Read restrictions of the pages above `pageId` that no longer apply once the page sits under `parentId`. */
+async function lostReadLists(
+	ex: Executor,
+	pageId: string,
+	parentId: string | null,
+) {
+	const kept = new Set<string>(
+		parentId
+			? [parentId, ...(await ancestors(ex, parentId)).map((row) => row.id)]
+			: [],
+	);
+	const lost = (await ancestors(ex, pageId))
+		.map((row) => row.id)
+		.filter((id) => !kept.has(id));
+	return loadReadLists(ex, lost);
+}
+
+/**
+ * The read restriction a page takes along when the restrictions above it stop applying:
+ * the people and groups named by every one of the given lists. Anything else could read
+ * the page after the change but could not before it.
+ */
+function keptReadList(
+	actor: CurrentUser,
+	access: PageAccess,
+	lists: Subjects[],
+): Subjects {
+	const [first, ...rest] = lists as [Subjects, ...Subjects[]];
+	const kept = {
+		userIds: first.userIds.filter((id) =>
+			rest.every((list) => list.userIds.includes(id)),
+		),
+		groups: first.groups.filter((group) =>
+			rest.every((list) =>
+				list.groups.some(
+					(other) => other.toLowerCase() === group.toLowerCase(),
+				),
+			),
+		),
+	};
+	allow(
+		kept.userIds.length + kept.groups.length > 0 &&
+			(access.bypass || listed(actor, kept)),
+		"The read restrictions of the pages above this page cannot be carried over to it. Ask someone who may change page restrictions to change them first.",
+	);
+	return kept;
+}
+
+const readRows = (pageId: string, list: Subjects) => [
+	...list.userIds.map((userId) => ({
+		sourceId: newSourceId(),
+		pageId,
+		operation: "read" as const,
+		userId,
+		groupName: null,
+	})),
+	...list.groups.map((groupName) => ({
+		sourceId: newSourceId(),
+		pageId,
+		operation: "read" as const,
+		userId: null,
+		groupName,
+	})),
+];
+
+/**
+ * Called before `pageId` is put under `parentId`. A page that loses the read restriction of a page
+ * above it would become readable by more people. Someone who may change restrictions on the page
+ * may do that; for anyone else the page gets those restrictions as its own.
+ */
+async function keepReadAudience(
+	tx: Executor,
+	actor: CurrentUser,
+	access: PageAccess,
+	pageId: string,
+	parentId: string | null,
+) {
+	if (access.restrict) return;
+	const lost = await lostReadLists(tx, pageId, parentId);
+	if (lost.size === 0) return;
+	const own = (await loadReadLists(tx, [pageId])).get(pageId);
+	const kept = keptReadList(actor, access, [
+		...(own ? [own] : []),
+		...lost.values(),
+	]);
+	await tx
+		.delete(pageRestrictions)
+		.where(
+			and(
+				eq(pageRestrictions.pageId, pageId),
+				eq(pageRestrictions.operation, "read"),
+			),
+		);
+	await tx.insert(pageRestrictions).values(readRows(pageId, kept));
+}
+
 export async function movePage(
 	actor: CurrentUser,
 	id: string,
 	body: z.infer<typeof moveBody>,
 ) {
 	const { page, space } = await loadPage(db, id);
-	await requireAccess(actor, page, "edit");
+	const access = await requireAccess(actor, page, "edit");
 	assertCurrent(page);
 
 	const target =
@@ -98,10 +228,12 @@ export async function movePage(
 	const moved = await titleClash(page.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, target.id, parentId);
+			assertCurrent(await lockPage(tx, page.id));
 			const subtree = await descendantIds(tx, page.id);
 			if (parentId && (parentId === page.id || subtree.includes(parentId))) {
 				fail(400, "A page cannot be moved under itself");
 			}
+			await keepReadAudience(tx, actor, access, page.id, parentId);
 			const moving = [page.id, ...subtree];
 			if (crossSpace) {
 				const titles = await tx
@@ -166,7 +298,7 @@ export async function copyPage(
 	body: z.infer<typeof copyBody>,
 ) {
 	const { page: source, space } = await loadPage(db, id);
-	await requireAccess(actor, source, "read");
+	const access = await requireAccess(actor, source, "read");
 	assertCurrent(source);
 
 	const target =
@@ -244,10 +376,6 @@ export async function copyPage(
 				.from(pageAttachments)
 				.where(inArray(pageAttachments.pageId, oldIds))
 		: [];
-	const restrictionRows = await db
-		.select()
-		.from(pageRestrictions)
-		.where(inArray(pageRestrictions.pageId, oldIds));
 	const attachmentIdMap = new Map(
 		attachmentRows.map((row) => [row.id, randomUUID()]),
 	);
@@ -283,6 +411,22 @@ export async function copyPage(
 	const created = await titleClash(body.title, () =>
 		db.transaction(async (tx) => {
 			await lockSiblings(tx, target.id, parentId);
+			assertCurrent(await lockPage(tx, source.id));
+			const restrictionRows = await tx
+				.select()
+				.from(pageRestrictions)
+				.where(inArray(pageRestrictions.pageId, oldIds));
+			// The copy is never readable by more people than the source is. Pages below it sit under
+			// the copy, so only the copy itself needs the read restrictions it leaves behind.
+			const lost = await lostReadLists(tx, source.id, parentId);
+			const own = readLists(restrictionRows).get(source.id);
+			const kept =
+				lost.size > 0
+					? keptReadList(actor, access, [
+							...(own ? [own] : []),
+							...lost.values(),
+						])
+					: null;
 			(nodes[0] as (typeof nodes)[number]).position = await nextPosition(
 				tx,
 				target.id,
@@ -321,16 +465,23 @@ export async function copyPage(
 					message: "Copied from another page",
 				})),
 			);
-			if (restrictionRows.length > 0) {
-				await tx.insert(pageRestrictions).values(
-					restrictionRows.map((row) => ({
+			const restrictions = [
+				...restrictionRows
+					.filter(
+						(row) =>
+							!(kept && row.pageId === source.id && row.operation === "read"),
+					)
+					.map((row) => ({
 						sourceId: newSourceId(),
 						pageId: newIdOf.get(row.pageId) as string,
 						operation: row.operation,
 						userId: row.userId,
 						groupName: row.groupName,
 					})),
-				);
+				...(kept ? readRows(topId, kept) : []),
+			];
+			if (restrictions.length > 0) {
+				await tx.insert(pageRestrictions).values(restrictions);
 			}
 			if (attachmentRows.length > 0) {
 				await tx.insert(pageAttachments).values(
@@ -373,7 +524,7 @@ export async function copyPage(
 
 export async function trashPage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	await requireAccess(actor, page, "trash");
+	const access = await requireAccess(actor, page, "trash");
 	assertCurrent(page);
 	if (space.homePageId === page.id) {
 		fail(409, "The space home page cannot be moved to the trash");
@@ -381,13 +532,27 @@ export async function trashPage(actor: CurrentUser, id: string) {
 
 	const trashed = await db.transaction(async (tx) => {
 		await lockSiblings(tx, space.id, page.parentId);
+		const fresh = await lockPage(tx, page.id);
+		assertCurrent(fresh);
+		if (fresh.parentId !== page.parentId) {
+			fail(409, "The page was moved while it was being trashed");
+		}
 		const kids = await siblingIds(tx, space.id, page.id);
 		const existing = await siblingIds(tx, space.id, page.parentId, page.id);
-		await tx
+		const moved = await tx
 			.update(pages)
 			.set({ parentId: page.parentId })
-			.where(eq(pages.parentId, page.id));
+			.where(eq(pages.parentId, page.id))
+			.returning({ id: pages.id });
+		// The children leave the read restriction of this page behind, like a move out of it.
+		if (moved.length > 0 && !access.restrict) {
+			allow(
+				(await loadReadLists(tx, [page.id])).size === 0,
+				"This page has a read restriction and pages below it. Only someone who may change page restrictions can move it to the trash.",
+			);
+		}
 		await setPositions(tx, [...existing, ...kids]);
+		const movedChildren = moved.map((row) => row.id);
 		await tx
 			.insert(pageTrash)
 			.values({
@@ -395,6 +560,7 @@ export async function trashPage(actor: CurrentUser, id: string) {
 				trashedBy: actor.id,
 				originalParentId: page.parentId,
 				originalPosition: page.position,
+				movedChildren,
 			})
 			.onConflictDoUpdate({
 				target: pageTrash.pageId,
@@ -403,6 +569,7 @@ export async function trashPage(actor: CurrentUser, id: string) {
 					trashedAt: new Date(),
 					originalParentId: page.parentId,
 					originalPosition: page.position,
+					movedChildren,
 				},
 			});
 		await tx.delete(pageLocks).where(eq(pageLocks.pageId, page.id));
@@ -418,31 +585,34 @@ export async function trashPage(actor: CurrentUser, id: string) {
 
 export async function restorePage(actor: CurrentUser, id: string) {
 	const { page, space } = await loadPage(db, id);
-	await requireAccess(actor, page, "trash");
+	const access = await requireAccess(actor, page, "trash");
 	if (page.status !== "trashed") fail(409, "Page is not in the trash");
 	await assertTitleFree(db, space.id, page.title);
 
-	const [trash] = await db
-		.select()
-		.from(pageTrash)
-		.where(eq(pageTrash.pageId, page.id));
-	let parentId: string | null = null;
-	if (trash?.originalParentId) {
-		const [parent] = await db
-			.select({ id: pages.id })
-			.from(pages)
-			.where(
-				and(
-					eq(pages.id, trash.originalParentId),
-					eq(pages.spaceId, space.id),
-					eq(pages.status, "current"),
-				),
-			);
-		parentId = parent?.id ?? null;
-	}
-
 	const restored = await titleClash(page.title, () =>
 		db.transaction(async (tx) => {
+			const fresh = await lockPage(tx, page.id);
+			if (fresh.status !== "trashed") fail(409, "Page is not in the trash");
+			const [trash] = await tx
+				.select()
+				.from(pageTrash)
+				.where(eq(pageTrash.pageId, page.id));
+			let parentId: string | null = null;
+			if (trash?.originalParentId) {
+				const [parent] = await tx
+					.select({ id: pages.id })
+					.from(pages)
+					.where(
+						and(
+							eq(pages.id, trash.originalParentId),
+							eq(pages.spaceId, space.id),
+							eq(pages.status, "current"),
+						),
+					);
+				parentId = parent?.id ?? null;
+			}
+			await keepReadAudience(tx, actor, access, page.id, parentId);
+
 			const siblings = await siblingIds(tx, space.id, parentId);
 			const at = Math.min(
 				trash?.originalPosition ?? siblings.length,
@@ -455,6 +625,25 @@ export async function restorePage(actor: CurrentUser, id: string) {
 				.where(eq(pages.id, page.id))
 				.returning();
 			await setPositions(tx, siblings);
+			if (trash && trash.movedChildren.length > 0) {
+				// Only the children that still sit where the trash put them: one that was moved since stays.
+				const back = await tx
+					.update(pages)
+					.set({ parentId: page.id })
+					.where(
+						and(
+							sql`${pages.id} = any(${sql.param(trash.movedChildren)}::uuid[])`,
+							eq(pages.spaceId, space.id),
+							trash.originalParentId
+								? eq(pages.parentId, trash.originalParentId)
+								: isNull(pages.parentId),
+						),
+					)
+					.returning({ id: pages.id });
+				if (back.length > 0) {
+					await setPositions(tx, await siblingIds(tx, space.id, page.id));
+				}
+			}
 			await tx.delete(pageTrash).where(eq(pageTrash.pageId, page.id));
 			return row as PageRow;
 		}),
