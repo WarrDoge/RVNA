@@ -1,37 +1,7 @@
-import { like, or } from "drizzle-orm";
 import type { IssueActivityData } from "#lib/issue/activity-types.ts";
 import type { CurrentUser } from "../auth.ts";
-import { db } from "../db.ts";
 import { requireBrowseIssue } from "../permissions.ts";
-import { fields } from "../schema.ts";
 import { listComments, listHistory, listWorklogs } from "./service.ts";
-
-/**
- * Field names and ids the issue screen must not render in history: the service
- * desk's internal fields. Sprint, Rank and the epic fields stay; they are
- * internal only for the custom fields panel. The prefix rule is the same as
- * isVisibleCustomField in custom-fields.ts.
- */
-async function hiddenHistoryFields() {
-	const rows = await db
-		.select({
-			sourceId: fields.sourceId,
-			name: fields.name,
-		})
-		.from(fields)
-		.where(
-			or(
-				like(fields.customKey, "com.atlassian.servicedesk%"),
-				like(fields.type, "sd-%"),
-			),
-		);
-	const hidden = new Set<string>();
-	for (const row of rows) {
-		hidden.add(row.name.toLowerCase());
-		hidden.add(row.sourceId.toLowerCase());
-	}
-	return hidden;
-}
 
 /** The display text of a history item, filling it from the raw value where the renderer needs one. */
 function historyText(field: string, text: string | null, raw: string | null) {
@@ -63,22 +33,17 @@ export async function loadIssueActivity(
 		listWorklogs(actor, key, permission),
 		listHistory(actor, key, permission),
 	]);
-	const hiddenFields =
-		historyRows.length > 0 ? await hiddenHistoryFields() : new Set<string>();
-
-	const history = historyRows
-		.map((entry) => ({
-			...entry,
-			items: entry.items
-				.filter((item) => !hiddenFields.has(item.field.toLowerCase()))
-				.map(({ field, fieldType, from, fromText, to, toText }) => ({
-					field,
-					fieldType,
-					fromText: historyText(field, fromText, from),
-					toText: historyText(field, toText, to),
-				})),
-		}))
-		.filter((entry) => entry.items.length > 0);
+	const history = historyRows.map((entry) => ({
+		...entry,
+		items: entry.items.map(
+			({ field, fieldType, from, fromText, to, toText }) => ({
+				field,
+				fieldType,
+				fromText: historyText(field, fromText, from),
+				toText: historyText(field, toText, to),
+			}),
+		),
+	}));
 
 	return { comments, worklogs, history };
 }

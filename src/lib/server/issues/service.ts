@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { unlink } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
-import { and, asc, eq, inArray, or, type SQL, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, like, or, type SQL, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { z } from "zod";
 import { audit } from "../admin/audit.ts";
@@ -2025,27 +2025,57 @@ export async function listHistory(
 		)
 		.orderBy(issueHistoryItems.sequence);
 
-	return entries.map((entry) => ({
-		id: entry.id,
-		author: userRef({
-			id: entry.authorId,
-			username: entry.authorUsername,
-			displayName: entry.authorDisplayName,
-			avatarUrl: entry.authorAvatarUrl,
-		}),
-		created: iso(entry.created),
-		via: entry.via,
-		items: items
-			.filter((item) => item.historyId === entry.id)
-			.map((item) => ({
-				field: item.field,
-				fieldType: item.fieldType,
-				from: item.fromValue,
-				fromText: item.fromText,
-				to: item.toValue,
-				toText: item.toText,
-			})),
-	}));
+	const hidden = await hiddenHistoryFields();
+	return entries
+		.map((entry) => ({
+			id: entry.id,
+			author: userRef({
+				id: entry.authorId,
+				username: entry.authorUsername,
+				displayName: entry.authorDisplayName,
+				avatarUrl: entry.authorAvatarUrl,
+			}),
+			created: iso(entry.created),
+			via: entry.via,
+			items: items
+				.filter(
+					(item) =>
+						item.historyId === entry.id &&
+						!hidden.has(item.field.toLowerCase()),
+				)
+				.map((item) => ({
+					field: item.field,
+					fieldType: item.fieldType,
+					from: item.fromValue,
+					fromText: item.fromText,
+					to: item.toValue,
+					toText: item.toText,
+				})),
+		}))
+		.filter((entry) => entry.items.length > 0);
+}
+
+/**
+ * Names and ids of the service desk's internal fields. No history list shows their
+ * changes: the desk keeps them for itself, and every viewer who may browse the issue
+ * would otherwise read them. The prefix rule is the same as isVisibleCustomField.
+ */
+async function hiddenHistoryFields() {
+	const rows = await db
+		.select({ sourceId: fields.sourceId, name: fields.name })
+		.from(fields)
+		.where(
+			or(
+				like(fields.customKey, "com.atlassian.servicedesk%"),
+				like(fields.type, "sd-%"),
+			),
+		);
+	const hidden = new Set<string>();
+	for (const row of rows) {
+		hidden.add(row.name.toLowerCase());
+		hidden.add(row.sourceId.toLowerCase());
+	}
+	return hidden;
 }
 
 export async function listWorklogs(
