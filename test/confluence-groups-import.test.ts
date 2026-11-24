@@ -403,3 +403,41 @@ test("memberships of a group that disappeared from Confluence are removed", asyn
 	expect(await sources(alice)).not.toContain("confluence");
 	expect(await sources(carol)).toEqual(["jira", "local"]);
 });
+
+test("a Confluence group named like a local group does not join it", async () => {
+	const localName = `t-${run}-local-wiki`;
+	const [local] = await db
+		.insert(groups)
+		.values({ name: localName, local: true })
+		.returning();
+	const [space] = await db
+		.select()
+		.from(spaces)
+		.where(eq(spaces.key, spaceKey));
+	await db.insert(spacePermissions).values({
+		sourceId: `${run}-local-read`,
+		spaceId: space.id,
+		permission: "read",
+		groupName: localName.toUpperCase(),
+	});
+	await db.insert(userGroups).values([
+		{ userId: carol, groupId: local.id, source: "local" },
+		{ userId: carol, groupId: local.id, source: "confluence" },
+	]);
+	const result = await importConfluenceGroups({
+		async getJson<T>(path: string, params?: Record<string, unknown>) {
+			if (Number(params?.start ?? 0) > 0) return { results: [] } as T;
+			if (path === "/rest/api/group") {
+				return { results: [{ name: localName }] } as T;
+			}
+			return { results: [{ username: `t-${run}-alice` }] } as T;
+		},
+	});
+
+	expect(result.localGroups).toBe(1);
+	const rows = await db
+		.select({ userId: userGroups.userId, source: userGroups.source })
+		.from(userGroups)
+		.where(eq(userGroups.groupId, local.id));
+	expect(rows).toEqual([{ userId: carol, source: "local" }]);
+});

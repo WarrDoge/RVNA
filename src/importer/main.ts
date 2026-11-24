@@ -341,7 +341,7 @@ async function importJiraPermissions(options: { projectKeys?: string[] }) {
 async function importConfluenceGroupsAndReport(client: ConfluenceClient) {
 	const result = await importConfluenceGroups(client);
 	console.log(
-		`confluence groups: ${result.referenced} referenced by space permissions or page restrictions, ${result.missingInConfluence} missing in Confluence, ${result.memberships} memberships added, ${result.removed} removed, ${result.membersWithoutUser} members without a local user`,
+		`confluence groups: ${result.referenced} referenced by space permissions or page restrictions, ${result.missingInConfluence} missing in Confluence, ${result.memberships} memberships added, ${result.removed} removed, ${result.membersWithoutUser} members without a local user${result.localGroups > 0 ? `, ${result.localGroups} local groups left alone` : ""}`,
 	);
 }
 

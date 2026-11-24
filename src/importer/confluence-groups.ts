@@ -64,15 +64,32 @@ export async function importConfluenceGroups(client: ConfluenceGroupClient) {
 		userRows.map((row) => [row.username.toLowerCase(), row.id]),
 	);
 	const groupRows = await db
-		.select({ id: groups.id, name: groups.name })
+		.select({ id: groups.id, name: groups.name, local: groups.local })
 		.from(groups);
 	const groupIds = new Map(
 		groupRows.map((row) => [row.name.toLowerCase(), row.id]),
 	);
+	// An administrator owns a local group; a Confluence group of the same name must not join it.
+	const localGroupIds = new Map(
+		groupRows
+			.filter((row) => row.local)
+			.map((row) => [row.name.toLowerCase(), row.id]),
+	);
+	if (localGroupIds.size > 0) {
+		await db
+			.delete(userGroups)
+			.where(
+				and(
+					eq(userGroups.source, SOURCE),
+					inArray(userGroups.groupId, [...localGroupIds.values()]),
+				),
+			);
+	}
 
 	const result = {
 		referenced: wanted.size,
 		missingInConfluence: 0,
+		localGroups: 0,
 		memberships: 0,
 		removed: 0,
 		membersWithoutUser: 0,
@@ -80,6 +97,10 @@ export async function importConfluenceGroups(client: ConfluenceGroupClient) {
 	const desiredByGroup = new Map<string, Set<string>>();
 
 	for (const [lower, name] of wanted) {
+		if (localGroupIds.has(lower)) {
+			result.localGroups++;
+			continue;
+		}
 		const remoteName = remoteNames.get(lower);
 		if (!remoteName) {
 			result.missingInConfluence++;

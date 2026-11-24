@@ -706,6 +706,54 @@ test("a failed group member fetch skips only that group", async () => {
 	}
 });
 
+test("a Jira group named like a local group does not join it", async () => {
+	const localName = `${tag}-Local-Team`;
+	const [local] = await db
+		.insert(groups)
+		.values({ name: localName, local: true })
+		.returning({ id: groups.id });
+	await db.insert(userGroups).values([
+		{ userId: otherId, groupId: local.id, source: "local" },
+		{ userId: otherId, groupId: local.id, source: "jira" },
+	]);
+	const client: PermissionImportClient = {
+		async getJson<T>(path: string) {
+			if (path === "/rest/api/2/groups/picker") {
+				return {
+					groups: [{ name: localName.toLowerCase() }],
+					total: 1,
+				} as T;
+			}
+			if (path === "/rest/api/2/group/member") {
+				return {
+					values: [{ name: "fixture_reporter" }],
+					isLast: true,
+				} as T;
+			}
+			throw new Error(`unexpected Jira path ${path}`);
+		},
+	};
+
+	const result = await importPermissions(client, {
+		projectKeys: [],
+		fullImport: false,
+		fetchGlobal: false,
+	});
+
+	expect(result.report.join("\n")).toContain("is a local group");
+	const members = await db
+		.select({ userId: userGroups.userId, source: userGroups.source })
+		.from(userGroups)
+		.where(eq(userGroups.groupId, local.id));
+	expect(members).toEqual([{ userId: otherId, source: "local" }]);
+	expect(
+		await db
+			.select({ id: groups.id })
+			.from(groups)
+			.where(eq(groups.name, localName.toLowerCase())),
+	).toHaveLength(0);
+});
+
 test("a group created while the import runs does not abort it", async () => {
 	const groupName = `${tag}-race`;
 	const functionName = `test_slow_group_${run}`;

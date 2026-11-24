@@ -516,3 +516,32 @@ test("the admin search keeps several requests in flight", async () => {
 		]);
 	}
 });
+
+test("a local group with the same name is never seeded as an administrator group", async () => {
+	await pool.query("delete from permission_grants where source_id = $1", [
+		seedId,
+	]);
+	await pool.query(
+		"delete from permission_local_removals where source_id = $1",
+		[seedId],
+	);
+	await pool.query("update groups set local = true where lower(name) = $1", [
+		jiraAdministrators,
+	]);
+	try {
+		const result = await importGlobal();
+		expect(result.report.some((line) => line.includes("seeded group"))).toBe(
+			false,
+		);
+		expect(
+			await db
+				.select()
+				.from(permissionGrants)
+				.where(eq(permissionGrants.sourceId, seedId)),
+		).toHaveLength(0);
+	} finally {
+		await pool.query("update groups set local = false where lower(name) = $1", [
+			jiraAdministrators,
+		]);
+	}
+});

@@ -1317,6 +1317,10 @@ Only the groups that space permissions or page restrictions name are fetched (`G
 `GET /rest/api/group/{name}/member`); their members are stored with the source `confluence`, and a
 group that is no longer listed in Confluence loses its imported memberships.
 
+A Jira or Confluence group that has the name of a local group is left alone: the import adds no
+members to the local group, removes the imported memberships it already holds, and does not seed
+the global ADMINISTER permission to it.
+
 Service desk projects are imported too: the desk and portal text, request type groups, request
 types and their customer fields, queues with Jira's reported issue counts, SLA metrics, goals and
 calendars, and automation rules. For every request the importer also reads the SLA cycles Jira

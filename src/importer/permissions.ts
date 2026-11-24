@@ -195,8 +195,17 @@ async function importGroupsAndMemberships(
 		existingGroups.map((group) => [group.name.toLowerCase(), group]),
 	);
 	const groupIds = new Map<string, string>();
+	const localGroupIds: string[] = [];
 	for (const group of jiraGroups) {
 		const existing = byName.get(group.name.toLowerCase());
+		if (existing?.local) {
+			// An administrator owns a local group; a Jira group of the same name must not join it.
+			localGroupIds.push(existing.id);
+			report.push(
+				`group ${group.name} is a local group: its Jira members are not imported`,
+			);
+			continue;
+		}
 		if (!existing) {
 			const [created] = await db
 				.insert(groups)
@@ -227,6 +236,18 @@ async function importGroupsAndMemberships(
 		groupCounts.unchanged++;
 	}
 	mergeCounts(counts, "groups", groupCounts);
+	if (localGroupIds.length > 0) {
+		const dropped = await db
+			.delete(userGroups)
+			.where(
+				and(
+					eq(userGroups.source, "jira"),
+					inArray(userGroups.groupId, localGroupIds),
+				),
+			)
+			.returning({ userId: userGroups.userId });
+		removed.user_groups = (removed.user_groups ?? 0) + dropped.length;
+	}
 
 	const userRows = await db
 		.select({ id: users.id, username: users.username })
@@ -632,7 +653,12 @@ async function jiraAdministratorsGrant(
 	const [group] = await db
 		.select({ name: groups.name })
 		.from(groups)
-		.where(sql`lower(${groups.name}) = ${JIRA_ADMINISTRATORS}`)
+		.where(
+			and(
+				sql`lower(${groups.name}) = ${JIRA_ADMINISTRATORS}`,
+				eq(groups.local, false),
+			),
+		)
 		.limit(1);
 	if (!group) return [];
 	const holders = await db
