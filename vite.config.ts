@@ -19,11 +19,14 @@ export default defineConfig({
 			adapter: adapter(),
 			csrf: { trustedOrigins: ["*"] },
 			// Stored HTML is sanitized on write; this stops a script that slips through from running.
+			// Only the inline start script, which carries the response's nonce, and the modules it loads
+			// run (`strict-dynamic`): the app's own address is not a script source, so an uploaded
+			// file cannot be a script even if it is served from the same origin.
 			// The hash is Svelte's server-rendered `onload`/`onerror` attribute, `this.__e=event`.
 			csp: {
 				directives: {
 					"script-src": [
-						"self",
+						"strict-dynamic",
 						"unsafe-hashes",
 						"sha256-7dQwUgLau1NFCCGjfn9FsYptB6ZtWxJin6VohGIu20I=",
 					],

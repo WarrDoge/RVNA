@@ -54,12 +54,13 @@ test("a signed-in HTML page is not kept by any cache", async () => {
 	expect(anonymous.headers["cache-control"]).toBeUndefined();
 });
 
-test("a page allows only the app's own scripts", async () => {
+test("a page allows only the nonce script and what it loads, not the app's own address", async () => {
 	const response = await app.inject({ method: "GET", url: "/login.jsp" });
 	expect(response.statusCode).toBe(200);
 	const policy = String(response.headers["content-security-policy"]);
 	const scripts = policy.split(";").find((part) => part.includes("script-src"));
-	expect(scripts).toContain("'self'");
+	expect(scripts).toContain("'strict-dynamic'");
+	expect(scripts).not.toContain("'self'");
 	expect(scripts).toMatch(/'nonce-[^']+'/);
 	expect(scripts).not.toContain("'unsafe-inline'");
 	expect(scripts).not.toContain("'unsafe-eval'");

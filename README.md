@@ -540,8 +540,9 @@ answered before the session lookup when it is a data path (`/api/**`, `/rest/**`
   request to anything else (a page form action) needs `Origin` equal to the app origin.
 - Every response carries `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN` and
   `Referrer-Policy: same-origin`, and `Strict-Transport-Security` when `APP_URL` is https. A page also
-  carries the Content-Security-Policy of `vite.config.ts`: scripts only from the app itself (SvelteKit
-  adds a nonce to its own inline script), no plugins, no `<base>` to another site, no framing by another
+  carries the Content-Security-Policy of `vite.config.ts`: scripts only from SvelteKit's inline start
+  script (it carries a nonce) and the modules it loads, so the app's own address is not a script
+  source (`strict-dynamic`), no plugins, no `<base>` to another site, no framing by another
   site. Stored HTML is sanitized on write; the policy is the second barrier. A new inline `<script>` or
   an HTML `on…=` attribute will not run; the browser tests fail when the policy blocks something.
 - A file that a user uploaded (issue, service desk and wiki attachments, thumbnails) never keeps the
