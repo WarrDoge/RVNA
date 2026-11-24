@@ -29,7 +29,8 @@ export type UserRef = {
 	avatarUrl: string | null;
 };
 
-export type UserWithEmail = UserRef & { email: string | null };
+/** The email is only there when the caller is an administrator. */
+export type UserWithEmail = UserRef & { email?: string | null };
 
 export type StatusCategory = "new" | "indeterminate" | "done";
 

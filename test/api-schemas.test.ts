@@ -1,7 +1,10 @@
-import { expect, test } from "vitest";
+import { expect, expectTypeOf, test } from "vitest";
+import type { z } from "zod";
+import type { UserWithEmail } from "../src/lib/api-types.ts";
 import {
 	idNameRefSchema,
 	issueDetailSchema,
+	userWithEmailSchema,
 	versionSchema,
 } from "../src/lib/server/api-schemas.ts";
 
@@ -43,4 +46,11 @@ test("the shared id and name reference keeps both fields", () => {
 		id,
 		name: "Backend",
 	});
+});
+
+test("a user row without an email is a valid UserWithEmail", () => {
+	expectTypeOf<z.infer<typeof userWithEmailSchema>>().toExtend<UserWithEmail>();
+	const row = { id, username: "a", displayName: "A", avatarUrl: null };
+	expect(userWithEmailSchema.safeParse(row).success).toBe(true);
+	expectTypeOf(row).toExtend<UserWithEmail>();
 });
