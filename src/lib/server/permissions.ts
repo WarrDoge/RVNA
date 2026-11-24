@@ -570,19 +570,39 @@ export async function issuePermissions(
 }
 
 export async function visibleUsernames(user: PermissionUser) {
+	return (await visibleDirectory(user)).usernames;
+}
+
+/**
+ * The people and groups a user may see: the holders of the browse grants of the projects
+ * they can browse, the project leads, the administrators and their own groups. Group names
+ * are lower case. An administrator sees everyone, inactive accounts included.
+ */
+export async function visibleDirectory(user: PermissionUser) {
 	const data = await getData(user);
 	if (isGlobalAdmin(user, data)) {
 		const rows = await db
 			.select({ username: users.username })
 			.from(users)
 			.where(eq(users.active, true));
-		return new Set(rows.map((row) => row.username));
+		return {
+			unrestricted: true,
+			usernames: new Set(rows.map((row) => row.username)),
+			groupNames: new Set<string>(),
+		};
 	}
 
+	const ownGroups = user.groups.map(lower);
 	const visible = [...data.projects.values()].filter((project) =>
 		canWithData(user, "BROWSE_PROJECTS", project, null, data),
 	);
-	if (visible.length === 0) return new Set<string>();
+	if (visible.length === 0) {
+		return {
+			unrestricted: false,
+			usernames: new Set<string>(),
+			groupNames: new Set(ownGroups),
+		};
+	}
 
 	const usernames = new Set<string>();
 	const groupNames = new Set<string>();
@@ -648,7 +668,11 @@ export async function visibleUsernames(user: PermissionUser) {
 			.select({ username: users.username })
 			.from(users)
 			.where(eq(users.active, true));
-		return new Set(rows.map((row) => row.username));
+		return {
+			unrestricted: false,
+			usernames: new Set(rows.map((row) => row.username)),
+			groupNames: new Set([...groupNames, ...ownGroups]),
+		};
 	}
 
 	const filters = [eq(users.isAdmin, true)];
@@ -691,7 +715,11 @@ export async function visibleUsernames(user: PermissionUser) {
 		.select({ username: users.username })
 		.from(users)
 		.where(and(eq(users.active, true), or(...filters)));
-	return new Set(rows.map((row) => row.username));
+	return {
+		unrestricted: false,
+		usernames: new Set(rows.map((row) => row.username)),
+		groupNames: new Set([...groupNames, ...ownGroups]),
+	};
 }
 
 export async function issuePermissionContext(keyOrId: string) {

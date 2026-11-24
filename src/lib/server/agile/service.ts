@@ -353,20 +353,9 @@ function jqlFailure(error: unknown): never {
 }
 
 async function validateJql(jql: string, user: SearchUser) {
-	const [catalog, visible] = await Promise.all([
-		loadCatalog(),
-		viewerProjectIds(user),
-	]);
-	const visibleIds = new Set(visible);
 	return compileJql(parseJql(jql), {
 		user,
-		catalog: {
-			...catalog,
-			projects: catalog.projects.filter((project) =>
-				visibleIds.has(project.id),
-			),
-		},
-		visibleProjectIds: visible,
+		visibleProjectIds: await viewerProjectIds(user),
 	});
 }
 

@@ -80,6 +80,8 @@ export interface NavigatorRequest {
 	startAt: number;
 	maxResults: number;
 	columns: string[];
+	/** The JQL was stored by someone else, not typed by the viewer, so its names resolve against the whole catalog. */
+	storedJql?: boolean;
 }
 
 export function columnList(value: string | undefined) {
@@ -156,7 +158,7 @@ export async function loadNavigatorPage(
 	const visible = user ? await viewerProjectIds(user) : [];
 	const compiled = await compileJql(parseJql(request.jql), {
 		user,
-		catalog,
+		catalog: request.storedJql ? catalog : undefined,
 		visibleProjectIds: visible,
 	});
 	const where = compiled.where ?? sql`true`;
@@ -546,7 +548,6 @@ export async function prepareExport(
 		assertVisibleColumns(request.columns, catalog);
 		await compileJql(parsed, {
 			user: actor,
-			catalog,
 			visibleProjectIds: await viewerProjectIds(actor),
 		});
 	} catch (error) {

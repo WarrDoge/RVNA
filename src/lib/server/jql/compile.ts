@@ -15,6 +15,7 @@ import {
 } from "../../shared/jql/index.ts";
 import { isVisibleCustomField } from "../custom-fields.ts";
 import { db } from "../db.ts";
+import { asPermissionUser, visibleDirectory } from "../permissions.ts";
 import { dateContext } from "../request-context.ts";
 import {
 	agentProjectIds,
@@ -39,6 +40,10 @@ export interface CompileOptions {
 	now?: Date;
 	/** The zone of date-only literals and the start/end date functions. */
 	timeZone?: string;
+	/**
+	 * A catalog the caller holds, used as it is: for JQL the viewer did not type, such as a
+	 * board's filter. Left out, names resolve only among what the viewer may see.
+	 */
 	catalog?: JqlCatalog;
 	visibleProjectIds: VisibleProjects;
 }
@@ -610,10 +615,13 @@ async function evaluateFunction(
 			const result = await db.execute(
 				sql`select u.username from user_groups ug join users u on u.id = ug.user_id where ug.group_id = ${found.id} order by u.username`,
 			);
-			return (result.rows as { username: string }[]).map((row) => ({
-				kind: "string" as const,
-				value: row.username,
-			}));
+			const known = new Set(ctx.catalog.users.map((item) => item.username));
+			return (result.rows as { username: string }[])
+				.filter((row) => known.has(row.username))
+				.map((row) => ({
+					kind: "string" as const,
+					value: row.username,
+				}));
 		}
 		case "subtaskissuetypes":
 			return ctx.catalog.issueTypes
@@ -2167,12 +2175,53 @@ async function compileNode(node: JqlNode, ctx: CompileContext): Promise<SQL> {
 	return compileClause(node, ctx);
 }
 
+/**
+ * What the viewer may name in a query: the projects they can browse, the versions,
+ * components and sprints of those projects, and the people and groups they may see. A
+ * name outside that gets the answer of a name that does not exist.
+ */
+async function scopeCatalog(
+	catalog: JqlCatalog,
+	options: CompileOptions,
+): Promise<JqlCatalog> {
+	const visible = options.visibleProjectIds;
+	if (visible === ALL_PROJECTS) return catalog;
+	const projectIds = new Set(visible);
+	const scoped = {
+		...catalog,
+		projects: catalog.projects.filter((item) => projectIds.has(item.id)),
+		versions: catalog.versions.filter((item) => projectIds.has(item.projectId)),
+		components: catalog.components.filter((item) =>
+			projectIds.has(item.projectId),
+		),
+		sprints: catalog.sprints.filter((item) => projectIds.has(item.projectId)),
+		users: [] as JqlCatalog["users"],
+		groups: [] as JqlCatalog["groups"],
+	};
+	if (!options.user) return scoped;
+	const viewer = options.user;
+	const directory = await visibleDirectory(asPermissionUser(viewer));
+	scoped.users = directory.unrestricted
+		? catalog.users
+		: catalog.users.filter(
+				(item) =>
+					item.id === viewer.id || directory.usernames.has(item.username),
+			);
+	scoped.groups = directory.unrestricted
+		? catalog.groups
+		: catalog.groups.filter((item) =>
+				directory.groupNames.has(item.name.toLowerCase()),
+			);
+	return scoped;
+}
+
 export async function compileJql(
 	query: JqlQuery,
 	options: CompileOptions,
 ): Promise<CompiledJql> {
 	const ctx: CompileContext = {
-		catalog: options.catalog ?? (await loadCatalog()),
+		catalog:
+			options.catalog ?? (await scopeCatalog(await loadCatalog(), options)),
 		user: options.user,
 		now: options.now ?? new Date(),
 		timeZone: options.timeZone ?? dateContext().timeZone,

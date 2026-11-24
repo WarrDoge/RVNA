@@ -146,6 +146,7 @@ async function issuePage(
 			startAt,
 			maxResults: clampRows(config.rows),
 			columns: configColumns(config),
+			storedJql: true,
 		},
 		user,
 	);

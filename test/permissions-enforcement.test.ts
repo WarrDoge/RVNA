@@ -714,7 +714,9 @@ test("every registered route hides an invisible project's data", async () => {
 			route.kind === "page"
 				? requested.split("/").filter((segment) => segment.length > 2)
 				: [requested];
-		const text = echoes.reduce(
+		// The JQL error names the value the visitor typed, as it does for any unknown key.
+		const jqlEcho = `The value '${invisibleKey}' does not exist for the field 'project'.`;
+		const text = [...echoes, jqlEcho].reduce(
 			(body, echo) => body.split(echo).join(""),
 			String(response.body),
 		);
@@ -760,9 +762,24 @@ test("every registered route hides an invisible project's data", async () => {
 		url: `/api/search?jql=${encodeURIComponent(`project = ${invisibleKey}`)}`,
 		cookies: { sid: session },
 	});
-	expect(search.statusCode).toBe(200);
-	expect(search.json().total).toBe(0);
-	expect(search.json().issues).toEqual([]);
+	const unknownKey = await app.inject({
+		method: "GET",
+		url: `/api/search?jql=${encodeURIComponent(`project = ${invisibleKey}9`)}`,
+		cookies: { sid: session },
+	});
+	expect(search.statusCode).toBe(400);
+	expect(unknownKey.statusCode).toBe(400);
+	expect(search.body.split(invisibleKey).join("<key>")).toBe(
+		unknownKey.body.split(`${invisibleKey}9`).join("<key>"),
+	);
+	const hiddenIssues = await app.inject({
+		method: "GET",
+		url: `/api/search?jql=${encodeURIComponent(`summary ~ "${secretSummary}"`)}`,
+		cookies: { sid: session },
+	});
+	expect(hiddenIssues.statusCode).toBe(200);
+	expect(hiddenIssues.json().total).toBe(0);
+	expect(hiddenIssues.json().issues).toEqual([]);
 
 	const token = (
 		await app.inject({
@@ -786,8 +803,14 @@ test("every registered route hides an invisible project's data", async () => {
 		url: `/rest/api/2/search?jql=${encodeURIComponent(`project = ${invisibleKey}`)}`,
 		headers: bearer,
 	});
-	expect(compatSearch.statusCode).toBe(200);
-	expect(compatSearch.json().total).toBe(0);
+	expect(compatSearch.statusCode).toBe(400);
+	const compatHidden = await app.inject({
+		method: "GET",
+		url: `/rest/api/2/search?jql=${encodeURIComponent(`summary ~ "${secretSummary}"`)}`,
+		headers: bearer,
+	});
+	expect(compatHidden.statusCode).toBe(200);
+	expect(compatHidden.json().total).toBe(0);
 
 	const visibleIssue = await app.inject({
 		method: "GET",

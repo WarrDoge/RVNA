@@ -4,7 +4,6 @@ import { JqlError, parseJql } from "../../shared/jql/index.ts";
 import type { CurrentUser } from "../auth.ts";
 import { db } from "../db.ts";
 import { HttpError } from "../http.ts";
-import { loadCatalog } from "../jql/catalog.ts";
 import { compileJql } from "../jql/compile.ts";
 import { withStatementTimeout } from "../jql/timeout.ts";
 import { viewerProjectIds } from "../permissions.ts";
@@ -261,7 +260,6 @@ export async function compatSearch(
 	try {
 		const compiled = await compileJql(parseJql(jql), {
 			user: actor,
-			catalog: await loadCatalog(),
 			visibleProjectIds: await viewerProjectIds(actor),
 		});
 		where = compiled.where ?? sql`true`;

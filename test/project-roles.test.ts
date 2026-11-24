@@ -363,7 +363,7 @@ test("an administrator grants browse access and search follows it", async () => 
 		"GET",
 		`/api/search?jql=${encodeURIComponent(`project = ${projectKey}`)}`,
 	);
-	expect(searchAfter.json().total).toBe(0);
+	expect(searchAfter.statusCode).toBe(400);
 
 	const audits = await db
 		.select({ action: auditLog.action, summary: auditLog.summary })

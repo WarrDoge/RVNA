@@ -245,8 +245,8 @@ test("an administrator can create a scheme, remove the anyone grant and make a p
 		if (label === "outsider") {
 			expect(page.statusCode).toBe(404);
 			expect(issue.statusCode).toBe(404);
-			expect(found.json().total).toBe(0);
-			expect(issueFound.json().total).toBe(0);
+			expect(found.statusCode).toBe(400);
+			expect(issueFound.statusCode).toBe(400);
 			expect(quick.json().issues).toEqual([]);
 			expect(quick.json().projects).toEqual([]);
 		} else {

@@ -2,7 +2,6 @@ import { sql } from "drizzle-orm";
 import { JqlError, parseJql } from "../../shared/jql/index.ts";
 import type { CurrentUser } from "../auth.ts";
 import { HttpError } from "../http.ts";
-import { loadCatalog } from "../jql/catalog.ts";
 import { compileJql, type SearchUser } from "../jql/compile.ts";
 import { withStatementTimeout } from "../jql/timeout.ts";
 import { viewerProjectIds } from "../permissions.ts";
@@ -54,7 +53,6 @@ export async function searchIssues(
 		user,
 		now: options.now,
 		timeZone: options.timeZone,
-		catalog: await loadCatalog(),
 		visibleProjectIds: visible,
 	});
 

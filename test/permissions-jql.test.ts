@@ -1,9 +1,11 @@
+import { eq } from "drizzle-orm";
 import { Client } from "pg";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
 import {
 	boards,
 	components,
+	groups,
 	issueSprints,
 	permissionGrants,
 	permissionSchemes,
@@ -26,6 +28,10 @@ const visibleKey = fixtureKey(run);
 const invisibleKey = `QQ${run.slice(0, 5).toUpperCase()}`;
 const visibleUser = `t-${run}-jql`;
 const invisibleUser = `t-${run}-hidden`;
+const strangerUser = `t-${run}-stranger`;
+const hiddenGroup = `t-${run}-hidden-group`;
+const sharedGroup = `t-${run}-shared-group`;
+const missingKey = `ZZ${run.slice(0, 5).toUpperCase()}`;
 const visibleLabel = `visible-label-${run}`;
 const secretLabel = `secret-label-${run}`;
 const visibleVersion = `Visible version ${run}`;
@@ -130,6 +136,25 @@ beforeAll(async () => {
 		"user",
 		visibleUser,
 	);
+	await db.insert(users).values({
+		username: strangerUser,
+		displayName: `Stranger ${run}`,
+	});
+	await db
+		.insert(groups)
+		.values([{ name: hiddenGroup }, { name: sharedGroup }]);
+	const [visibleScheme] = await db
+		.select({ id: permissionSchemes.id })
+		.from(permissionSchemes)
+		.where(eq(permissionSchemes.sourceId, `${run}:visible-scheme`));
+	await db.insert(permissionGrants).values({
+		sourceId: `${run}:visible-scheme:browse-group`,
+		schemeId: visibleScheme.id,
+		permissionKey: "BROWSE_PROJECTS",
+		holderType: "group",
+		holderParameter: sharedGroup,
+		raw: {},
+	});
 	await grantBrowse(
 		`${run}:invisible-scheme`,
 		invisible.projectId,
@@ -239,21 +264,140 @@ test("search only returns issues from visible projects", async () => {
 	expect(visibleResult.statusCode).toBe(200);
 	expect(visibleResult.json().total).toBe(1);
 
-	const invisibleResult = await search(`project = ${invisibleKey}`);
-	expect(invisibleResult.statusCode).toBe(200);
-	expect(invisibleResult.json().total).toBe(0);
-	expect(invisibleResult.json().issues).toEqual([]);
-
-	const mixed = await search(
-		`project in (${visibleKey}, ${invisibleKey}) ORDER BY key ASC`,
-	);
-	expect(mixed.statusCode).toBe(200);
-	expect(mixed.json().total).toBe(1);
-	expect(mixed.json().issues[0].key).toBe(visible.issueKeys[0]);
+	const ordered = await search(`project = ${visibleKey} ORDER BY key ASC`);
+	expect(ordered.statusCode).toBe(200);
+	expect(ordered.json().issues[0].key).toBe(visible.issueKeys[0]);
 
 	const text = await search(`text ~ "${secretSummary}"`);
 	expect(text.statusCode).toBe(200);
 	expect(text.json().total).toBe(0);
+});
+
+/** The answer of a query with the name it quotes replaced, so two names compare alike. */
+async function answer(jql: (name: string) => string, name: string) {
+	const response = await search(jql(name));
+	return {
+		status: response.statusCode,
+		body: response.body.split(name).join("<name>"),
+	};
+}
+
+test.each([
+	[
+		"project key",
+		invisibleKey,
+		missingKey,
+		(name: string) => `project = ${name}`,
+	],
+	[
+		"project key in a list",
+		invisibleKey,
+		missingKey,
+		(name: string) => `project in (${visibleKey}, ${name})`,
+	],
+	[
+		"project name",
+		`Invisible JQL ${run}`,
+		`Missing JQL ${run}`,
+		(name: string) => `project = "${name}"`,
+	],
+	[
+		"issue key range",
+		`${invisibleKey}-1`,
+		`${missingKey}-1`,
+		(name: string) => `key > ${name}`,
+	],
+	[
+		"version",
+		secretVersion,
+		`Missing version ${run}`,
+		(name: string) => `fixVersion = "${name}"`,
+	],
+	[
+		"component",
+		secretComponent,
+		`Missing component ${run}`,
+		(name: string) => `component = "${name}"`,
+	],
+	[
+		"sprint",
+		secretSprint,
+		`Missing Sprint ${run}`,
+		(name: string) => `sprint = "${name}"`,
+	],
+	[
+		"user name",
+		strangerUser,
+		`t-${run}-nobody`,
+		(name: string) => `assignee = "${name}"`,
+	],
+	[
+		"user display name",
+		`Stranger ${run}`,
+		`Nobody ${run}`,
+		(name: string) => `reporter = "${name}"`,
+	],
+	[
+		"user in a function",
+		strangerUser,
+		`t-${run}-nobody`,
+		(name: string) => `issue in updatedBy("${name}")`,
+	],
+	[
+		"group",
+		hiddenGroup,
+		`t-${run}-no-group`,
+		(name: string) => `assignee in membersOf("${name}")`,
+	],
+])(
+	"a hidden %s answers like one that does not exist",
+	async (_label, hidden, missing, jql) => {
+		const hiddenAnswer = await answer(jql, hidden);
+		const missingAnswer = await answer(jql, missing);
+		expect(missingAnswer.status).toBe(400);
+		expect(hiddenAnswer).toEqual(missingAnswer);
+	},
+);
+
+test("a board filter is checked with the same rule when it is saved", async () => {
+	const create = async (name: string) => {
+		const response = await app.inject({
+			method: "POST",
+			url: "/api/boards",
+			cookies: { sid: session },
+			headers: { "x-requested-with": "rvna" },
+			payload: {
+				name: `Probe ${run}`,
+				type: "kanban",
+				filterJql: `project = ${name}`,
+				project: visibleKey,
+			},
+		});
+		return {
+			status: response.statusCode,
+			body: response.body.split(name).join("<name>"),
+		};
+	};
+	const hidden = await create(invisibleKey);
+	const missing = await create(missingKey);
+	expect(missing.status).toBe(400);
+	expect(hidden).toEqual(missing);
+});
+
+test("names the viewer may see still resolve", async () => {
+	for (const jql of [
+		`project = "${`Visible JQL ${run}`}"`,
+		`key > ${visibleKey}-0`,
+		`fixVersion = "${visibleVersion}"`,
+		`component = "${visibleComponent}"`,
+		`sprint = "${visibleSprint}"`,
+		`assignee = "${visibleUser}"`,
+		`assignee = currentUser()`,
+		`assignee in membersOf("${sharedGroup}")`,
+	]) {
+		const response = await search(jql);
+		expect(response.statusCode, jql).toBe(200);
+	}
 });
 
 test("function sub-queries cannot reveal invisible issues", async () => {
@@ -262,10 +406,6 @@ test("function sub-queries cannot reveal invisible issues", async () => {
 	);
 	expect(linked.statusCode).toBe(400);
 	expect(JSON.stringify(linked.json())).not.toContain(secretSummary);
-
-	const history = await search(`issue in updatedBy("${invisibleUser}")`);
-	expect(history.statusCode).toBe(200);
-	expect(history.json().total).toBe(0);
 
 	const current = await search("assignee = currentUser()");
 	expect(current.statusCode).toBe(200);

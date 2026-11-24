@@ -530,7 +530,11 @@ afterAll(async () => {
 	await pool.end();
 });
 
-const alice = () => ({ id: ids.alice, username: username("alice") });
+const alice = () => ({
+	id: ids.alice,
+	username: username("alice"),
+	groups: [`${tag}-team`],
+});
 
 async function keys(jql: string, user = alice()) {
 	const result = await searchIssues(
