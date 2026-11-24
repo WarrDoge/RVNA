@@ -1477,7 +1477,9 @@ An administrator configures it at `/plugins/servlet/gitlab`, reachable from the 
 gear. The page generates the webhook secret (shown once) and stores it, together with an optional
 access token, encrypted with AES-256-GCM under `SECRETS_KEY`. Without `SECRETS_KEY` the page still
 loads, but secrets cannot be saved. The token is used for back-fill and link unfurling and is never
-returned by the API.
+returned by the API. The base URL must use HTTPS; plain HTTP is accepted only for a loopback host, so
+the token never travels in clear. Changes to the base URL, the webhook secret and the token are
+written to the audit log without the secret values.
 
 Create a webhook in GitLab with these settings:
 

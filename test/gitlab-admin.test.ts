@@ -1,7 +1,9 @@
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { db, pool, runMigrations } from "../src/lib/server/db.ts";
-import { testConnection } from "../src/lib/server/gitlab/client.ts";
+import { GitlabApi, testConnection } from "../src/lib/server/gitlab/client.ts";
 import { decryptSecret } from "../src/lib/server/gitlab/crypto.ts";
+import { auditLog } from "../src/lib/server/schema-admin.ts";
 import {
 	gitlabConfig,
 	gitlabRepositories,
@@ -75,6 +77,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+	await db.delete(auditLog).where(eq(auditLog.entityType, "gitlab_config"));
 	await app.close();
 	await cleanupGitlabFixture(fixture);
 	await db.delete(gitlabRepositories);
@@ -161,6 +164,65 @@ describe("admin configuration", () => {
 		);
 		expect(cleared.statusCode).toBe(200);
 		expect(cleared.json().hasAccessToken).toBe(false);
+	});
+
+	test("sends the token only over HTTPS or to a loopback host", async () => {
+		const put = (baseUrl: string) =>
+			inject("PUT", "/api/admin/gitlab", adminSession, { baseUrl });
+		for (const baseUrl of [
+			"http://gitlab.example.test",
+			"https://user:secret@gitlab.example.test",
+			"ftp://gitlab.example.test",
+		]) {
+			expect((await put(baseUrl)).statusCode).toBe(400);
+		}
+		expect((await put("http://127.0.0.1:8929")).statusCode).toBe(200);
+		expect((await put("https://gitlab.example.test")).statusCode).toBe(200);
+
+		const calls: string[] = [];
+		const fetchImpl = async (url: string) => {
+			calls.push(url);
+			throw new Error("the token must not be sent");
+		};
+		expect(
+			() => new GitlabApi("http://gitlab.example.test", "glpat-token"),
+		).toThrow(/HTTPS/);
+		await expect(
+			testConnection("http://gitlab.example.test", "glpat-token", fetchImpl),
+		).rejects.toThrow(/HTTPS/);
+		expect(calls).toEqual([]);
+	});
+
+	test("writes every change of the connection to the audit log, without the secrets", async () => {
+		await db.delete(auditLog).where(eq(auditLog.entityType, "gitlab_config"));
+		const token = "glpat-audit-token-value";
+		await inject("PUT", "/api/admin/gitlab", adminSession, {
+			baseUrl: "https://gitlab-audit.example.test",
+		});
+		const generated = await inject(
+			"POST",
+			"/api/admin/gitlab/secret",
+			adminSession,
+		);
+		await inject("PUT", "/api/admin/gitlab/token", adminSession, { token });
+		await inject("DELETE", "/api/admin/gitlab/token", adminSession);
+
+		const rows = await db
+			.select()
+			.from(auditLog)
+			.where(eq(auditLog.entityType, "gitlab_config"))
+			.orderBy(auditLog.createdAt);
+		expect(rows.map((row) => row.action)).toEqual([
+			"gitlab.base_url.save",
+			"gitlab.webhook_secret.create",
+			"gitlab.token.save",
+			"gitlab.token.clear",
+		]);
+		expect(rows[0]?.changes).toMatchObject({
+			to: { baseUrl: "https://gitlab-audit.example.test" },
+		});
+		expect(JSON.stringify(rows)).not.toContain(token);
+		expect(JSON.stringify(rows)).not.toContain(generated.json().secret);
 	});
 
 	test("validates the token against /api/v4/version", async () => {

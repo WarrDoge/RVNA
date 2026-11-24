@@ -1,3 +1,5 @@
+import { isTokenSafeUrl } from "../token-url.ts";
+
 export interface GitlabProject {
 	id: number;
 	path_with_namespace: string;
@@ -51,6 +53,11 @@ export type FetchLike = (
 }>;
 
 function base(baseUrl: string) {
+	if (!isTokenSafeUrl(baseUrl)) {
+		throw new Error(
+			"The GitLab base URL must use HTTPS, or HTTP to a loopback host",
+		);
+	}
 	return baseUrl.replace(/\/+$/, "");
 }
 

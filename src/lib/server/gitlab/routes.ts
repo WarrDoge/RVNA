@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
+import { audit } from "../admin/audit.ts";
 import type { CurrentUser } from "../auth.ts";
 import { randomValue } from "../auth.ts";
 import { db } from "../db.ts";
@@ -11,6 +12,7 @@ import {
 	requireAdminActor,
 } from "../permissions.ts";
 import { gitlabDeliveries } from "../schema-gitlab.ts";
+import { isTokenSafeUrl } from "../token-url.ts";
 import { testConnection } from "./client.ts";
 import {
 	clearAccessToken,
@@ -155,8 +157,8 @@ export const gitlabBaseUrlBody = z.object({
 	baseUrl: z
 		.url()
 		.refine(
-			(value) => value.startsWith("http://") || value.startsWith("https://"),
-			"Must be an HTTP or HTTPS URL",
+			isTokenSafeUrl,
+			"Must be an HTTPS URL (HTTP is allowed only for a loopback host) without a user name or password",
 		),
 });
 
@@ -282,8 +284,20 @@ export async function saveGitlabBaseUrl(
 	body: z.infer<typeof gitlabBaseUrlBody>,
 ) {
 	requireAdminActor(actor);
+	const before = await gitlabSettings();
 	await saveBaseUrl(body.baseUrl);
-	return publicGitlabSettings();
+	const after = await publicGitlabSettings();
+	await audit(db, actor, {
+		action: "gitlab.base_url.save",
+		entityType: "gitlab_config",
+		entityId: "1",
+		summary: "Changed the GitLab base URL",
+		changes: {
+			from: { baseUrl: before.baseUrl },
+			to: { baseUrl: after.baseUrl },
+		},
+	});
+	return after;
 }
 
 export async function createGitlabWebhookSecret(actor: CurrentUser) {
@@ -293,6 +307,12 @@ export async function createGitlabWebhookSecret(actor: CurrentUser) {
 	}
 	const secret = randomValue();
 	await saveWebhookSecret(secret);
+	await audit(db, actor, {
+		action: "gitlab.webhook_secret.create",
+		entityType: "gitlab_config",
+		entityId: "1",
+		summary: "Generated a new GitLab webhook secret",
+	});
 	return { ...(await publicGitlabSettings()), secret };
 }
 
@@ -305,12 +325,24 @@ export async function saveGitlabAccessToken(
 		throw new HttpError(400, "SECRETS_KEY is not set");
 	}
 	await saveAccessToken(body.token);
+	await audit(db, actor, {
+		action: "gitlab.token.save",
+		entityType: "gitlab_config",
+		entityId: "1",
+		summary: "Set the GitLab access token",
+	});
 	return publicGitlabSettings();
 }
 
 export async function clearGitlabAccessToken(actor: CurrentUser) {
 	requireAdminActor(actor);
 	await clearAccessToken();
+	await audit(db, actor, {
+		action: "gitlab.token.clear",
+		entityType: "gitlab_config",
+		entityId: "1",
+		summary: "Removed the GitLab access token",
+	});
 	return publicGitlabSettings();
 }
 
