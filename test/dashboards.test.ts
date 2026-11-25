@@ -615,3 +615,55 @@ test("an imported dashboard is found by its Jira id", async () => {
 	expect(bySource.json().id).toBe(dashboard.id);
 	expect(bySource.json().sourceId).toBe(`import-${run}`);
 });
+
+test("the dashboard page loads when a gadget holds an imported custom field column or a filter that no longer parses", async () => {
+	const dashboard = await createDashboard(`Broken gadgets ${run}`);
+	const gadgets = `/api/dashboards/${dashboard.id}/gadgets`;
+
+	const imported = await request("POST", gadgets, ownerSession, {
+		type: "assigned-to-me",
+	});
+	expect(imported.statusCode).toBe(201);
+	await pool.query("update dashboard_gadgets set config = $1 where id = $2", [
+		{ rows: 5, columns: ["key", "customfield_10107", "summary"] },
+		imported.json().id,
+	]);
+
+	const filter = await request("POST", "/api/filters", ownerSession, {
+		name: `Broken filter ${run}`,
+		jql: "ORDER BY key",
+	});
+	expect(filter.statusCode).toBe(201);
+	await pool.query("update filters set jql = 'project ==' where id = $1", [
+		filter.json().id,
+	]);
+	const broken = await request("POST", gadgets, ownerSession, {
+		type: "filter-results",
+		config: { filterId: filter.json().id },
+	});
+	expect(broken.statusCode).toBe(201);
+
+	const data = await request(
+		"GET",
+		`/api/gadgets/${imported.json().id}/data`,
+		ownerSession,
+	);
+	expect(data.statusCode).toBe(200);
+	expect(data.json().issueList).toBeDefined();
+
+	const failed = await request(
+		"GET",
+		`/api/gadgets/${broken.json().id}/data`,
+		ownerSession,
+	);
+	expect(failed.statusCode).toBe(400);
+	expect(failed.body).toContain("This gadget could not be loaded");
+	expect(failed.body).not.toContain("project ==");
+
+	const page = await request(
+		"GET",
+		`/secure/Dashboard.jspa?selectPageId=${dashboard.id}`,
+		ownerSession,
+	);
+	expect(page.statusCode).toBe(200);
+});

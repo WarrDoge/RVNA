@@ -7,6 +7,7 @@ import {
 	STATISTICS,
 	type StatisticType,
 } from "../../shared/gadgets.ts";
+import { JqlError } from "../../shared/jql/index.ts";
 import type { CurrentUser } from "../auth.ts";
 import { userAvatarSql } from "../avatars.ts";
 import { db } from "../db.ts";
@@ -714,7 +715,15 @@ export async function getGadgetData(
 	const gadget = dashboard.gadgets.find((item) => item.id === owner.id);
 	if (!gadget) throw new HttpError(404, "Gadget not found");
 
-	return loadGadgetData(owner.dashboardId, gadget, actor, startAt);
+	try {
+		return await loadGadgetData(owner.dashboardId, gadget, actor, startAt);
+	} catch (error) {
+		// The text of a stored query can belong to another user, so it is not repeated.
+		if (error instanceof JqlError) {
+			throw new HttpError(400, "This gadget could not be loaded");
+		}
+		throw error;
+	}
 }
 
 export async function setDashboardLayout(

@@ -13,15 +13,9 @@ import {
 } from "#lib/server/dashboards/service.ts";
 import { isHttpError } from "#lib/server/http.ts";
 import { pageAction, pageLoad } from "#lib/server/http-svelte.ts";
-import { JqlError } from "#lib/shared/jql/index.ts";
 import type { Actions, PageServerLoad } from "./$types";
 
 export type GadgetDataEntry = { data: GadgetData } | { error: string };
-
-function errorMessage(cause: unknown) {
-	if (isHttpError(cause)) return cause.message;
-	return "This gadget could not be loaded";
-}
 
 async function gadgetData(
 	actor: Parameters<typeof getGadgetData>[0],
@@ -41,8 +35,8 @@ async function gadgetData(
 					},
 				] as const;
 			} catch (cause) {
-				if (!isHttpError(cause) && !(cause instanceof JqlError)) throw cause;
-				return [gadget.id, { error: errorMessage(cause) }] as const;
+				if (!isHttpError(cause)) throw cause;
+				return [gadget.id, { error: cause.message }] as const;
 			}
 		}),
 	);

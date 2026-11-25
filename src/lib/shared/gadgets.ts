@@ -4,6 +4,8 @@
  * the picker shows.
  */
 
+import { systemField } from "./fields.ts";
+
 export type GadgetType =
 	| "introduction"
 	| "assigned-to-me"
@@ -201,6 +203,20 @@ export const GADGET_COLORS = [
 ] as const;
 
 export const DEFAULT_COLUMNS = ["type", "key", "summary", "priority", "status"];
+
+/**
+ * The columns an issue list gadget shows. A gadget shows system fields only; an imported
+ * gadget can still hold Jira's custom field columns, which are left out.
+ */
+export function gadgetColumns(config: Record<string, unknown>) {
+	const columns = Array.isArray(config.columns)
+		? config.columns.filter(
+				(item): item is string =>
+					typeof item === "string" && systemField(item) !== null,
+			)
+		: [];
+	return columns.length > 0 ? columns : DEFAULT_COLUMNS;
+}
 
 export interface FilterResultsConfig {
 	filterId: string | null;

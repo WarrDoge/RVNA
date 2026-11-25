@@ -3,7 +3,7 @@
 	import LineChart from "#lib/charts/LineChart.svelte";
 	import MatrixTable from "#lib/charts/MatrixTable.svelte";
 	import PieChart from "#lib/charts/PieChart.svelte";
-	import { isSafeLinkUrl } from "#lib/shared/gadgets.ts";
+	import { gadgetColumns, isSafeLinkUrl } from "#lib/shared/gadgets.ts";
 	import GadgetIssueList from "./GadgetIssueList.svelte";
 	import type { GadgetData } from "#lib/dashboards/types.ts";
 
@@ -14,19 +14,7 @@
 
 	let { data, onStartAt }: Props = $props();
 
-	function columnsOf(config: Record<string, unknown>) {
-		const columns = Array.isArray(config.columns)
-			? config.columns.filter(
-					(item): item is string =>
-						typeof item === "string" && !item.startsWith("customfield_"),
-				)
-			: [];
-		return columns.length > 0
-			? columns
-			: ["type", "key", "summary", "priority", "status"];
-	}
-
-	const columns = $derived(columnsOf(data.config));
+	const columns = $derived(gadgetColumns(data.config));
 	const safeLinks = $derived(
 		(data.links ?? []).filter((link) => isSafeLinkUrl(link.url)),
 	);

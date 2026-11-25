@@ -2,7 +2,7 @@ import { eq, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { formatDuration } from "../shared/agile-reports/types.ts";
 import {
-	DEFAULT_COLUMNS,
+	gadgetColumns,
 	isSafeLinkUrl,
 	STATISTICS,
 	type StatisticType,
@@ -124,11 +124,6 @@ function stringList(value: unknown) {
 		: [];
 }
 
-function configColumns(config: Record<string, unknown>) {
-	const columns = stringList(config.columns);
-	return columns.length > 0 ? columns : DEFAULT_COLUMNS;
-}
-
 function emptyList() {
 	return { startAt: 0, maxResults: 0, total: 0, issues: [] };
 }
@@ -145,7 +140,7 @@ async function issuePage(
 			jql,
 			startAt,
 			maxResults: clampRows(config.rows),
-			columns: configColumns(config),
+			columns: gadgetColumns(config),
 			storedJql: true,
 		},
 		user,

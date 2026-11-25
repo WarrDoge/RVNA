@@ -1,7 +1,6 @@
 import { expect, test, vi } from "vitest";
 import type { CurrentUser } from "../src/lib/server/auth.ts";
 import { HttpError } from "../src/lib/server/http.ts";
-import { JqlError } from "../src/lib/shared/jql/index.ts";
 import { load } from "../src/routes/secure/Dashboard.jspa/+page.server.ts";
 
 const service = vi.hoisted(() => ({
@@ -54,10 +53,10 @@ test("a dashboard that disappears between the list and the default read is the w
 	expect(data).toMatchObject({ dashboard: null, empty: true });
 });
 
-test("a gadget keeps domain messages, hides JQL details and rethrows unknown errors", async () => {
+test("a gadget keeps domain messages and rethrows unknown errors", async () => {
 	const dashboard = {
 		id: "d1",
-		gadgets: [{ id: "g1" }, { id: "g2" }],
+		gadgets: [{ id: "g1" }],
 	};
 	service.listDashboards.mockResolvedValue([{ id: "d1" }]);
 	service.defaultDashboard.mockResolvedValue(dashboard);
@@ -65,11 +64,9 @@ test("a gadget keeps domain messages, hides JQL details and rethrows unknown err
 	service.getGadgetData.mockRejectedValueOnce(
 		new HttpError(400, "The filter is invalid"),
 	);
-	service.getGadgetData.mockRejectedValueOnce(new JqlError("secret query"));
 	const data = await load(homeEvent());
 	expect(data.gadgetData).toEqual({
 		g1: { error: "The filter is invalid" },
-		g2: { error: "This gadget could not be loaded" },
 	});
 
 	service.getGadgetData.mockRejectedValueOnce(new Error("database secret"));
